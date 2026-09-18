@@ -852,8 +852,8 @@ function outlineCollapseAll(items, collapsed) {
 }
 
 /* The Designer's own tree pictures: frames of the platform's metadata strip
- * (std-pictures/ОбъектыМетаданных.png, 16x16 each), by frame index. */
-var STRIP = 'std-pictures/' + encodeURIComponent('ОбъектыМетаданных') + '.png';
+ * (std-pictures/ObektyMetadannykh.png, «ОбъектыМетаданных», 16x16 each), by frame index. */
+var STRIP = 'std-pictures/ObektyMetadannykh.png';
 var ICONS = {
     Attribute: 52, Dimension: 65, Resource: 67, AddressingAttribute: 52, AccountingFlag: 52,
     ExtDimensionAccountingFlag: 52, Column: 52, EnumValue: 1, TabularSection: 55, Form: 59,

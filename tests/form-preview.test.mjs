@@ -6350,10 +6350,11 @@ test('platform library pictures resolve to shipped std-pictures files', async ()
   const { readdirSync } = await import('node:fs');
   const dir = new URL('../packages/1c-preview-core/browser/std-pictures/', import.meta.url);
   const files = new Set(readdirSync(dir));
-  const file = (ref) => decodeURIComponent(T.stdPictureUrl(ref).replace(/^std-pictures\//, ''));
-  assert.equal(file('StdPicture.Write'), 'Записать.png');
-  assert.equal(file('StdPicture.DataSearch'), 'ПоискДанных.svg');
-  assert.equal(file('БиблиотекаКартинок.ПереместитьВправо'), 'ПереместитьВправо.png');
+  const file = (ref) => T.stdPictureUrl(ref).replace(/^std-pictures\//, '');
+  assert.equal(file('StdPicture.Write'), 'Zapisat.png');
+  assert.equal(file('StdPicture.DataSearch'), 'PoiskDannykh.svg');
+  assert.equal(file('БиблиотекаКартинок.ПереместитьВправо'), 'PeremestitVpravo.png');
+  for (const name of files) assert.match(name, /^[!-~]+$/, 'ASCII file name (VS Code Marketplace): ' + name);
   assert.equal(T.stdPictureUrl('StdPicture.NoSuchPictureAnywhere'), '');
   assert.equal(T.stdPictureUrl('CommonPicture.Записать'), '');
   for (const ref of ['Print', 'MoveLeft', 'Replace', 'WriteAndClose', 'Post', 'MarkToDelete', 'Information', 'Change', 'InputFieldOpen', 'CloneListItem'])

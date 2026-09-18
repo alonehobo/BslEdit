@@ -1477,9 +1477,10 @@ var PIC_ICON = {
 };
 
 /* Platform picture library (БиблиотекаКартинок) shipped as files in
- * std-pictures/, named by their Russian names. Form.xml refers to them by the
- * English name (StdPicture.Write), so this maps English → Russian. A Russian
- * ref (БиблиотекаКартинок.Записать) resolves by the file name directly. */
+ * std-pictures/, named by the transliterated Russian name (Записать →
+ * Zapisat.png): the VS Code Marketplace rejects non-ASCII file names. Form.xml
+ * refers to them by the English name (StdPicture.Write), so this maps
+ * English → Russian; a Russian ref (БиблиотекаКартинок.Записать) is used as is. */
 var STD_PICTURE_RU = {
     SwitchActivity: 'ПереключитьАктивность',
     DataCompositionOutputParameters: 'ПараметрыВыводаКомпоновкиДанных',
@@ -1686,7 +1687,28 @@ function stdPictureUrl(ref) {
     if (!m) return '';
     var ru = Object.prototype.hasOwnProperty.call(STD_PICTURE_RU, m[1]) ? STD_PICTURE_RU[m[1]] : m[1];
     if (!/^[А-Яа-яЁё0-9]+$/.test(ru)) return '';
-    return 'std-pictures/' + encodeURIComponent(ru) + (STD_PICTURE_SVG.test(ru) ? '.svg' : '.png');
+    return 'std-pictures/' + stdPictureFileBase(ru) + (STD_PICTURE_SVG.test(ru) ? '.svg' : '.png');
+}
+
+var STD_PICTURE_TRANSLIT = {
+    а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'yo', ж: 'zh', з: 'z', и: 'i', й: 'y',
+    к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f',
+    х: 'kh', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'shch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya'
+};
+
+/* File name of a library picture without extension: the Russian name
+ * transliterated letter by letter, keeping the capital of each word. */
+function stdPictureFileBase(ru) {
+    var out = '';
+    var text = String(ru || '');
+    for (var i = 0; i < text.length; i++) {
+        var ch = text.charAt(i);
+        var low = ch.toLowerCase();
+        if (!Object.prototype.hasOwnProperty.call(STD_PICTURE_TRANSLIT, low)) { out += ch; continue; }
+        var latin = STD_PICTURE_TRANSLIT[low];
+        out += ch === low ? latin : latin.charAt(0).toUpperCase() + latin.slice(1);
+    }
+    return out;
 }
 
 function objectMetaCandidates(formPath) {
@@ -18050,6 +18072,7 @@ root.FormPreview = {
         iconIdFor: iconIdFor,
         iconIdFromRef: iconIdFromRef,
         stdPictureUrl: stdPictureUrl,
+        stdPictureFileBase: stdPictureFileBase,
         commonPictureResource: commonPictureResource,
         zipPictureDataUrl: zipPictureDataUrl,
         appendPictureIcon: appendPictureIcon,
