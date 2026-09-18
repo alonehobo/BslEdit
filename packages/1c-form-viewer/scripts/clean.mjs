@@ -3,8 +3,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const distDir = path.join(packageDir, 'dist');
-if (path.dirname(distDir) !== packageDir || path.basename(distDir) !== 'dist') {
-  throw new Error(`Refusing to clean unexpected directory: ${distDir}`);
+const buildDir = path.join(packageDir, 'build');
+if (path.dirname(buildDir) !== packageDir || path.basename(buildDir) !== 'build') {
+  throw new Error(`Refusing to clean unexpected directory: ${buildDir}`);
 }
-await rm(distDir, { recursive: true, force: true });
+await rm(buildDir, { recursive: true, force: true });

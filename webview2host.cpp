@@ -6,6 +6,11 @@
 #include <commdlg.h>
 #include <vector>
 
+#include <atomic>
+#include <thread>
+
+#include "packages/1c-form-viewer/native/context-batch.h"
+
 #pragma comment(lib, "shlwapi.lib")
 #pragma comment(lib, "comdlg32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -97,6 +102,90 @@ bool g_envFailed  = false;
 HRESULT g_lastEnvHr = S_OK;
 int g_envAttempts = 0;
 
+// ---------------------------------------------------------------------------
+// Batched configuration io (https://bslcfg.invalid/batch)
+//
+// A batch is a few hundred file reads; doing them inside WebResourceRequested
+// would freeze the editor and serialise every request of the page behind the
+// UI thread. The request is deferred, served on a worker thread, and the
+// response is handed back to the UI thread through a message-only window,
+// because WebView2 objects may only be touched there.
+// ---------------------------------------------------------------------------
+
+const UINT WM_BSLVIEW_BATCH_DONE = WM_APP + 60;
+std::atomic<long> g_batchJobs(0);
+HWND g_batchWnd = NULL;
+
+struct BatchJob {
+    ICoreWebView2WebResourceRequestedEventArgs* args;
+    ICoreWebView2Deferral* deferral;
+    ContextBatchResult result;
+};
+
+LRESULT CALLBACK BatchWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+
+HWND BatchWindow()
+{
+    if (g_batchWnd) return g_batchWnd;
+    static const wchar_t* kClass = L"BSLViewBatchWnd";
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = BatchWndProc;
+    wc.hInstance = GetModuleHandleW(NULL);
+    wc.lpszClassName = kClass;
+    RegisterClassW(&wc);
+    g_batchWnd = CreateWindowExW(0, kClass, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, NULL, GetModuleHandleW(NULL), NULL);
+    return g_batchWnd;
+}
+
+void FinishBatchJob(BatchJob* job)
+{
+    if (g_env) {
+        const char* reason = job->result.status == 200 ? "OK" : job->result.status == 204 ? "No Content"
+            : job->result.status == 404 ? "Not Found" : "Bad Request";
+        std::wstring headers = L"Access-Control-Allow-Origin: https://" BSLVIEW_VIRTUAL_HOST L"\r\n"
+            L"Cache-Control: no-store\r\nContent-Type: ";
+        headers += context_batch::Wide(job->result.contentType);
+        IStream* body = job->result.body.empty() ? NULL
+            : SHCreateMemStream((const BYTE*)job->result.body.data(), (UINT)job->result.body.size());
+        ICoreWebView2WebResourceResponse* response = NULL;
+        if (SUCCEEDED(g_env->CreateWebResourceResponse(body, job->result.status,
+                context_batch::Wide(reason).c_str(), headers.c_str(), &response)) && response) {
+            job->args->put_Response(response);
+            response->Release();
+        }
+        if (body) body->Release();
+    }
+    job->deferral->Complete();
+    job->deferral->Release();
+    job->args->Release();
+    delete job;
+    --g_batchJobs;
+}
+
+LRESULT CALLBACK BatchWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_BSLVIEW_BATCH_DONE) {
+        FinishBatchJob((BatchJob*)lParam);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+bool ReadRequestBody(ICoreWebView2WebResourceRequest* request, std::string& body)
+{
+    IStream* stream = NULL;
+    if (FAILED(request->get_Content(&stream)) || !stream) return false;
+    char buffer[65536];
+    for (;;) {
+        ULONG got = 0;
+        HRESULT hr = stream->Read(buffer, sizeof(buffer), &got);
+        if (got) body.append(buffer, got);
+        if (FAILED(hr) || hr == S_FALSE || got == 0 || body.size() > 64u * 1024u * 1024u) break;
+    }
+    stream->Release();
+    return body.size() <= 64u * 1024u * 1024u;
+}
+
 std::vector<CWebView2Host*>* g_waiters = NULL;
 
 // A single browser instance is kept alive between openings, parented to an
@@ -105,6 +194,7 @@ std::vector<CWebView2Host*>* g_waiters = NULL;
 CWebView2Host* g_parked = NULL;
 HWND  g_holder = NULL;
 bool  g_keepWarm = false;
+bool  g_standalone = false;
 std::wstring g_warmWebRoot;
 
 HWND HolderWindow()
@@ -265,6 +355,16 @@ public:
     }
 };
 
+class WebResourceHandler : public HostCallback<ICoreWebView2WebResourceRequestedEventHandler> {
+    typedef HostCallback<ICoreWebView2WebResourceRequestedEventHandler> Base;
+public:
+    explicit WebResourceHandler(CWebView2Host* host) : Base(host) {}
+    STDMETHODIMP Invoke(ICoreWebView2*, ICoreWebView2WebResourceRequestedEventArgs* args) {
+        mHost->OnWebResourceRequested(args);
+        return S_OK;
+    }
+};
+
 class NavigationStartingHandler : public ComCallback<ICoreWebView2NavigationStartingEventHandler> {
 public:
     STDMETHODIMP Invoke(ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) {
@@ -312,6 +412,28 @@ public:
         mHost->Release();
         return S_OK;
     }
+};
+
+class ScreenshotCompletedHandler : public HostCallback<ICoreWebView2CapturePreviewCompletedHandler> {
+    typedef HostCallback<ICoreWebView2CapturePreviewCompletedHandler> Base;
+public:
+    ScreenshotCompletedHandler(CWebView2Host* host, IStream* stream)
+        : Base(host), mStream(stream) { if (mStream) mStream->AddRef(); }
+    ~ScreenshotCompletedHandler() { if (mStream) mStream->Release(); }
+
+    STDMETHODIMP Invoke(HRESULT hr) {
+        if (mStream && SUCCEEDED(hr)) mStream->Commit(STGC_DEFAULT);
+        if (!mHost->mClosed) {
+            std::wstring json = L"{\"cmd\":\"screenshotDone\",\"ok\":";
+            json += SUCCEEDED(hr) ? L"true" : L"false";
+            json += L"}";
+            mHost->PostJson(json);
+        }
+        mHost->Release();
+        return S_OK;
+    }
+private:
+    IStream* mStream;
 };
 
 static HRESULT BslCreateController(ICoreWebView2Environment* env, CWebView2Host* host)
@@ -388,6 +510,11 @@ HRESULT CWebView2Host::LastError()
     return g_lastEnvHr;
 }
 
+void CWebView2Host::SetStandalone(bool standalone)
+{
+    g_standalone = standalone;
+}
+
 void CWebView2Host::WarmUp(const std::wstring& webRoot, bool keepWarm)
 {
     PinModule();
@@ -415,6 +542,15 @@ void CWebView2Host::Shutdown()
         p->Close();
         p->Release();
     }
+    /* Worker threads run code of this module: let them finish before it can
+     * be unloaded, completing their deferrals as they report back. */
+    for (ULONGLONG deadline = GetTickCount64() + 5000; g_batchJobs > 0 && GetTickCount64() < deadline;) {
+        MSG msg;
+        while (g_batchWnd && PeekMessageW(&msg, g_batchWnd, WM_BSLVIEW_BATCH_DONE, WM_BSLVIEW_BATCH_DONE, PM_REMOVE))
+            DispatchMessageW(&msg);
+        Sleep(10);
+    }
+    if (g_batchWnd) { DestroyWindow(g_batchWnd); g_batchWnd = NULL; }
     if (g_env) { g_env->Release(); g_env = NULL; }
     if (g_holder) { DestroyWindow(g_holder); g_holder = NULL; }
     g_envPending = false;
@@ -428,9 +564,10 @@ void CWebView2Host::Shutdown()
 // --- Construction ----------------------------------------------------------
 
 CWebView2Host::CWebView2Host()
-    : mParentWin(NULL), mEncoding(ENC_UTF8_BOM), mRefCount(1), mWebView(NULL),
+    : mParentWin(NULL), mEncoding(ENC_UTF8_BOM), mFormModuleEncoding(ENC_UTF8_BOM),
+      mRefCount(1), mWebView(NULL),
       mController(NULL), mClosed(false), mParked(false), mFailed(false),
-      mPageReady(false), mHasPending(false), mDark(false)
+      mPageReady(false), mHasPending(false), mDark(false), mFontSize(14), mReadOnly(true), mNavigating(false)
 {
 }
 
@@ -551,6 +688,7 @@ void CWebView2Host::Park()
     }
 
     mFilePath.clear();
+    mOnFileOpened = nullptr;   // it points at the window being closed
     SendCommand(L"park");
     Reparent(holder, true);
     mParked = true;
@@ -666,6 +804,12 @@ void CWebView2Host::OnControllerCreated(HRESULT hr, ICoreWebView2Controller* ctr
     mWebView->add_WebMessageReceived(wm, &token);
     wm->Release();
 
+    mWebView->AddWebResourceRequestedFilter(
+        L"https://" BSLVIEW_CONFIG_HOST L"/*", COREWEBVIEW2_WEB_RESOURCE_CONTEXT_ALL);
+    WebResourceHandler* wr = new WebResourceHandler(this);
+    mWebView->add_WebResourceRequested(wr, &token);
+    wr->Release();
+
     NavigationStartingHandler* nav = new NavigationStartingHandler();
     mWebView->add_NavigationStarting(nav, &token);
     nav->Release();
@@ -700,9 +844,132 @@ void CWebView2Host::PostJson(const std::wstring& json)
     if (mWebView) mWebView->PostWebMessageAsJson(json.c_str());
 }
 
+#ifndef URL_UNESCAPE_AS_UTF8
+#define URL_UNESCAPE_AS_UTF8 0x00040000
+#endif
+
+/* https://bslcfg.invalid/file?p=<absolute path>[&exists=1]
+ * Serves configuration files to the page's shared form-context.js. Only files
+ * below the current form's FormContextRoots() are visible; everything else is
+ * a plain 404, exactly like a missing file. */
+void CWebView2Host::OnWebResourceRequested(ICoreWebView2WebResourceRequestedEventArgs* args)
+{
+    if (!args || !g_env) return;
+    std::wstring uri;
+    std::wstring method;
+    std::string batchBody;
+    bool batchBodyOk = false;
+    const std::wstring batchUri = L"https://" BSLVIEW_CONFIG_HOST L"/batch";
+    ICoreWebView2WebResourceRequest* request = NULL;
+    if (SUCCEEDED(args->get_Request(&request)) && request) {
+        LPWSTR raw = NULL;
+        if (SUCCEEDED(request->get_Uri(&raw)) && raw) {
+            uri = raw;
+            CoTaskMemFree(raw);
+        }
+        raw = NULL;
+        if (SUCCEEDED(request->get_Method(&raw)) && raw) {
+            method = raw;
+            CoTaskMemFree(raw);
+        }
+        if (_wcsicmp(uri.c_str(), batchUri.c_str()) == 0 && method == L"POST")
+            batchBodyOk = ReadRequestBody(request, batchBody);
+        request->Release();
+    }
+
+    ICoreWebView2Deferral* deferral = NULL;
+    if (batchBodyOk && BatchWindow() && SUCCEEDED(args->GetDeferral(&deferral)) && deferral) {
+        BatchJob* job = new BatchJob();
+        job->args = args;
+        job->args->AddRef();
+        job->deferral = deferral;
+        std::vector<std::wstring> roots = mContextRoots;
+        HWND target = g_batchWnd;
+        ++g_batchJobs;
+        std::thread([job, roots, target, body = std::move(batchBody)]() {
+            ContextBatchAccess access;
+            access.file = [&roots](const std::wstring& path) {
+                if (PathIsRelativeW(path.c_str())) return false;
+                for (size_t i = 0; i < roots.size(); ++i)
+                    if (PathIsUnderRoot(roots[i], path)) return true;
+                return false;
+            };
+            access.directory = access.file;
+            try {
+                job->result = HandleContextBatch(body, access);
+            } catch (...) {
+                job->result = ContextBatchResult();
+                job->result.status = 400;
+            }
+            if (!PostMessageW(target, WM_BSLVIEW_BATCH_DONE, 0, (LPARAM)job)) {
+                /* The UI thread is gone; the page went with it. */
+                --g_batchJobs;
+            }
+        }).detach();
+        return;
+    }
+
+    int status = 404;
+    const wchar_t* reason = L"Not Found";
+    IStream* body = NULL;
+    const std::wstring prefix = L"https://" BSLVIEW_CONFIG_HOST L"/file?";
+    if (uri.size() > prefix.size() && _wcsnicmp(uri.c_str(), prefix.c_str(), prefix.size()) == 0) {
+        std::wstring query = uri.substr(prefix.size());
+        std::wstring path;
+        bool existsOnly = false;
+        size_t start = 0;
+        while (start < query.size()) {
+            size_t amp = query.find(L'&', start);
+            std::wstring pair = query.substr(start, amp == std::wstring::npos ? std::wstring::npos : amp - start);
+            if (pair.compare(0, 2, L"p=") == 0) {
+                std::vector<wchar_t> buffer(pair.begin() + 2, pair.end());
+                buffer.push_back(L'\0');
+                DWORD length = (DWORD)buffer.size();
+                if (SUCCEEDED(UrlUnescapeW(buffer.data(), NULL, &length,
+                        URL_UNESCAPE_INPLACE | URL_UNESCAPE_AS_UTF8)))
+                    path = buffer.data();
+            } else if (pair == L"exists=1") {
+                existsOnly = true;
+            }
+            if (amp == std::wstring::npos) break;
+            start = amp + 1;
+        }
+        bool allowed = false;
+        if (!path.empty() && !PathIsRelativeW(path.c_str())) {
+            for (size_t i = 0; i < mContextRoots.size() && !allowed; ++i)
+                allowed = PathIsUnderRoot(mContextRoots[i], path);
+        }
+        DWORD attributes = allowed ? GetFileAttributesW(path.c_str()) : INVALID_FILE_ATTRIBUTES;
+        bool visible = attributes != INVALID_FILE_ATTRIBUTES && !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+        if (existsOnly) {
+            /* Existence checks answer 200 with "1"/"0": the resolver checks many
+             * candidate locations and a 404 per miss floods the page console. */
+            status = 200;
+            reason = L"OK";
+            body = SHCreateMemStream((const BYTE*)(visible ? "1" : "0"), 1);
+        } else if (visible && SUCCEEDED(SHCreateStreamOnFileEx(path.c_str(), STGM_READ | STGM_SHARE_DENY_NONE,
+                FILE_ATTRIBUTE_NORMAL, FALSE, NULL, &body)) && body) {
+            status = 200;
+            reason = L"OK";
+        }
+    }
+
+    const wchar_t* headers = L"Access-Control-Allow-Origin: https://" BSLVIEW_VIRTUAL_HOST L"\r\n"
+        L"Cache-Control: no-store\r\n"
+        L"Content-Type: application/octet-stream";
+    ICoreWebView2WebResourceResponse* response = NULL;
+    if (SUCCEEDED(g_env->CreateWebResourceResponse(body, status, reason, headers, &response)) && response) {
+        args->put_Response(response);
+        response->Release();
+    }
+    if (body) body->Release();
+}
+
 void CWebView2Host::Load(const BslLoadRequest& req)
 {
     mDark = req.dark;
+    mFontSize = req.fontSize;
+    mReadOnly = req.readOnly;
     if (mController) ConfigureControllerRendering(mController, mParentWin, mDark);
 
     std::wstring json;
@@ -718,11 +985,43 @@ void CWebView2Host::Load(const BslLoadRequest& req)
     json += L",\"content\":\"";
     json += JsonEscape(req.content);
     json += L"\"";
-    if (!req.objectMeta.empty()) {
-        json += L",\"objectMeta\":\"";
-        json += JsonEscape(req.objectMeta);
+    json += L",\"path\":\"";
+    json += JsonEscape(mFilePath);
+    json += L"\"";
+    json += L",\"formTitle\":\"";
+    json += JsonEscape(FormSnapshotBaseName(mFilePath.c_str()));
+    json += L"\"";
+    std::wstring formModulePath = FindFormModuleFile(mFilePath.c_str());
+    TextFile formModule = formModulePath.empty()
+        ? TextFile() : ReadTextFile(formModulePath.c_str(), 64 * 1024 * 1024);
+    mFormModulePath.clear();
+    if (formModule.ok) {
+        mFormModulePath = formModulePath;
+        mFormModuleEncoding = formModule.encoding;
+        mFormModuleRevision = formModule.revision;
+        json += L",\"formModule\":\"";
+        json += JsonEscape(formModule.text);
+        json += L"\",\"formModulePath\":\"";
+        json += JsonEscape(formModulePath);
         json += L"\"";
+        if (req.openFormModule) json += L",\"formView\":\"module\"";
     }
+    mAllowedRoots.clear();
+    size_t rootSlash = mFilePath.find_last_of(L"\\/");
+    if (rootSlash != std::wstring::npos) mAllowedRoots.push_back(mFilePath.substr(0, rootSlash));
+    /* Object metadata, the base cf form, style items, common commands and
+     * pictures are resolved in the page by the shared form-context.js - the
+     * same code the MCP server runs - reading through BSLVIEW_CONFIG_HOST. */
+    mContextRoots = FormContextRoots(mFilePath.c_str());
+    if (!mNavigating) mNavRoots.clear();
+    mNavigating = false;
+    for (const std::wstring& contextRoot : mContextRoots) {
+        bool known = false;
+        for (const std::wstring& navRoot : mNavRoots)
+            known = known || _wcsicmp(navRoot.c_str(), contextRoot.c_str()) == 0;
+        if (!known) mNavRoots.push_back(contextRoot);
+    }
+    json += L",\"resolveContext\":true";
     json += L"}";
 
     if (mPageReady) {
@@ -834,6 +1133,49 @@ static bool JsonUnescapeField(const std::wstring& json, const wchar_t* key, std:
     return false;
 }
 
+static const wchar_t* EncodingName(TextEncoding enc)
+{
+    switch (enc) {
+    case ENC_UTF8_BOM: return L"utf8bom";
+    case ENC_UTF8: return L"utf8";
+    case ENC_UTF16LE: return L"utf16le";
+    case ENC_UTF16BE: return L"utf16be";
+    default: return L"ansi";
+    }
+}
+
+static std::wstring ChooseFolder(HWND owner, const std::wstring& suggest)
+{
+    IFileOpenDialog* dialog = NULL;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&dialog))) || !dialog) return std::wstring();
+    DWORD opts = 0;
+    dialog->GetOptions(&opts);
+    dialog->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    dialog->SetTitle(L"Выберите корень конфигурации 1С");
+    if (!suggest.empty()) {
+        IShellItem* item = NULL;
+        if (SUCCEEDED(SHCreateItemFromParsingName(suggest.c_str(), NULL, IID_PPV_ARGS(&item))) && item) {
+            dialog->SetFolder(item);
+            item->Release();
+        }
+    }
+    std::wstring result;
+    if (SUCCEEDED(dialog->Show(owner))) {
+        IShellItem* item = NULL;
+        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+            PWSTR path = NULL;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+                result = path;
+                CoTaskMemFree(path);
+            }
+            item->Release();
+        }
+    }
+    dialog->Release();
+    return result;
+}
+
 void CWebView2Host::OnWebMessage(const std::wstring& msg)
 {
     if (mClosed) return;
@@ -847,7 +1189,9 @@ void CWebView2Host::OnWebMessage(const std::wstring& msg)
         // Force a fresh DirectComposition surface after the page has real
         // content: hide → bounds nudge → show. Needed especially after
         // reparent from the parking window into Lister.
-        if (mController && !mParked && mParentWin) {
+        // Only a Lister instance moves between HWNDs. In the standalone
+        // editor the hide/show is pure flicker, once per "painted".
+        if (!g_standalone && mController && !mParked && mParentWin) {
             RECT bounds;
             GetClientRect(mParentWin, &bounds);
             mController->put_IsVisible(FALSE);
@@ -870,15 +1214,126 @@ void CWebView2Host::OnWebMessage(const std::wstring& msg)
         return;
     }
 
-    if (JsonFieldEquals(msg, L"cmd", L"save")) {
-        std::wstring content;
-        bool ok = false;
-        if (!mFilePath.empty() && JsonUnescapeField(msg, L"content", content))
-            ok = WriteTextFile(mFilePath.c_str(), content, mEncoding);
-        std::wstring reply = L"{\"cmd\":\"saved\",\"ok\":";
-        reply += ok ? L"true" : L"false";
+    if (JsonFieldEquals(msg, L"cmd", L"readSource")) {
+        std::wstring path, reqId;
+        bool fields = JsonUnescapeField(msg, L"path", path) && JsonUnescapeField(msg, L"reqId", reqId);
+        /* Absolute BSL paths are the normal BSL Analyzer contract and may be
+         * on any drive, independently of the report location.  Keep arbitrary
+         * file types behind the explicit-root boundary. */
+        bool allowed = fields && !PathIsRelativeW(path.c_str()) && IsSarifSourcePath(path);
+        for (size_t i = 0; fields && i < mAllowedRoots.size(); ++i)
+            if (PathIsUnderRoot(mAllowedRoots[i], path)) { allowed = true; break; }
+        TextFile file;
+        if (allowed) file = ReadTextFile(path.c_str(), 64u * 1024u * 1024u);
+        std::wstring reply = L"{\"cmd\":\"sourceContent\",\"reqId\":\"";
+        reply += JsonEscape(reqId);
+        reply += L"\",\"ok\":";
+        reply += (allowed && file.ok) ? L"true" : L"false";
+        reply += L",\"path\":\"";
+        reply += JsonEscape(path);
+        reply += L"\"";
+        if (allowed && file.ok) {
+            reply += L",\"content\":\"";
+            reply += JsonEscape(file.text);
+            reply += L"\",\"encoding\":\"";
+            reply += EncodingName(file.encoding);
+            reply += L"\"";
+        } else {
+            reply += L",\"error\":\"";
+            reply += allowed ? L"missing-or-too-big" : L"denied";
+            reply += L"\"";
+        }
         reply += L"}";
         PostJson(reply);
+        return;
+    }
+
+    if (JsonFieldEquals(msg, L"cmd", L"chooseRoot")) {
+        std::wstring suggest;
+        JsonUnescapeField(msg, L"suggest", suggest);
+        std::wstring chosen = ChooseFolder(mParentWin, suggest);
+        std::wstring reply = L"{\"cmd\":\"rootChosen\",\"ok\":";
+        reply += chosen.empty() ? L"false" : L"true";
+        if (!chosen.empty()) {
+            mAllowedRoots.push_back(chosen);
+            reply += L",\"path\":\"";
+            reply += JsonEscape(chosen);
+            reply += L"\"";
+        }
+        reply += L"}";
+        PostJson(reply);
+        return;
+    }
+
+    if (JsonFieldEquals(msg, L"cmd", L"save")) {
+        std::wstring content;
+        std::wstring saveId;
+        TextFileWriteResult saveResult = TEXT_FILE_WRITE_IO_ERROR;
+        /* The page names the form module explicitly; the file it goes to is
+         * the one this host found for the form, never a path from the page. */
+        bool toModule = JsonFieldEquals(msg, L"target", L"module");
+        const std::wstring& target = toModule ? mFormModulePath : mFilePath;
+        TextEncoding& encoding = toModule ? mFormModuleEncoding : mEncoding;
+        FileRevision& revision = toModule ? mFormModuleRevision : mFileRevision;
+        const wchar_t* ext = PathFindExtensionW(target.c_str());
+        if (!target.empty() && _wcsicmp(ext, L".sarif") != 0
+                && JsonUnescapeField(msg, L"content", content)) {
+            FileRevision savedRevision;
+            saveResult = WriteTextFileIfUnchanged(target.c_str(), content, encoding,
+                                                  &revision, &savedRevision);
+            if (saveResult == TEXT_FILE_WRITE_OK) revision = savedRevision;
+        }
+        std::wstring reply = L"{\"cmd\":\"saved\",\"ok\":";
+        reply += saveResult == TEXT_FILE_WRITE_OK ? L"true" : L"false";
+        if (toModule)
+            reply += L",\"target\":\"module\"";
+        if (saveResult == TEXT_FILE_WRITE_CONFLICT)
+            reply += L",\"conflict\":true";
+        if (JsonUnescapeField(msg, L"saveId", saveId)) {
+            reply += L",\"saveId\":\"";
+            reply += JsonEscape(saveId);
+            reply += L"\"";
+        }
+        reply += L"}";
+        PostJson(reply);
+        return;
+    }
+
+    /* The object window opens its forms, templates and modules in place. Only
+     * files below the context roots of the files navigated through qualify -
+     * the boundary the page's own reads are held to - and the page is loaded
+     * exactly as the host would load that file, including a form's module. */
+    if (JsonFieldEquals(msg, L"cmd", L"open")) {
+        std::wstring path;
+        bool allowed = JsonUnescapeField(msg, L"path", path) && !path.empty()
+            && !PathIsRelativeW(path.c_str());
+        if (allowed) {
+            const wchar_t* ext = PathFindExtensionW(path.c_str());
+            allowed = _wcsicmp(ext, L".xml") == 0 || _wcsicmp(ext, L".bsl") == 0;
+        }
+        bool under = false;
+        for (size_t i = 0; allowed && i < mNavRoots.size() && !under; ++i)
+            under = PathIsUnderRoot(mNavRoots[i], path);
+        TextFile file = (allowed && under) ? ReadTextFile(path.c_str(), 64 * 1024 * 1024) : TextFile();
+        if (!file.ok) {
+            std::wstring reply = L"{\"cmd\":\"openFailed\",\"path\":\"";
+            reply += JsonEscape(path);
+            reply += L"\"}";
+            PostJson(reply);
+            return;
+        }
+        mFilePath = path;
+        mEncoding = file.encoding;
+        mFileRevision = file.revision;
+        BslLoadRequest req;
+        req.content = file.text;
+        req.language = MonacoLanguageForPath(path.c_str());
+        req.dark = mDark;
+        req.fontSize = mFontSize;
+        req.readOnly = mReadOnly;
+        mNavigating = true;
+        Load(req);
+        if (mOnFileOpened) mOnFileOpened(mFilePath);
         return;
     }
 
@@ -893,9 +1348,21 @@ void CWebView2Host::OnWebMessage(const std::wstring& msg)
             return;
         }
         mEncoding = file.encoding;
+        mFileRevision = file.revision;
         std::wstring json = L"{\"cmd\":\"reverted\",\"ok\":true,\"content\":\"";
         json += JsonEscape(file.text);
-        json += L"\"}";
+        json += L"\"";
+        if (!mFormModulePath.empty()) {
+            TextFile module = ReadTextFile(mFormModulePath.c_str(), 64 * 1024 * 1024);
+            if (module.ok) {
+                mFormModuleEncoding = module.encoding;
+                mFormModuleRevision = module.revision;
+                json += L",\"formModule\":\"";
+                json += JsonEscape(module.text);
+                json += L"\"";
+            }
+        }
+        json += L"}";
         PostJson(json);
         return;
     }
@@ -905,10 +1372,61 @@ void CWebView2Host::OnWebMessage(const std::wstring& msg)
         return;
     }
 
+    if (JsonFieldEquals(msg, L"cmd", L"screenshot")) {
+        CaptureScreenshot();
+        return;
+    }
+
     if (JsonFieldEquals(msg, L"cmd", L"closeAck")) {
         bool allow = msg.find(L"\"allow\":true") != std::wstring::npos;
         if (mParentWin) PostMessageW(mParentWin, WM_BSLVIEW_CLOSE_ACK, allow ? 1 : 0, 0);
         return;
+    }
+}
+
+void CWebView2Host::CaptureScreenshot()
+{
+    if (!mWebView) {
+        PostJson(L"{\"cmd\":\"screenshotDone\",\"ok\":false}");
+        return;
+    }
+
+    std::wstring defName = FormSnapshotBaseName(mFilePath.c_str());
+    if (defName.empty()) defName = L"form";
+    defName += L".png";
+
+    wchar_t filePath[MAX_PATH] = {};
+    wcsncpy_s(filePath, defName.c_str(), _TRUNCATE);
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = mParentWin;
+    ofn.lpstrFilter = L"PNG files (*.png)\0*.png\0All files (*.*)\0*.*\0";
+    ofn.lpstrFile = filePath;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrDefExt = L"png";
+    ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+    ofn.lpstrTitle = L"Сохранить снимок формы";
+    if (!GetSaveFileNameW(&ofn)) {
+        PostJson(L"{\"cmd\":\"screenshotDone\",\"ok\":false}");
+        return;
+    }
+
+    IStream* stream = NULL;
+    HRESULT hr = SHCreateStreamOnFileEx(filePath, STGM_CREATE | STGM_WRITE | STGM_SHARE_DENY_WRITE,
+                                        FILE_ATTRIBUTE_NORMAL, TRUE, NULL, &stream);
+    if (FAILED(hr) || !stream) {
+        PostJson(L"{\"cmd\":\"screenshotDone\",\"ok\":false}");
+        return;
+    }
+
+    AddRef();
+    ScreenshotCompletedHandler* cb = new ScreenshotCompletedHandler(this, stream);
+    hr = mWebView->CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT_PNG, stream, cb);
+    cb->Release();
+    stream->Release();
+    if (FAILED(hr)) {
+        Release();
+        PostJson(L"{\"cmd\":\"screenshotDone\",\"ok\":false}");
     }
 }
 

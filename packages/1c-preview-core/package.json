@@ -10,6 +10,7 @@
     "./manifest.mjs": "./manifest.mjs",
     "./assets.manifest.json": "./assets.manifest.json",
     "./node/document.cjs": "./node/document.cjs",
+    "./layout/*": "./layout/*",
     "./browser/*": "./browser/*"
   },
   "scripts": {

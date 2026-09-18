@@ -10,12 +10,20 @@
 <body>
 <!-- ICON_SPRITE -->
 <header id="agent-header">
+  <button id="outline-toggle" type="button" aria-expanded="false" title="Показать панель элементов">☰</button>
   <strong id="agent-format">1C Form Viewer</strong>
   <span id="agent-path">Файл не открыт</span>
+  <button id="reload-preview" type="button" title="Перечитать файл с диска">⟳ Обновить</button>
 </header>
 <main id="agent-main">
-  <div id="agent-empty">Вызовите MCP-инструмент open_preview.</div>
-  <div id="preview" hidden></div>
+  <aside id="outline-pane" aria-label="Элементы формы">
+    <div id="outline-title">Элементы</div>
+    <div id="outline"></div>
+  </aside>
+  <section id="agent-preview-pane">
+    <div id="agent-empty">Вызовите MCP-инструмент open_preview.</div>
+    <div id="preview" hidden></div>
+  </section>
 </main>
 <!-- CORE_SCRIPTS -->
 <script src="agent-viewer.js"></script>

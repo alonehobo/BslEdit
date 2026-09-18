@@ -1,70 +1,59 @@
+# Build outputs
 *.wlx
 *.wlx64
+*.exe
 *.obj
 *.lib
 *.exp
 *.pdb
 *.ilk
+*.res
 *.zip
+*.vsix
+*.tgz
 obj32/
 obj64/
 objexe/
+objtest/
 bin/
-*.exe
-webview2.nupkg
-webview2sdk/
+artifacts/
+releases/
 build.log
 node_modules/
-*.tgz
 
-# Third-party assets fetched by tools/fetch-monaco.ps1
+# Downloaded at build time (tools/fetch-webview2.ps1, tools/fetch-monaco.ps1)
+webview2.nupkg
+webview2sdk/
 web/vs/
 web/marked.min.js
 web/turndown.min.js
 
-# Local build/test artifacts
-dist/
-objtest/
-testdata/scroll-test/
-# Literal %VAR% directories left behind when build scripts run under a shell
-# that does not expand cmd.exe variables (git-bash, WSL).
-%TEMP%/
-%SRC%/
-# Root service folders
-/.agents/
-/.claude/
-/.cursor/
-/.memory/
-/docs/
-/docs-1c-skills/
-/scripts/
-
-# Root service files
-/.cursorignore
-/.dev.env
-/.mcp.json
-/.v8-env.json
-/AGENTS.md
-/CLAUDE.md
-/mcp-settings.json
-/mcp-troubleshooting.md
-
-# Other local tool files
-/opencode.json
-
-# Build outputs of the packaged products
-artifacts/
-*.vsix
-packages/1c-form-viewer-vscode/media/
-packages/1c-form-viewer-vscode/mcp/
-
-# Generated copies of packages/1c-preview-core. Edit the core, never the copy;
-# `npm run sync --workspace 1c-preview-core` regenerates them all.
+# Generated copies of packages/1c-preview-core: edit the core, never the copy.
+# `npm run sync` regenerates them.
 /web/xml-util.js
 /web/form-preview.js
+/web/form-context.js
+/web/form-edit.js
+/web/form-validate.js
+/web/form-item-properties.js
 /web/template-preview.js
+/web/template-markup.js
+/web/xlsx-template.js
 /web/mxl-preview.js
+/web/metadata-preview.js
+/web/metadata-relations.js
 /web/providers.js
 /web/viewer.css
+/web/std-pictures/
 packages/1c-form-viewer-vscode/core/
+packages/1c-form-viewer-vscode/media/
+packages/1c-form-viewer-vscode/mcp/
 packages/1c-form-viewer/src/core/
+packages/1c-form-viewer/build/
+
+# Derived from 1C products; built locally, never published
+packages/1c-preview-core/browser/form-item-properties.js
+
+# Literal %VAR% directories left by build scripts under a non-cmd shell
+%TEMP%/
+%SRC%/

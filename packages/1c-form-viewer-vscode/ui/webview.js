@@ -39,11 +39,12 @@
         for (const other of outline.querySelectorAll('.selected')) other.classList.remove('selected');
         row.classList.add('selected');
         if (active && active.viewer && item.id) active.viewer.highlight(preview, item.id);
-        api.postMessage({ type: 'select', line: item.line || 0 });
       });
       outline.appendChild(row);
     }
   }
+
+  var loadedPath = null;
 
   /* Which module claims a file, and which one draws it, comes from the shared
    * registry in packages/1c-preview-core/browser/providers.js, so this webview
@@ -60,7 +61,18 @@
         showError(PreviewProviders.unsupportedMessage);
         return;
       }
-      const result = PreviewProviders.parse(entry, payload.content, { objectMeta: payload.objectMeta });
+      /* The extension re-sends the document when it changes on disk, and that
+       * has to keep the open tab; only a different file resets the view. */
+      if (loadedPath !== payload.path) PreviewProviders.resetViewState();
+      loadedPath = payload.path;
+      const result = PreviewProviders.parse(entry, payload.content, {
+        baseForm: payload.baseForm || '',
+        objectMeta: payload.objectMeta,
+        commonCommands: payload.commonCommands || {},
+        commonPictures: payload.commonPictures || {},
+        styleItems: payload.styleItems || {},
+        refMeta: payload.refMeta || {},
+      });
       if (!result || result.error || !result.model) {
         showError((result && result.error) || 'Не удалось построить модель документа.');
         return;

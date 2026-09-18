@@ -131,6 +131,20 @@ test('multi-line query strings keep their content', () => {
   assert.equal(out.replace(/^\t+/gm, ''), src);
 });
 
+test('multi-line strings keep trailing spaces inside the literal', () => {
+  const src = lines(
+    'Процедура П()', 'Text = "first  ', '|second  ', '|third";', 'КонецПроцедуры'
+  );
+  assert.equal(assertStable(src), lines(
+    'Процедура П()', '\tText = "first  ', '\t|second  ', '\t|third";', 'КонецПроцедуры'
+  ));
+});
+
+test('a whitespace-only line inside an open string is not erased', () => {
+  const src = lines('Text = "first', '   ', '|third";');
+  assert.equal(fmt(src), src);
+});
+
 test('commas inside string literals are left alone', () => {
   assert.equal(fmt('Ф(1,2,"а,б",3);', { formatSpaceAfterComma: true }), 'Ф(1, 2, "а,б", 3);');
 });

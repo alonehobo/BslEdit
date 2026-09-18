@@ -23,31 +23,86 @@ var BIG_FILE_LINES = 20000;
 var BIG_FILE_CHARS = 2 * 1024 * 1024;
 
 var host = (window.chrome && window.chrome.webview) ? window.chrome.webview : null;
+var CONTEXT_WAIT_MS = 1500;   // how long a form waits for its context under the overlay
 var pending = null;      // load request that arrived before Monaco finished loading
 var monacoReady = false;
 var editor = null;
 var model = null;
+var formModuleModel = null;
 var state = {
+    mdRelations: null,
+    /* The Roles tab of an object: null until opened, then 'loading', the
+     * list of roles, or 'failed'. mdRolesAvailable: the object is in a
+     * configuration export, so the tab is offered at all. */
+    mdRoles: null,
+    mdRolesAvailable: false,
+    /* Rights ticked in the Roles tab filter; kept across objects, so the same
+     * question («who may edit?») can be asked of the next object. */
+    mdRoleRights: {},
+    mdRoleFilterOpen: true,
     language: 'bsl',
     isDark: false,
     fontSize: 14,
     readOnly: true,
     isEditing: false,
     previewMode: false,
+    /* Set while a loaded document waits (for its form context) to be shown in
+     * the preview; the chrome already takes the preview's theme. */
+    previewPending: false,
     sortByName: false,
     dirty: false,
+    /* Unsaved edits of the form module, saved alongside the layout. */
+    moduleDirty: false,
     minimap: readStoredBool('bsl.minimap', true),
     bigFile: false,
     previewId: '',
     formSelectedId: '',
+    outlineKind: 'elements',
+    selectedAttributeId: '',
+    filePath: '',
+    formModule: '',
+    formModulePath: '',
+    formWorkbenchView: 'form',
+    sarifMode: false,
+    sarifRoot: '',
+    sarifSourcePath: '',
+    sarifSourceLang: '',
+    sarifSelectedId: '',
+    baseForm: '',
     objectMeta: '',
+    refMeta: {},
+    formTitle: '',
+    commonCommands: {},
+    commonPictures: {},
+    styleItems: {},
     outlineCollapsed: {}
 };
 var allItems = [];
+var formElementItems = [];
+var formAttributeItems = [];
+/* Parent index of each form element outline entry (-1 at the root) and the
+ * module procedures the form wires up, keyed by lower-cased handler name. */
+var formElementParents = [];
+var formHandlers = {};
+var formFitToken = 0;
 var baselineContent = '';
+var moduleBaselineContent = '';
 var suppressDirty = false;
 var pendingLeaveEdit = false;
 var pendingClose = false;
+var nextSaveId = 1;
+var pendingSaveSnapshots = {};
+var saveBatchFailed = false;
+var sarifReportContent = '';
+var sarifParsedModel = null;
+var sarifFileCache = new Map();
+var sarifPendingReads = {};
+var sarifNextReqId = 1;
+var sarifSourceMeta = null;
+var sarifBaseDecorations = [];
+var sarifSelectedDecorations = [];
+var sarifDecorationsKey = '';
+var syncingFromEditor = false;
 
 function readStoredBool(key, fallback) {
     try {
@@ -61,6 +116,14 @@ function readStoredBool(key, fallback) {
 function writeStoredBool(key, on) {
     try { localStorage.setItem(key, on ? '1' : '0'); } catch (e) { /* ignore */ }
 }
+
+var formFitWidth = readStoredBool('1cFormViewer.fitWidth', false);
+
+/* The theme is the user's choice made with the toolbar button, kept across
+ * files and sessions; until one is made the viewer is light, whatever the
+ * host or Windows prefer. */
+var THEME_KEY = 'bslview.darkTheme';
+function preferredDark() { return readStoredBool(THEME_KEY, false); }
 
 function isBslModule(lang) { return (lang || state.language) === 'bsl'; }
 function isBslFamily(lang) { return isBslModule(lang) || (lang || state.language) === 'bsl_query'; }
@@ -83,8 +146,29 @@ function providerById(id) {
     return PreviewProviders.byId(id);
 }
 
+var parseMemo = null;
+
 function parseWithProvider(p, content) {
-    return PreviewProviders.parse(p, content, { objectMeta: state.objectMeta });
+    var m = parseMemo;
+    if (m && m.p === p && m.content === content && m.baseForm === state.baseForm
+        && m.objectMeta === state.objectMeta && m.commonCommands === state.commonCommands
+        && m.commonPictures === state.commonPictures && m.styleItems === state.styleItems
+        && m.refMeta === state.refMeta && m.mdRelations === state.mdRelations) return m.result;
+    var result = parseWithProviderUncached(p, content);
+    parseMemo = {
+        p: p, content: content, result: result, baseForm: state.baseForm, objectMeta: state.objectMeta,
+        commonCommands: state.commonCommands, commonPictures: state.commonPictures,
+        styleItems: state.styleItems, refMeta: state.refMeta, mdRelations: state.mdRelations
+    };
+    return result;
+}
+
+function parseWithProviderUncached(p, content) {
+    return PreviewProviders.parse(p, content, {
+        baseForm: state.baseForm, objectMeta: state.objectMeta,
+        commonCommands: state.commonCommands, commonPictures: state.commonPictures,
+        styleItems: state.styleItems, refMeta: state.refMeta, relations: state.mdRelations
+    });
 }
 
 /* The provider claiming the file currently loaded, or null for plain source. */
@@ -101,6 +185,15 @@ function previewView() {
 
 function isFormView() { var p = currentProvider(); return !!(p && p.id === 'form'); }
 
+function formModuleOpen() {
+    return !!(state.previewMode && isFormView() && state.formWorkbenchView === 'module');
+}
+
+/* The form layout and its module are one document for saving and closing. */
+function anyDirty() {
+    return !!(state.dirty || state.moduleDirty);
+}
+
 /* True whenever a provider owns the view, i.e. the editor is replaced rather
  * than split with the preview iframe. */
 function isDocPreview() { return !!currentProvider(); }
@@ -109,11 +202,30 @@ function isDocPreview() { return !!currentProvider(); }
  * standalone editor may still be in its global editing session underneath,
  * but saving is allowed only after the user switches back to the XML/source. */
 function sourceEditingActive() {
-    return !!(state.isEditing && !(state.previewMode && isDocPreview()));
+    return !!(!state.sarifMode && state.isEditing
+        && (!(state.previewMode && isDocPreview()) || formModuleOpen()));
+}
+
+function languageForPath(path) {
+    var m = String(path || '').toLowerCase().match(/\.([^.\\/]+)$/), ext = m ? m[1] : '';
+    if (ext === 'bsl' || ext === 'os') return 'bsl';
+    if (ext === 'sdbl' || ext === 'query') return 'bsl_query';
+    if (ext === 'json' || ext === 'sarif') return 'json';
+    if (ext === 'xml') return 'xml';
+    if (ext === 'md' || ext === 'markdown') return 'markdown';
+    if (ext === 'ps1' || ext === 'psm1' || ext === 'psd1') return 'powershell';
+    if (ext === 'html' || ext === 'htm') return 'html';
+    return 'plaintext';
+}
+
+function severityFor(level) {
+    if (!window.monaco || !monaco.MarkerSeverity) return level === 'error' ? 8 : (level === 'warning' ? 4 : 2);
+    return level === 'error' ? monaco.MarkerSeverity.Error :
+        (level === 'warning' ? monaco.MarkerSeverity.Warning : monaco.MarkerSeverity.Info);
 }
 
 /* True when the outline is a collapsible tree rather than a flat list. */
-function docTree() { var p = currentProvider(); return !!(p && p.tree); }
+function docTree() { var p = currentProvider(); return !!(!formModuleOpen() && p && p.tree); }
 
 /* Only a real 1C form mockup must always render as light UI chrome (it stands
  * in for the actual application window). A table-document (template) preview
@@ -121,7 +233,8 @@ function docTree() { var p = currentProvider(); return !!(p && p.tree); }
  * other file — it must not silently flip when previewMode toggles. */
 function formPreviewOpen() {
     var p = currentProvider();
-    return !!(p && p.lightChrome && state.previewMode);
+    return !!(p && p.lightChrome && (state.previewMode || state.previewPending)
+        && state.formWorkbenchView !== 'module');
 }
 function uiIsDark() { return formPreviewOpen() ? false : !!state.isDark; }
 function canPreviewLang() {
@@ -238,6 +351,14 @@ var FOLD_CLOSE = {
 
 function send(msg) { if (host) host.postMessage(msg); }
 
+/* The chrome theme for an incoming document, before applyLoad runs. A form
+ * opens in its light mockup, so theming it dark here flashed dark -> light. */
+function loadThemeClass(req) {
+    if (!preferredDark()) return 'theme-light';
+    var provider = PreviewProviders.detect(req.content || '', { language: req.language || 'bsl' });
+    return provider && provider.lightChrome ? 'theme-light' : 'theme-dark';
+}
+
 function onHostMessage(ev) {
     var d = ev.data;
     if (!d || typeof d !== 'object') return;
@@ -245,23 +366,30 @@ function onHostMessage(ev) {
         case 'load':
             /* Paint the page chrome before Monaco finishes so a dark WebView2
              * surface is not left empty while the bundle parses. */
-            document.documentElement.className = (d.theme === 'dark') ? 'theme-dark' : 'theme-light';
+            document.documentElement.className = loadThemeClass(d);
+            /* Fetch the markdown renderer in parallel with Monaco, not after it. */
+            if (d.language === 'markdown') loadMarked();
             if (monacoReady) applyLoad(d); else pending = d;
             break;
         case 'find':    doFind(d); break;
         case 'copy':    if (editor) editor.trigger('host', 'editor.action.clipboardCopyAction', null); break;
         case 'selectAll':
-            if (editor && model) {
-                var last = model.getLineCount();
-                editor.setSelection({ startLineNumber: 1, startColumn: 1, endLineNumber: last, endColumn: model.getLineMaxColumn(last) });
+            if (editor && editor.getModel()) {
+                var shownModel = editor.getModel();
+                var last = shownModel.getLineCount();
+                editor.setSelection({ startLineNumber: 1, startColumn: 1, endLineNumber: last, endColumn: shownModel.getLineMaxColumn(last) });
                 editor.focus();
             }
             break;
         case 'park':    parkEditor(); break;
-        case 'saved':   onSaveResult(d.ok); break;
+        case 'saved':   onSaveResult(d.ok, d.saveId, d.conflict, d.target); break;
         case 'reverted': onReverted(d); break;
+        case 'sourceContent': onSarifSourceContent(d); break;
+        case 'rootChosen': onSarifRootChosen(d); break;
         case 'pdfDone': clearPrintContent(); break;
+        case 'screenshotDone': finishFormScreenshot(!!d.ok); break;
         case 'confirmClose': requestClose(); break;
+        case 'openFailed': onOpenFailed(d); break;
     }
 }
 
@@ -673,8 +801,9 @@ function collectProcedureStarts(m) {
 }
 
 function foldAllProcedures(fold) {
-    if (!editor || !model || !isBslModule()) return;
-    var starts = collectProcedureStarts(model);
+    var activeModel = editor && editor.getModel();
+    if (!activeModel || (!isBslModule() && !formModuleOpen())) return;
+    var starts = collectProcedureStarts(activeModel);
     if (!starts.length) return;
     editor.trigger('bsl', fold ? 'editor.fold' : 'editor.unfold', { selectionLines: starts });
     editor.focus();
@@ -849,7 +978,7 @@ function defineJsonXml(monaco) {
 function editorOptions(big) {
     return {
         theme: state.isDark ? 'bsl-dark' : 'bsl-light',
-        readOnly: !state.isEditing,
+        readOnly: state.sarifMode || !state.isEditing,
         fontSize: state.fontSize,
         fontFamily: "Consolas, 'Courier New', monospace",
         fontLigatures: false,
@@ -880,53 +1009,250 @@ function editorOptions(big) {
     };
 }
 
+/* BSLEdit and the Total Commander viewer resolve a form's context with the
+ * shared form-context.js, the same module the MCP server runs. Configuration
+ * files are read through the host's read-only endpoint, which only exposes the
+ * opened form's configuration. The preview first paints from the form alone and
+ * repaints once the context arrives. The cache keeps configuration indexes for
+ * the life of the page, as the MCP server keeps them for its loader. */
+var FORM_CONTEXT_MAX_BYTES = 64 * 1024 * 1024;
+var formContextCache = {};
+var formContextToken = 0;
+var formContextPending = false;
+/* Lookups go out in batches to /batch, which the host serves off the UI
+ * thread; see FormContext.createHttpIo for the wire format. */
+var formContextIo = window.FormContext
+    ? FormContext.createHttpIo('https://bslcfg.invalid/file', 'https://bslcfg.invalid/batch') : null;
+
+/* Форма показывается сразу, а команды и картинки конфигурации доезжают
+ * отдельным проходом. Пока он идёт, значок держит пользователя в курсе, что
+ * эскиз ещё не окончательный. */
+function syncFormContextProgress() {
+    var badge = document.getElementById('form-context-progress');
+    if (!badge) return;
+    badge.hidden = !(formContextPending && formPreviewOpen()
+        && !document.documentElement.classList.contains('screenshot-mode'));
+}
+
+function setFormContextPending(pending) {
+    formContextPending = !!pending;
+    syncFormContextProgress();
+}
+
+function resolveFormContext(req) {
+    var token = ++formContextToken;
+    var filePath = req.path || '';
+    setFormContextPending(false);
+    if (!req.resolveContext || !window.FormContext || !/\.xml$/i.test(filePath)) return null;
+    /* Only a form reads its owner's metadata, styles and commands; an object
+     * descriptor or a template would only wait for context it never uses. */
+    var claimed = detectProvider(req.content || '');
+    if (!claimed || !claimed.usesObjectMeta) return null;
+    setFormContextPending(true);
+    return FormContext.createResolver(formContextIo, { maxBytes: FORM_CONTEXT_MAX_BYTES, cache: formContextCache })
+        .resolve(filePath, req.content || '')
+        .then(function (context) {
+            if (token !== formContextToken || state.filePath !== filePath) return;
+            setFormContextPending(false);
+            state.baseForm = context.baseForm;
+            state.objectMeta = context.objectMeta;
+            state.refMeta = context.refMeta || {};
+            state.commonCommands = context.commonCommands;
+            state.commonPictures = context.commonPictures;
+            state.styleItems = context.styleItems;
+            if (state.previewMode && isDocPreview()) {
+                refreshDocPreview();
+                allItems = [];
+                renderOutline();
+                setTimeout(refreshOutline, 0);
+            }
+        })
+        .catch(function (error) {
+            if (token === formContextToken) setFormContextPending(false);
+            if (window.console) console.warn('form context was not resolved', error);
+        });
+}
+
+/* An object window also shows what the rest of the configuration says about
+ * the object (registrars, subordinate catalogs, subsystems...). The window
+ * paints from the descriptor alone and repaints once the scan answers; scans
+ * stay cached per configuration for the life of the page. */
+var mdRelationsCache = {};
+var mdRelationsToken = 0;
+
+var mdRolesTarget = null;
+
+/* Roles read every Rights.xml of the configuration, so they load only when
+ * the Roles tab is opened, never with the object window itself. */
+function loadMdRoles() {
+    var target = mdRolesTarget;
+    if (!target || state.mdRoles || !state.mdRolesAvailable) return;
+    state.mdRoles = 'loading';
+    MetadataRelations.create(formContextIo, mdRelationsCache)
+        .loadRoles(target.path, target.kind, target.name)
+        .then(function (roles) {
+            if (mdRolesTarget !== target || state.filePath !== target.path) return;
+            state.mdRoles = roles || [];
+            if (!roles) state.mdRolesAvailable = false;
+            renderOutline();
+        }, function (error) {
+            if (mdRolesTarget !== target) return;
+            state.mdRoles = 'failed';
+            renderOutline();
+            if (window.console) console.warn('roles were not resolved', error);
+        });
+}
+
+function mdTabsActive() {
+    var p = currentProvider();
+    return !!(p && p.id === 'metadata' && isDocPreview() && state.mdRolesAvailable);
+}
+
+function resolveMdRelations(req) {
+    var token = ++mdRelationsToken;
+    var filePath = req.path || '';
+    state.mdRelations = null;
+    state.mdRoles = null;
+    state.mdRolesAvailable = false;
+    if (!window.MetadataRelations || !formContextIo || !/\.xml$/i.test(filePath)) return;
+    var claimed = detectProvider(req.content || '');
+    if (!claimed || claimed.id !== 'metadata') return;
+    var parsed = MetadataPreview.parse(req.content || '');
+    if (!parsed.model || /^External/.test(parsed.model.kind)) return;
+    state.mdRolesAvailable = true;
+    mdRolesTarget = { path: filePath, kind: parsed.model.kind, name: parsed.model.name, token: token };
+    MetadataRelations.create(formContextIo, mdRelationsCache)
+        .load(filePath, parsed.model.kind, parsed.model.name)
+        .then(function (relations) {
+            if (!relations || token !== mdRelationsToken || state.filePath !== filePath) return;
+            state.mdRelations = relations;
+            if (state.previewMode && isDocPreview()) {
+                refreshDocPreview();
+                allItems = [];
+                renderOutline();
+                setTimeout(refreshOutline, 0);
+            }
+        })
+        .catch(function (error) {
+            if (window.console) console.warn('object relations were not resolved', error);
+        });
+}
+
 function applyLoad(req) {
     var content = req.content || '';
     state.language = req.language || 'bsl';
-    state.isDark = (req.theme === 'dark');
+    state.isDark = preferredDark();
     state.fontSize = req.fontSize || 14;
     state.readOnly = (req.readOnly !== false);
     state.isEditing = !state.readOnly;
     state.previewMode = false;
+    state.filePath = req.path || '';
+    state.formTitle = req.formTitle || '';
+    state.formModule = req.formModule || '';
+    state.formModulePath = req.formModulePath || '';
+    state.formWorkbenchView = req.formView === 'module' && state.formModulePath ? 'module' : 'form';
+    state.baseForm = req.baseForm || '';
     state.objectMeta = req.objectMeta || '';
+    state.refMeta = req.refMeta || {};
+    state.commonCommands = req.commonCommands || {};
+    state.commonPictures = req.commonPictures || {};
+    state.styleItems = req.styleItems || {};
+    var contextReady = resolveFormContext(req);
+    resolveMdRelations(req);
+    var loadToken = formContextToken;
     var loaded = detectProvider(content);
     state.previewId = loaded ? loaded.id : '';
+    state.sarifMode = !!(loaded && loaded.id === 'sarif');
+    state.sarifRoot = '';
+    state.sarifSourcePath = '';
+    state.sarifSourceLang = '';
+    state.sarifSelectedId = '';
+    sarifReportContent = state.sarifMode ? content : '';
+    sarifParsedModel = null;
+    if (state.sarifMode) {
+        var sarifParsed = parseWithProvider(loaded, content);
+        sarifParsedModel = sarifParsed && sarifParsed.model || null;
+    }
+    sarifFileCache.clear();
+    sarifPendingReads = {};
+    sarifSourceMeta = null;
+    sarifDecorationsKey = '';
     state.formSelectedId = '';
+    state.outlineKind = 'elements';
+    state.selectedAttributeId = '';
+    formElementItems = [];
+    formAttributeItems = [];
     state.outlineCollapsed = {};
+    /* A different file starts with a clean preview: folded groups and the
+     * selected tab are keyed by element id, and those repeat across forms. */
+    PreviewProviders.resetViewState();
+    trackNavigation(state.filePath);
     state.dirty = false;
+    state.moduleDirty = false;
     baselineContent = content;
+    moduleBaselineContent = state.formModule;
     pendingLeaveEdit = false;
     hideSavePrompt();
 
     var big = content.length > BIG_FILE_CHARS;
     var old = model;
+    var oldFormModule = formModuleModel;
     model = monaco.editor.createModel(content, state.language);
+    formModuleModel = state.formModulePath
+        ? monaco.editor.createModel(state.formModule, 'bsl') : null;
     if (!big && model.getLineCount() > BIG_FILE_LINES) big = true;
     state.bigFile = !!big;
 
     ensureEditor(big);
     editor.setModel(model);
     if (old) old.dispose();
+    if (oldFormModule) oldFormModule.dispose();
 
     model.onDidChangeContent(function () {
         if (!suppressDirty) state.dirty = true;
         updateStatusBar();
         if (!applyingFromPreview && !suppressDirty) schedulePreviewRefresh();
     });
+    if (formModuleModel) formModuleModel.onDidChangeContent(function () {
+        if (!suppressDirty) state.moduleDirty = true;
+        updateStatusBar();
+    });
 
     // A reused instance may still be showing the previous file's UI state.
     document.getElementById('outline-filter').value = '';
     editor.setScrollPosition({ scrollTop: 0, scrollLeft: 0 });
 
+    /* A form opens in its light mockup. Theming the loading overlay and editor
+     * dark here and light once the preview shows flashed dark -> light on
+     * every form opened from a dark host. */
+    state.previewPending = isDocPreview();
     applyTheme();
     updateStatusBar();
-    finishFirstPaint();
-    setPreviewMode(state.language === 'markdown' || state.language === 'html' || isDocPreview());
-
-    /* Outline scanning walks every line, so let the editor paint first. */
     allItems = [];
     renderOutline();
-    setTimeout(refreshOutline, 0);
+
+    /* Keep the loading overlay up until the split view is complete: revealing
+     * the bare editor first and then the preview reads as several flashes. */
+    var show = function () {
+        if (loadToken !== formContextToken) return;
+        setPreviewMode(state.language === 'markdown' || state.language === 'html' || isDocPreview(),
+                       finishFirstPaint);
+        /* Outline scanning walks every line, so let the editor paint first. */
+        setTimeout(refreshOutline, 0);
+    };
+    /* A form drawn before its context arrives is drawn again once commands,
+     * pictures and titles resolve - a visible jump and twice the layout work.
+     * Usually the context is quick; wait for it briefly under the overlay and
+     * fall back to the bare form (updated later) only when it is slow. */
+    refreshHelp();
+    if (contextReady && isDocPreview()) {
+        var shown = false;
+        var once = function () { if (!shown) { shown = true; show(); } };
+        contextReady.then(once, once);
+        setTimeout(once, CONTEXT_WAIT_MS);
+    } else {
+        show();
+    }
 }
 
 /* Create the editor once, preferably while the parked warm instance is still
@@ -1005,7 +1331,9 @@ function parkEditor() {
     if (old) old.dispose();
     allItems = [];
     state.dirty = false;
+    state.moduleDirty = false;
     baselineContent = '';
+    moduleBaselineContent = '';
     pendingLeaveEdit = false;
     hideSavePrompt();
     if (state.previewMode) setPreviewMode(false);
@@ -1059,13 +1387,240 @@ function wireEditorScrollFix() {
     editor.onDidScrollChange(clampLinesContent);
 }
 
+// --------------------------------------------------------------- SARIF source
+
+function sarifDir(path) {
+    var at = String(path || '').lastIndexOf('\\');
+    if (at < 0) at = String(path || '').lastIndexOf('/');
+    return at >= 0 ? String(path).slice(0, at) : '';
+}
+
+function sarifRemapPath(path, selectedRoot, suggestedRoot) {
+    path = String(path || '').replace(/\//g, '\\');
+    selectedRoot = String(selectedRoot || '').replace(/[\\/]+$/, '');
+    if (!selectedRoot || !(/^[A-Za-z]:\\/.test(path) || /^\\\\/.test(path))) return path;
+    /* The report may be in Documents while sources live on Z:.  Its location
+     * therefore says nothing about the source root.  For a one-file report
+     * suggestedRoot is that file's directory, so choosing the corresponding
+     * directory on another machine still produces the expected file path. */
+    var originalRoot = String(suggestedRoot || '').replace(/[\\/]+$/, '');
+    if (originalRoot && (path.toLowerCase() === originalRoot.toLowerCase() ||
+        path.toLowerCase().indexOf(originalRoot.toLowerCase() + '\\') === 0))
+        return selectedRoot + path.slice(originalRoot.length);
+    return path;
+}
+
+function sarifResolvedPath(diag) {
+    var path = String(diag && diag.path || '').replace(/\//g, '\\');
+    if (/^[A-Za-z]:\\/.test(path) || /^\\\\/.test(path))
+        return sarifRemapPath(path, state.sarifRoot, sarifParsedModel && sarifParsedModel.suggestedRoot);
+    var base = state.sarifRoot || sarifDir(state.filePath);
+    return base ? base.replace(/[\\/]+$/, '') + '\\' + path : path;
+}
+
+function putSarifCache(path, value) {
+    if (sarifFileCache.has(path)) sarifFileCache.delete(path);
+    sarifFileCache.set(path, value);
+    while (sarifFileCache.size > 32) sarifFileCache.delete(sarifFileCache.keys().next().value);
+}
+
+function clearSarifError() {
+    var el = document.getElementById('sarif-source-error');
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+}
+
+function showSarifError(text) {
+    clearSarifError();
+    var editorEl = document.getElementById('editor');
+    var box = document.createElement('div');
+    box.id = 'sarif-source-error';
+    box.className = 'sf-source-error';
+    box.innerHTML = '<span>' + esc(text) + '</span><button type="button">Выбрать корень…</button>';
+    var button = box.querySelector('button');
+    if (button) button.onclick = function () {
+        send({ cmd: 'chooseRoot', suggest: sarifParsedModel && sarifParsedModel.suggestedRoot || sarifDir(state.filePath) });
+    };
+    editorEl.appendChild(box);
+    setSarifStatus(text, true);
+}
+
+function setSarifStatus(text, error) {
+    var el = document.getElementById('sb-status');
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('error', !!error);
+}
+
+function setSarifModel(content, language, path, encoding) {
+    clearSarifError();
+    var old = model;
+    model = monaco.editor.createModel(content, language);
+    editor.setModel(model);
+    editor.updateOptions({ readOnly: true });
+    if (old) old.dispose();
+    state.sarifSourcePath = path || '';
+    state.sarifSourceLang = language || '';
+    sarifSourceMeta = path ? { encoding: encoding || '', eol: SarifPreview._test.detectEol(content) } : null;
+    sarifDecorationsKey = '';
+    updateStatusBar();
+    refreshOutline();
+    editor.layout();
+}
+
+function toggleSarifSource() {
+    if (!state.sarifMode) return;
+    if (state.sarifSourcePath) {
+        setSarifModel(sarifReportContent, 'json', '', '');
+        setSarifStatus('Исходник отчёта', false);
+    } else if (state.sarifSelectedId && sarifParsedModel) {
+        var diag = sarifParsedModel.diagnostics.find(function (d) { return d.id === state.sarifSelectedId; });
+        if (diag) onSarifSelect(diag);
+    }
+    applyChrome();
+}
+
+function onSarifSelect(diag) {
+    if (!diag || !state.sarifMode) return;
+    state.sarifSelectedId = diag.id;
+    var path = sarifResolvedPath(diag);
+    if (path === state.sarifSourcePath) {
+        focusSarifDiagnostic(diag);
+        return;
+    }
+    var cached = sarifFileCache.get(path);
+    if (cached) {
+        putSarifCache(path, cached);
+        setSarifModel(cached.content, languageForPath(path), path, cached.encoding);
+        focusSarifDiagnostic(diag);
+        return;
+    }
+    var reqId = String(sarifNextReqId++);
+    sarifPendingReads[reqId] = { diag: diag, path: path };
+    setSarifStatus('Загрузка ' + path + '…', false);
+    send({ cmd: 'readSource', reqId: reqId, path: path });
+}
+
+function onSarifSourceContent(reply) {
+    var pendingRead = sarifPendingReads[String(reply.reqId || '')];
+    if (!pendingRead) return;
+    delete sarifPendingReads[String(reply.reqId || '')];
+    if (!reply.ok) {
+        showSarifError('Не удалось открыть исходник: ' + (reply.error || pendingRead.path));
+        return;
+    }
+    var value = { content: reply.content || '', encoding: reply.encoding || '' };
+    putSarifCache(pendingRead.path, value);
+    setSarifModel(value.content, languageForPath(pendingRead.path), pendingRead.path, value.encoding);
+    focusSarifDiagnostic(pendingRead.diag);
+}
+
+function onSarifRootChosen(reply) {
+    if (!reply || !reply.ok || !reply.path) return;
+    state.sarifRoot = reply.path;
+    var diag = sarifParsedModel && sarifParsedModel.diagnostics.find(function (d) { return d.id === state.sarifSelectedId; });
+    if (diag) onSarifSelect(diag);
+}
+
+function updateSarifDecorations(selected) {
+    if (!editor || !model || !sarifParsedModel || !state.sarifSourcePath) return;
+    var pathLower = state.sarifSourcePath.toLowerCase();
+    var fileDiags = sarifParsedModel.diagnostics.filter(function (d) {
+        return sarifResolvedPath(d).toLowerCase() === pathLower;
+    });
+    var key = pathLower + '|' + fileDiags.map(function (d) { return d.id; }).join(',');
+    if (key !== sarifDecorationsKey) {
+        sarifDecorationsKey = key;
+        monaco.editor.setModelMarkers(model, 'sarif', fileDiags.map(function (d) {
+            var col = d.col || 1;
+            return { startLineNumber:d.line, startColumn:col, endLineNumber:d.endLine || d.line,
+                endColumn:d.endCol || col + 1, message:(d.ruleTitle || d.ruleId) + ': ' + (d.message || ''),
+                severity:severityFor(d.level), source:'sarif', code:String(d.id) };
+        }));
+        sarifBaseDecorations = editor.deltaDecorations(sarifBaseDecorations,
+            fileDiags.filter(SarifPreview._test.isShortDiagnosticRange).map(function (d) {
+                var col=d.col||1;
+                return { range:new monaco.Range(d.line,col,d.endLine||d.line,d.endCol||col+1), options:{
+                    isWholeLine:!d.col, className:'sf-diag-line', inlineClassName:'sf-diag-inline',
+                    overviewRuler:{color:'#ff6b6b',position:monaco.editor.OverviewRulerLane.Right},
+                    minimap:{color:'#ff6b6b',position:monaco.editor.MinimapPosition.Inline} } };
+            }));
+    }
+    var selectedList = selected && SarifPreview._test.isShortDiagnosticRange(selected) ? [selected] : [];
+    sarifSelectedDecorations = editor.deltaDecorations(sarifSelectedDecorations, selectedList.map(function(d){
+        var col=d.col||1;
+        return { range:new monaco.Range(d.line,col,d.endLine||d.line,d.endCol||col+1), options:{
+            isWholeLine:!d.col,className:'sf-diag-sel-line',inlineClassName:'sf-diag-sel-inline',
+            overviewRuler:{color:'#4f8cff',position:monaco.editor.OverviewRulerLane.Right},
+            minimap:{color:'#4f8cff',position:monaco.editor.MinimapPosition.Inline} } };
+    }));
+}
+
+function focusSarifDiagnostic(diag) {
+    if (!editor || !diag) return;
+    syncingFromEditor = true;
+    updateSarifDecorations(diag);
+    editor.revealLineNearTop(diag.line);
+    editor.setPosition({ lineNumber: diag.line, column: diag.col || 1 });
+    syncingFromEditor = false;
+    setSarifStatus((diag.ruleTitle || diag.ruleId) + ': ' + (diag.message || ''), false);
+    SarifPreview.highlight(formPreviewEl(), diag.id);
+    updateStatusBar();
+}
+
+function onSarifCursorPosition() {
+    if (!state.sarifMode || syncingFromEditor || !state.sarifSourcePath || !sarifParsedModel || !editor) return;
+    var line = editor.getPosition().lineNumber, path = state.sarifSourcePath.toLowerCase();
+    var diag = sarifParsedModel.diagnostics.find(function(d){
+        return sarifResolvedPath(d).toLowerCase()===path && line>=d.line && line<=(d.endLine||d.line);
+    });
+    if (!diag) return;
+    state.sarifSelectedId = diag.id;
+    updateSarifDecorations(diag);
+    SarifPreview.reveal(formPreviewEl(), diag.id);
+    setSarifStatus((diag.ruleTitle || diag.ruleId) + ': ' + (diag.message || ''), false);
+}
+
 // -------------------------------------------------------------- status bar
 
 function updateStatusBar() {
     var posEl = document.getElementById('sb-pos');
     var selEl = document.getElementById('sb-sel');
     var linesEl = document.getElementById('sb-lines');
+    var statusEl = document.getElementById('sb-status');
+    var summaryEl = document.getElementById('sb-summary');
+    var fileEl = document.getElementById('sb-file');
     if (!posEl || !selEl || !linesEl) return;
+
+    if (summaryEl) {
+        var c = state.sarifMode && sarifParsedModel && sarifParsedModel.counts;
+        summaryEl.textContent = c ? ('Всего: ' + c.total + ' · Ошибок: ' + c.error +
+            ' · Предупреждений: ' + c.warning + ' · Заметок: ' + (c.note + c.none) +
+            (c.suppressed ? ' · Подавлено: ' + c.suppressed : '')) : '';
+    }
+    if (fileEl) {
+        var shortName = state.sarifSourcePath.replace(/^.*[\\/]/, '');
+        var enc = sarifSourceMeta && sarifSourceMeta.encoding;
+        if (enc) enc = ({utf8bom:'Utf8Bom',utf8:'Utf8',utf16le:'Utf16Le',utf16be:'Utf16Be',ansi:'Ansi'})[enc] || enc;
+        fileEl.textContent = state.sarifMode && shortName ? (shortName + (enc ? ' · ' + enc : '') +
+            (sarifSourceMeta ? ', ' + sarifSourceMeta.eol : '')) : '';
+    }
+    if (!state.sarifMode && statusEl) { statusEl.textContent = ''; statusEl.classList.remove('error'); }
+
+    /* Over a form mockup the hidden XML caret means nothing: show where the
+     * selected element sits and what it is bound to instead. */
+    var crumbsEl = document.getElementById('sb-crumbs');
+    var elementEl = document.getElementById('sb-element');
+    var formStatus = !state.sarifMode && formOutlineActive();
+    posEl.style.display = linesEl.style.display = formStatus ? 'none' : '';
+    if (crumbsEl && elementEl) {
+        crumbsEl.innerHTML = '';
+        elementEl.textContent = '';
+        if (formStatus) renderFormStatus(crumbsEl, elementEl);
+    }
+    if (formStatus) {
+        selEl.textContent = '';
+        return;
+    }
 
     var m = (editor && editor.getModel()) || model;
     if (!m) {
@@ -1091,8 +1646,35 @@ function updateStatusBar() {
     linesEl.textContent = 'Строк: ' + m.getLineCount();
 }
 
+function renderFormStatus(crumbsEl, elementEl) {
+    if (state.outlineKind === 'attributes') {
+        for (var a = 0; a < formAttributeItems.length; a++) {
+            if (formAttributeItems[a].id !== state.selectedAttributeId) continue;
+            crumbsEl.textContent = 'Реквизиты \u203A ' + formAttributeItems[a].name;
+            elementEl.textContent = formAttributeItems[a].typeName || '';
+            return;
+        }
+        return;
+    }
+    var index = formElementIndex(state.formSelectedId);
+    if (index < 0) return;
+    var chain = formElementPath(index);
+    var h = [];
+    for (var c = 0; c < chain.length; c++) {
+        if (c) h.push('<span class="sb-crumb-sep">\u203A</span>');
+        h.push('<a href="#" class="sb-crumb" data-crumb-id="', esc(String(chain[c].id)), '" title="',
+            esc(String(chain[c].name)), '">', esc(String(formElementLabel(chain[c]))), '</a>');
+    }
+    crumbsEl.innerHTML = h.join('');
+    var entry = formElementItems[index];
+    var view = previewView();
+    var kindLabel = entry.tag && view && view.itemKindTitle ? view.itemKindTitle(entry.tag) : entry.tag;
+    elementEl.textContent = [kindLabel, entry.dataPath, entry.typeName]
+        .filter(function (part) { return !!part; }).join(' \u00B7 ');
+}
+
 function wireStatusBar() {
-    editor.onDidChangeCursorPosition(updateStatusBar);
+    editor.onDidChangeCursorPosition(function () { updateStatusBar(); onSarifCursorPosition(); });
     editor.onDidChangeCursorSelection(function () {
         updateStatusBar();
         syncHighlightFromEditor();
@@ -1106,24 +1688,233 @@ function wireStatusBar() {
  * to parseOutline() which scans BSL source for procedures and regions. */
 function parseDocOutline() {
     allItems = [];
+    formElementItems = [];
+    formAttributeItems = [];
+    formElementParents = [];
+    formHandlers = {};
     var p = currentProvider();
-    if (!p || !model) return;
+    if (!p || !model || p.id === 'sarif') return;
     var src = model.getValue();
     var parsed = parseWithProvider(p, src);
     if (!parsed || !parsed.model) return;
-    allItems = window[p.viewer].outline(parsed.model, src);
+    formElementItems = window[p.viewer].outline(parsed.model, src);
+    if (p.id === 'form') {
+        formElementParents = outlineParents(formElementItems);
+        if (window[p.viewer].attributeOutline)
+            formAttributeItems = window[p.viewer].attributeOutline(parsed.model, src);
+        if (window[p.viewer].formHandlerIndex)
+            formHandlers = window[p.viewer].formHandlerIndex(parsed.model, formElementItems);
+    }
+    allItems = p.id === 'form' && state.outlineKind === 'attributes'
+        ? formAttributeItems : formElementItems;
+}
+
+function outlineParents(items) {
+    var parents = [], stack = [];
+    for (var i = 0; i < items.length; i++) {
+        var depth = items[i].depth || 0;
+        stack.length = depth;
+        parents.push(depth > 0 && stack[depth - 1] != null ? stack[depth - 1] : -1);
+        items[i].outlineIndex = i;
+        stack[depth] = i;
+    }
+    return parents;
+}
+
+function formElementIndex(id) {
+    for (var i = 0; id && i < formElementItems.length; i++)
+        if (formElementItems[i].id === id) return i;
+    return -1;
+}
+
+/* Ancestors a reader recognises: pages, tables and captioned groups. The
+ * Pages container and untitled technical groups only add noise, so the path
+ * reads «30% › Сведения о доходах › Сумма» rather than the full XML nesting. */
+function formElementPath(index) {
+    var chain = [];
+    for (var i = index; i >= 0 && i < formElementItems.length; i = formElementParents[i]) {
+        var entry = formElementItems[i];
+        if (i === index || (entry.tag !== 'Pages' && (entry.title || entry.tag === 'Page' || entry.tag === 'Table')))
+            chain.unshift(entry);
+    }
+    return chain;
+}
+
+function formElementLabel(entry) { return entry.title || entry.name; }
+
+/* DataPath's first segment names a form attribute, or a table whose own
+ * DataPath leads to one (column paths look like «Товары.Номенклатура»). */
+function attributeIdForDataPath(path) {
+    for (var guard = 0; path && guard < 8; guard++) {
+        var head = String(path).split('.')[0].trim().toLowerCase();
+        if (!head) return '';
+        for (var a = 0; a < formAttributeItems.length; a++)
+            if (String(formAttributeItems[a].name).toLowerCase() === head) return formAttributeItems[a].id;
+        var next = '';
+        for (var e = 0; e < formElementItems.length; e++) {
+            var el = formElementItems[e];
+            if (el.dataPath && el.dataPath !== path && String(el.name).toLowerCase() === head) { next = el.dataPath; break; }
+        }
+        path = next;
+    }
+    return '';
+}
+
+/* Selects a form element from outside the tree (status bar crumbs, module
+ * handler links): editor line, mockup highlight and outline row together. */
+function selectFormElement(id) {
+    var index = formElementIndex(id);
+    if (index < 0) return;
+    var entry = formElementItems[index];
+    /* A filter left over from the other list (or one the target does not
+     * match) would hide the row being selected. */
+    var input = document.getElementById('outline-filter');
+    var filterText = input ? input.value.toLowerCase() : '';
+    var haystack = (entry.name + ' ' + (entry.title || '') + ' ' + (entry.tag || '') + ' ' + (entry.dataPath || '')).toLowerCase();
+    if (state.outlineKind !== 'elements' || (filterText && haystack.indexOf(filterText) < 0)) {
+        state.outlineKind = 'elements';
+        if (input) input.value = '';
+    }
+    if (editor && model && editor.getModel() === model) {
+        editor.revealLineInCenter(entry.line);
+        editor.setPosition({ lineNumber: entry.line, column: 1 });
+    }
+    var view = previewView();
+    if (view && view.highlight) view.highlight(formPreviewEl(), id);
+    state.formSelectedId = String(id);
+    renderOutline();
+    highlightFormOutline(id);
+    scheduleFormFit();
+}
+
+function formOutlineActive() {
+    var p = currentProvider();
+    return !!(p && p.id === 'form' && isDocPreview() && !formModuleOpen());
+}
+
+function selectOutlineKind(kind) {
+    if (mdTabsActive() && (kind === 'elements' || kind === 'roles')) {
+        state.outlineKind = kind;
+        var filterInput = document.getElementById('outline-filter');
+        if (filterInput) filterInput.value = '';
+        if (kind === 'roles') loadMdRoles();
+        renderOutline();
+        return;
+    }
+    if (!formOutlineActive() || (kind !== 'elements' && kind !== 'attributes')) return;
+    state.outlineKind = kind;
+    allItems = kind === 'attributes' ? formAttributeItems : formElementItems;
+    var input = document.getElementById('outline-filter');
+    if (input) input.value = '';
+    renderOutline();
+}
+
+function renderPropertyInspector() {
+    var host = document.getElementById('property-inspector');
+    if (!host) return;
+    var propertyHandle = document.getElementById('property-resize-handle');
+    function hideInspector() {
+        host.hidden = true;
+        host.innerHTML = '';
+        if (propertyHandle) propertyHandle.style.display = 'none';
+        updateStatusBar();
+    }
+    var view = previewView();
+    /* Besides the form, any tree provider may describe its selected node. */
+    var generic = !formOutlineActive() && docTree() && view && view.inspector;
+    if (!formOutlineActive() && !generic) {
+        hideInspector();
+        return;
+    }
+    var entry = null;
+    var attributesKind = !generic && state.outlineKind === 'attributes';
+    var selectedId = attributesKind ? state.selectedAttributeId : state.formSelectedId;
+    var source = generic ? allItems : attributesKind ? formAttributeItems : formElementItems;
+    if (!selectedId) { hideInspector(); return; }
+    for (var i = 0; i < source.length; i++) {
+        if (source[i].id === selectedId) { entry = source[i]; break; }
+    }
+    var inspector = generic ? 'inspector' : attributesKind ? 'attributeInspector' : 'elementInspector';
+    var info = entry && view && view[inspector] ? view[inspector](entry) : null;
+    if (!info) { hideInspector(); return; }
+    var h = ['<div class="attribute-inspector-head"><div><strong>', esc(String(info.name || 'Реквизит')),
+        '</strong>', info.typeName ? '<span>' + esc(String(info.typeName)) + '</span>' : '',
+        '</div><button type="button" id="property-inspector-close" title="Свернуть инспектор">&times;</button></div>',
+        info.open && host ? '<a class="inspector-open-link" href="#" data-open-related="' + esc(String(info.open)) +
+            '">' + esc(String(info.openTitle || 'Открыть')) + '</a>' : '',
+        '<div class="attribute-inspector-title">', esc(String(info.heading)),
+        '<span>', info.rows.length, '</span></div>'];
+    if (!info.rows.length) {
+        h.push('<div class="attribute-inspector-empty">',
+            info.isDiff ? 'Нет отличающихся свойств' : 'Нет явно заданных свойств', '</div>');
+    } else {
+        h.push('<dl class="attribute-properties">');
+        for (var r = 0; r < info.rows.length; r++) {
+            var row = info.rows[r];
+            h.push('<div class="attribute-property"><dt>', esc(String(row.label)), '</dt><dd title="',
+                esc(String(row.value)), '">');
+            if (row.color) h.push('<span class="property-color" style="background:', esc(String(row.color)), '"></span>');
+            if (row.changed) h.push('<span class="attribute-before">', esc(String(row.before)), '</span><span class="attribute-arrow">→</span>');
+            var attributeId = row.link === 'data-path' ? attributeIdForDataPath(row.value) : '';
+            if (attributeId)
+                h.push('<a class="attribute-value data-path-link" href="#" data-attribute-id="', esc(attributeId),
+                    '" title="Показать реквизит">', esc(String(row.value)), '</a></dd></div>');
+            else
+                h.push('<span class="attribute-value">', esc(String(row.value)), '</span></dd></div>');
+        }
+        h.push('</dl>');
+    }
+    for (var g = 0; info.groups && g < info.groups.length; g++) {
+        var group = info.groups[g];
+        h.push('<details class="attribute-detail"', group.open ? ' open' : '', '><summary>', esc(String(group.label)), '</summary><dl>');
+        for (var gi = 0; gi < group.items.length; gi++) {
+            var detail = group.items[gi];
+            h.push('<div><dt>', esc(String(detail.label)), '</dt><dd>');
+            if (detail.link === 'form-handler' && findFormHandlerLine(detail.handler)) {
+                h.push('<a class="form-handler-link" href="#" data-form-handler="',
+                    esc(String(detail.handler)), '" title="Перейти к обработчику в модуле формы">',
+                    esc(String(detail.value)), '</a>');
+            } else {
+                h.push(esc(String(detail.value)));
+            }
+            h.push('</dd></div>');
+        }
+        h.push('</dl></details>');
+    }
+    host.innerHTML = h.join('');
+    host.hidden = false;
+    if (propertyHandle) propertyHandle.style.display = 'block';
+    updateStatusBar();
+}
+
+function findFormHandlerLine(name) {
+    if (!formModuleModel || !name) return 0;
+    var escaped = String(name).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!escaped) return 0;
+    var re = new RegExp('^\\s*(?:Асинх\\s+|Async\\s+)?(?:Процедура|Procedure|Функция|Function)\\s+' +
+        escaped + '(?![a-zA-Z\\u0410-\\u044F_\\u0401\\u04510-9])', 'i');
+    var lines = formModuleModel.getLinesContent();
+    for (var i = 0; i < lines.length; i++) {
+        if (re.test(lines[i])) return i + 1;
+    }
+    return 0;
 }
 
 /* Rebuilds whichever outline the loaded file has; a no-op for everything else. */
 function refreshOutline() {
-    if (state.language === 'bsl') parseOutline();
+    if (formModuleOpen()) parseOutline(formModuleModel);
+    else if (state.sarifMode && state.sarifSourceLang === 'bsl') parseOutline();
+    else if (state.sarifMode) { allItems = []; }
+    else if (state.language === 'bsl') parseOutline();
     else if (isDocPreview()) parseDocOutline();
     else return;
     renderOutline();
 }
 
-function parseOutline() {
-    var lines = model.getLinesContent();
+function parseOutline(sourceModel) {
+    var outlineModel = sourceModel || model;
+    if (!outlineModel) { allItems = []; return; }
+    var lines = outlineModel.getLinesContent();
     var procRe = /^\s*(?:Асинх\s+|Async\s+)?(Процедура|Procedure|Функция|Function)\s+([a-zA-Z\u0410-\u044F_\u0401\u0451][a-zA-Z\u0410-\u044F_\u0401\u04510-9]*)/i;
     var regionRe = /^\s*#\s*(Область|Region)\s+(.*)/i;
     var inProc = false;
@@ -1158,18 +1949,68 @@ function esc(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/* The rows the outline currently shows, in their shown order: data-idx
+ * points into this list. */
+var shownOutlineItems = [];
+
+/* A provider whose outline is a tree of typed groups (the object window)
+ * sorts by name inside each group and keeps the tree. */
+function sortKeepsTree() {
+    var view = docTree() ? previewView() : null;
+    return !!(view && view.outlineSortByName);
+}
+
 function renderOutline() {
+    if (formOutlineActive())
+        allItems = state.outlineKind === 'attributes' ? formAttributeItems : formElementItems;
+    var rolesTab = mdTabsActive() && state.outlineKind === 'roles';
+    var roleRights = rolesTab && Array.isArray(state.mdRoles) ? MetadataPreview.rightsInOrder(state.mdRoles) : [];
+    var ticked = roleRights.filter(function (r) { return state.mdRoleRights[r]; });
+    if (mdTabsActive()) {
+        /* A role stays when it grants any of the ticked rights. */
+        allItems = rolesTab ? (Array.isArray(state.mdRoles) ? MetadataPreview.rolesOutline(state.mdRoles.filter(function (r) {
+            return !ticked.length || r.rights.some(function (x) { return state.mdRoleRights[x.name]; });
+        })) : []) : formElementItems;
+    }
     var items = allItems;
-    if (state.sortByName) {
+    var sortView = previewView();
+    if (state.sortByName && sortKeepsTree()) {
+        items = sortView.outlineSortByName(allItems);
+    } else if (state.sortByName) {
         items = items.filter(function (x) { return x.type !== 'region'; })
                      .sort(function (a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
     }
+    shownOutlineItems = items;
     var cnt = 0;
     for (var i = 0; i < allItems.length; i++) if (allItems[i].type !== 'region') cnt++;
 
-    document.getElementById('outline-count').textContent = (isDocPreview() ? 'Элементы (' : 'Структура (') + cnt + ')';
+    var outlineKinds = document.getElementById('outline-kinds');
+    outlineKinds.hidden = !formOutlineActive() && !mdTabsActive();
+    /* A form has Elements/Attributes, an object Structure/Roles. */
+    var objectTabs = mdTabsActive();
+    var kindButton = function (kind) { return outlineKinds.querySelector('button[data-outline-kind="' + kind + '"]'); };
+    kindButton('elements').textContent = objectTabs ? 'Структура' : 'Элементы';
+    kindButton('attributes').hidden = objectTabs;
+    kindButton('roles').hidden = !objectTabs;
+    var kindButtons = outlineKinds.querySelectorAll('button[data-outline-kind]');
+    for (var kb = 0; kb < kindButtons.length; kb++) {
+        var kindOn = kindButtons[kb].getAttribute('data-outline-kind') === state.outlineKind;
+        kindButtons[kb].classList.toggle('active', kindOn);
+        kindButtons[kb].setAttribute('aria-selected', kindOn ? 'true' : 'false');
+    }
+    state.outlineCountPrefix = rolesTab ? 'Роли' : formOutlineActive()
+        ? (state.outlineKind === 'attributes' ? 'Реквизиты' : 'Элементы')
+        : (isDocPreview() && !formModuleOpen() ? 'Элементы' : 'Структура');
+    state.outlineTotal = cnt;
+    document.getElementById('outline-count').textContent = state.outlineCountPrefix + ' (' + cnt
+        + (rolesTab && ticked.length ? ' из ' + state.mdRoles.length : '') + ')';
     var sortBtn = document.getElementById('sort-btn');
-    setIcon('sort-btn', state.sortByName ? 'sort-numbers' : 'sort-letters');
+    var attributeMode = formOutlineActive() && state.outlineKind === 'attributes';
+    document.getElementById('outline-fold').hidden = attributeMode;
+    document.getElementById('outline-unfold').hidden = attributeMode;
+    /* The shell's own pictures, not the platform's: the list follows the
+     * document's structure (an indented tree) or is sorted by name (A→Z). */
+    setIcon('sort-btn', state.sortByName ? 'sort-letters' : 'outline');
     sortBtn.title = state.sortByName ? 'Сортировка: по имени (нажмите — по порядку)' : 'Сортировка: по порядку (нажмите — по имени)';
     var h = [];
     for (var j = 0; j < items.length; j++) {
@@ -1180,24 +2021,45 @@ function renderOutline() {
             var iconCls = 'icon-form-etc';
             var iconName = 'box';
             var iconCh = '';
+            var iconAsset = '';
+            var iconSprite = '';
+            var ownIcons = previewView();
             if (it.tag === 'TemplateArea') {
                 var tic = (window.TemplatePreview && TemplatePreview.outlineIcon)
                     ? TemplatePreview.outlineIcon(it)
                     : { cls: 'icon-form-tbl', ch: 'A' };
                 iconCls = tic.cls;
                 iconCh = tic.ch;
+            } else if (it.itemKind === 'metadata' && ownIcons && ownIcons.outlineIcon) {
+                var mic = ownIcons.outlineIcon(it);
+                iconCls = mic.cls;
+                iconName = mic.icon || 'box';
+                iconAsset = mic.asset || '';
+                iconCh = mic.ch || '';
+                iconSprite = mic.sprite || '';
+            } else if (attributeMode && it.itemKind === 'attribute') {
+                var aic = (window.FormPreview && FormPreview.attributeIcon)
+                    ? FormPreview.attributeIcon(it.typeName)
+                    : { cls: 'icon-form-etc', icon: 'box' };
+                iconCls = aic.cls;
+                iconName = aic.icon || 'box';
+                iconCh = aic.ch || '';
+                iconAsset = aic.asset || '';
             } else {
                 var fic = (window.FormPreview && FormPreview.iconFor)
                     ? FormPreview.iconFor(it.tag)
                     : { cls: 'icon-form-etc', icon: 'box' };
                 iconCls = fic.cls;
                 iconName = fic.icon || 'box';
+                iconAsset = fic.asset || '';
             }
             var pad = 8 + (it.depth || 0) * 12;
             var shown = it.title || it.name;
-            var treeOn = docTree() && !state.sortByName;
+            var treeOn = docTree() && (!state.sortByName || sortKeepsTree()) && !attributeMode;
             h.push('<div class="proc-item form-el" data-line="', it.line, '" data-id="', esc(it.id || ''),
-                   '" data-idx="', j, '" data-name="', esc((it.name + ' ' + (it.title || '') + ' ' + (it.tag || '')).toLowerCase()),
+                   '" data-kind="', esc(it.itemKind || 'element'),
+                   '" data-idx="', j, '" data-name="', esc((it.name + ' ' + (it.title || '') + ' ' + (it.tag || '') +
+                       ' ' + (it.dataPath || '')).toLowerCase()),
                    '" style="padding-left:', pad, 'px">');
             if (treeOn && it.hasChildren) {
                 var closed = !!(it.id && state.outlineCollapsed[it.id]);
@@ -1205,39 +2067,93 @@ function renderOutline() {
             } else if (treeOn) {
                 h.push('<span class="twisty-ph"></span>');
             }
-            if (iconCh) h.push('<span class="icon ', iconCls, '">', iconCh, '</span>');
+            /* A frame of a picture strip, positioned by the provider's style. */
+            if (iconSprite) h.push('<span class="outline-sprite ', iconCls, '" style="', esc(iconSprite), '"></span>');
+            else if (iconCh) h.push('<span class="icon ', iconCls, '">', iconCh, '</span>');
+            else if (iconAsset) h.push('<img class="tb-icon outline-icon platform-icon ', iconCls, '" src="', iconAsset, '" alt="">');
             else h.push('<svg class="tb-icon outline-icon ', iconCls, '"><use href="#i-', iconName, '"></use></svg>');
             h.push('<span class="name">', esc(shown), '</span>');
             if (it.title && it.name && it.title !== it.name)
                 h.push('<span class="name-sub">', esc(it.name), '</span>');
-            h.push('<span class="line-num">', it.line, '</span></div>');
+            else if (it.itemKind === 'metadata' && it.typeName)
+                h.push('<span class="name-sub">', esc(it.typeName), '</span>');
+            h.push('<span class="line-num">', it.line, '</span>');
+            if (!attributeMode && it.outlineIndex != null && formElementItems[it.outlineIndex] === it) {
+                var path = formElementPath(it.outlineIndex).map(formElementLabel).join(' \u203A ');
+                h.push('<span class="name-path" title="', esc(path), '">', esc(path), '</span>');
+            }
+            h.push('</div>');
         } else {
             h.push('<div class="proc-item" data-line="', it.line, '" data-name="', esc(it.name.toLowerCase()), '">',
                    '<span class="icon ', (it.type === 'func' ? 'icon-func">F' : 'icon-proc">P'), '</span>',
                    '<span class="name">', esc(it.name), '</span>',
-                   '<span class="line-num">', it.line, '</span></div>');
+                   '<span class="line-num">', it.line, '</span>');
+            var usages = formModuleOpen() ? formHandlers[it.name.toLowerCase()] : null;
+            if (usages && usages.length) {
+                h.push('<span class="handler-usages">');
+                for (var u = 0; u < usages.length; u++) {
+                    var usageText = usages[u].label + ' \u00B7 ' + usages[u].event;
+                    if (u) h.push('<span class="handler-sep">, </span>');
+                    if (usages[u].id)
+                        h.push('<a href="#" class="handler-usage" data-usage-id="', esc(usages[u].id),
+                            '" title="Показать элемент на форме">', esc(usageText), '</a>');
+                    else
+                        h.push('<span class="handler-usage-form">', esc(usageText), '</span>');
+                }
+                h.push('</span>');
+            }
+            h.push('</div>');
         }
+    }
+    if (rolesTab && !items.length) {
+        h = ['<div class="outline-note">', state.mdRoles === 'loading' ? 'Поиск ролей по конфигурации…'
+            : state.mdRoles === 'failed' ? 'Не удалось прочитать роли конфигурации'
+            : ticked.length ? 'Нет ролей с отмеченными правами' : 'Нет ролей с правами на объект', '</div>'];
+    }
+    if (roleRights.length) {
+        var rf = ['<details class="roles-filter"', state.mdRoleFilterOpen ? ' open' : '', '><summary>Права',
+            ticked.length ? ' <span class="roles-filter-count">(' + ticked.length + ')</span>' : '',
+            '<button type="button" id="roles-filter-clear"', ticked.length ? '' : ' disabled',
+            ' title="Снять все флажки">Сбросить</button></summary><div class="roles-filter-list">'];
+        for (var rr = 0; rr < roleRights.length; rr++) {
+            rf.push('<label><input type="checkbox" data-right="', esc(roleRights[rr]), '"',
+                state.mdRoleRights[roleRights[rr]] ? ' checked' : '', '>',
+                esc(MetadataPreview.rightTitle(roleRights[rr])), '</label>');
+        }
+        rf.push('</div></details>');
+        h = rf.concat(h);
     }
     document.getElementById('outline-list').innerHTML = h.join('');
     applyFilter();
-    if (isDocPreview() && state.formSelectedId) highlightFormOutline(state.formSelectedId);
+    if (formOutlineActive() && state.outlineKind === 'attributes' && state.selectedAttributeId)
+        highlightOutlineRow(state.selectedAttributeId);
+    else if (isDocPreview() && state.formSelectedId) highlightFormOutline(state.formSelectedId);
+    renderPropertyInspector();
 }
 
 function applyFilter() {
     var v = document.getElementById('outline-filter').value.toLowerCase();
     document.getElementById('filter-clear').style.display = v ? 'block' : 'none';
     var filtering = !!v;
-    var treeView = (docTree() && !state.sortByName && !filtering) ? previewView() : null;
+    var treeView = (docTree() && (!state.sortByName || sortKeepsTree()) && !filtering) ? previewView() : null;
     var foldOn = !!(treeView && treeView.outlineHidden);
-    var ps = document.querySelectorAll('#outline-list .proc-item');
+    var list = document.getElementById('outline-list');
+    list.classList.toggle('flat', filtering || (!!state.sortByName && !sortKeepsTree()));
+    var ps = list.querySelectorAll('.proc-item');
+    var matched = 0;
     for (var k = 0; k < ps.length; k++) {
         var match = !v || (ps[k].getAttribute('data-name') || '').indexOf(v) >= 0;
+        if (match) matched++;
         var hidden = false;
         if (foldOn && ps[k].classList.contains('form-el')) {
             var idx = parseInt(ps[k].getAttribute('data-idx'), 10);
-            hidden = treeView.outlineHidden(allItems, idx, state.outlineCollapsed);
+            hidden = treeView.outlineHidden(shownOutlineItems, idx, state.outlineCollapsed);
         }
         ps[k].style.display = (match && !hidden) ? '' : 'none';
+    }
+    if (state.outlineCountPrefix) {
+        document.getElementById('outline-count').textContent = state.outlineCountPrefix + ' (' +
+            (filtering ? matched + ' из ' + state.outlineTotal : state.outlineTotal) + ')';
     }
 }
 
@@ -1265,27 +2181,68 @@ function applyTheme() {
     send({ cmd: 'theme', dark: !!state.isDark });
 }
 
+/* The panel button reads as pressed while the side panel is shown. */
+function syncOutlineToggle() {
+    var button = document.getElementById('outline-toggle');
+    var panel = document.getElementById('outline-panel');
+    if (!button || !panel) return;
+    var shown = panel.style.display !== 'none';
+    button.classList.toggle('active', shown);
+    button.setAttribute('aria-pressed', shown ? 'true' : 'false');
+    button.title = (shown ? 'Скрыть панель: ' : 'Показать панель: ')
+        + (button.getAttribute('data-panel-title') || 'структура');
+}
+
 function setIcon(id, name) {
-    var use = document.querySelector('#' + id + ' use');
-    if (use) use.setAttribute('href', '#i-' + name);
+    var svg = document.querySelector('#' + id + ' svg');
+    if (!svg) svg = document.querySelector('#' + id + '.tb-btn');
+    var use = svg ? svg.querySelector('use') : null;
+    var platform = {
+        save: 'platform-save.png', edit: 'platform-edit.png', refresh: 'platform-refresh.png',
+        search: 'platform-search.png', help: 'platform-help.png', close: 'platform-close.png',
+        'arrow-back-up': 'platform-back.png', 'arrow-forward-up': 'platform-forward.png',
+        'arrow-up': 'platform-up.png', 'arrow-down': 'platform-down.png',
+        'arrow-left': 'platform-left.png', 'arrow-right': 'platform-right.png'
+    }[name];
+    if (!svg) return;
+    var img = svg.parentNode.querySelector('img.platform-icon');
+    if (platform) {
+        if (!img) {
+            img = document.createElement('img');
+            img.className = 'tb-icon platform-icon';
+            img.alt = '';
+            svg.parentNode.appendChild(img);
+        }
+        img.src = platform;
+        svg.style.display = 'none';
+        img.style.display = '';
+    } else {
+        if (use) use.setAttribute('href', '#i-' + name);
+        svg.style.display = '';
+        if (img) img.style.display = 'none';
+    }
 }
 
 function applyChrome() {
     var dk = uiIsDark();
     var outlinePanel = document.getElementById('outline-panel');
     var outlineToggle = document.getElementById('outline-toggle');
-    var isBsl = isBslModule();
-    var isCode = isBslFamily();
+    var chromeLang = state.sarifMode && state.sarifSourceLang ? state.sarifSourceLang : state.language;
+    var isBsl = isBslModule(chromeLang);
+    var isCode = isBslFamily(chromeLang);
     var formOpen = formPreviewOpen();
+    var moduleOpen = formModuleOpen();
 
     outlinePanel.className = dk ? 'dark' : 'light';
     var pv = currentProvider();
     var tree = docTree();
-    outlineToggle.style.display = (isBsl || pv) ? '' : 'none';
-    outlinePanel.style.display = (isBsl || pv) ? 'flex' : 'none';
-    outlineToggle.title = pv ? pv.outlineTitle : 'Список процедур/функций';
-    document.getElementById('outline-fold').style.display = (isBsl || tree) ? '' : 'none';
-    document.getElementById('outline-unfold').style.display = (isBsl || tree) ? '' : 'none';
+    outlineToggle.style.display = (isBsl || pv || moduleOpen) ? '' : 'none';
+    outlinePanel.style.display = (isBsl || pv || moduleOpen) ? 'flex' : 'none';
+    var panelTitle = moduleOpen ? 'Список процедур/функций' : (pv ? pv.outlineTitle : 'Список процедур/функций');
+    outlineToggle.setAttribute('data-panel-title', panelTitle.charAt(0).toLowerCase() + panelTitle.slice(1));
+    syncOutlineToggle();
+    document.getElementById('outline-fold').style.display = (isBsl || tree || moduleOpen) ? '' : 'none';
+    document.getElementById('outline-unfold').style.display = (isBsl || tree || moduleOpen) ? '' : 'none';
     document.getElementById('outline-fold').title = tree ? 'Свернуть все группы' : 'Свернуть все процедуры и области';
     document.getElementById('outline-unfold').title = tree ? 'Развернуть все группы' : 'Развернуть все процедуры и области';
 
@@ -1305,15 +2262,37 @@ function applyChrome() {
     var btnSave = document.getElementById('btn-save');
     setIcon('btn-edit', state.isEditing ? 'eye' : 'pencil');
     btnEdit.title = state.isEditing ? 'Режим просмотра (Ctrl+E)' : 'Редактировать (Ctrl+E)';
-    btnEdit.classList.toggle('active', state.isEditing);
+    btnEdit.classList.toggle('active', state.isEditing && !state.sarifMode);
+    /* Editing is about source: a form, template or object window shown as a
+     * picture has nothing to toggle (the form's Module tab does). */
+    btnEdit.style.display = state.sarifMode || (state.previewMode && isDocPreview() && !formModuleOpen())
+        ? 'none' : '';
     btnSave.style.display = sourceEditingActive() ? '' : 'none';
-    document.getElementById('btn-format').style.display = (state.isEditing && isBslModule()) ? '' : 'none';
-    document.getElementById('btn-comment').style.display = (state.isEditing && isCode) ? '' : 'none';
+    document.getElementById('btn-format').style.display = (!state.sarifMode && state.isEditing && (isBsl || moduleOpen)) ? '' : 'none';
+    document.getElementById('btn-comment').style.display = (!state.sarifMode && state.isEditing && (isCode || moduleOpen)) ? '' : 'none';
 
     setIcon('btn-preview', state.previewMode ? 'code' : 'window');
     var canPreview = canPreviewLang();
     document.getElementById('btn-preview').style.display = canPreview ? '' : 'none';
-    document.getElementById('btn-minimap').style.display = (isDocPreview() && state.previewMode) ? 'none' : '';
+    mapBtn.style.display = minimapButtonVisible() ? '' : 'none';
+
+    var back = document.getElementById('btn-back');
+    if (back) {
+        var previous = navHistory.length ? navHistory[navHistory.length - 1] : null;
+        back.style.display = previous && host ? '' : 'none';
+        back.title = previous ? 'Назад: ' + pathLabel(previous.path) + ' (Alt+\u2190)' : 'Назад';
+    }
+    var screenshotActions = document.getElementById('form-preview-actions');
+    if (screenshotActions) {
+        screenshotActions.hidden = !(formPreviewOpen() && isFormView()
+            && !document.documentElement.classList.contains('screenshot-mode'));
+    }
+    syncFormContextProgress();
+}
+
+function minimapButtonVisible() {
+    var provider = currentProvider();
+    return state.formWorkbenchView !== 'module' && !(provider && state.previewMode && !provider.keepsEditor);
 }
 
 function toggleMinimap() {
@@ -1331,17 +2310,26 @@ function flushPreviewEdits() {
     }
 }
 
-function setEditing(on) {
-    state.isEditing = !!on;
-    var snip = !!(state.isEditing && isBslModule());
-    editor.updateOptions({
+/* Read-only state and BSL typing aids for the model the editor shows. */
+function editingOptions(bsl) {
+    var snip = !!(state.isEditing && bsl);
+    return {
         readOnly: !state.isEditing,
         quickSuggestions: snip,
         acceptSuggestionOnEnter: snip ? 'smart' : 'off',
         tabCompletion: snip ? 'on' : 'off',
         snippetSuggestions: snip ? 'inline' : 'none'
-    });
-    if (isDocPreview()) setPreviewMode(!on);
+    };
+}
+
+function setEditing(on) {
+    if (state.sarifMode) return;
+    state.isEditing = !!on;
+    /* The module tab is edited in place; only the form mockup gives way to
+     * its XML source. */
+    var moduleOpen = formModuleOpen();
+    editor.updateOptions(editingOptions(isBslModule() || moduleOpen));
+    if (isDocPreview() && !moduleOpen) setPreviewMode(!on);
     applyChrome();
     applyPreviewEditable();
     if (state.isEditing && state.previewMode && !isDocPreview()) focusPreview();
@@ -1386,8 +2374,20 @@ function applyRevert(content) {
     updateStatusBar();
 }
 
+function applyModuleRevert(content) {
+    if (!formModuleModel) return;
+    suppressDirty = true;
+    formModuleModel.setValue(content || '');
+    suppressDirty = false;
+    state.moduleDirty = false;
+    moduleBaselineContent = formModuleModel.getValue();
+    if (formModuleOpen()) refreshOutline();
+    updateStatusBar();
+}
+
 function revertUnsaved() {
     applyRevert(baselineContent);
+    applyModuleRevert(moduleBaselineContent);
     setEditing(false);
     if (host) send({ cmd: 'reload' });
 }
@@ -1399,9 +2399,10 @@ function savePromptOpen() {
 
 function toggleEdit() {
     if (pendingLeaveEdit || pendingClose || savePromptOpen()) return;
+    if (state.previewMode && isDocPreview() && !formModuleOpen() && !state.isEditing) return;
     if (state.isEditing) {
         flushPreviewEdits();
-        if (state.dirty) {
+        if (anyDirty()) {
             showSavePrompt();
             return;
         }
@@ -1422,7 +2423,7 @@ function requestClose() {
         return;
     }
     flushPreviewEdits();
-    if (state.dirty) {
+    if (anyDirty()) {
         pendingClose = true;
         showSavePrompt();
     } else {
@@ -1431,14 +2432,14 @@ function requestClose() {
 }
 
 function formatDocument() {
-    if (!state.isEditing || !isBslModule() || !editor) return;
+    if (!state.isEditing || !(isBslModule() || formModuleOpen()) || !editor) return;
     var act = editor.getAction('editor.action.formatDocument');
     if (act) act.run();
     editor.focus();
 }
 
 function toggleLineComment() {
-    if (!state.isEditing || !isBslFamily() || !editor) return;
+    if (!state.isEditing || !(isBslFamily() || formModuleOpen()) || !editor) return;
     editor.trigger('bsl', 'editor.action.commentLine');
     editor.focus();
 }
@@ -1446,7 +2447,7 @@ function toggleLineComment() {
 function onSavePromptYes() {
     hideSavePrompt();
     if (!pendingClose) pendingLeaveEdit = true;
-    saveFile();
+    saveFile(true);
 }
 
 function onSavePromptNo() {
@@ -1470,32 +2471,265 @@ function onSavePromptCancel() {
     if (editor) editor.focus();
 }
 
+/* An object window opens its forms, templates and modules in place: the host
+ * swaps the loaded file, and the page keeps the way back. `navHistory` holds
+ * the files left behind, newest last; `navPending` is the request in flight,
+ * so a load the host starts on its own (Total Commander's next file) clears
+ * the history instead of extending it. */
+var navHistory = [];
+var navPending = null;
+
+function pathLabel(path) {
+    var s = String(path || '');
+    var parts = s.split(/[\\/]/);
+    var name = parts[parts.length - 1] || s;
+    /* Ext/Form.xml, Ext/Template.xml and Ext/*Module.bsl are named by their
+     * owner's folder. */
+    if (/^(Form\.xml|Template\.xml|\w*Module\.bsl)$/i.test(name)
+            && parts.length > 2 && /^Ext$/i.test(parts[parts.length - 2]))
+        return parts[parts.length - 3] + (/\.bsl$/i.test(name) ? ' (' + name + ')' : '');
+    return name;
+}
+
+function navigateTo(path, back) {
+    if (!host || !path) return false;
+    flushPreviewEdits();
+    if (anyDirty() && !window.confirm('Несохранённые изменения будут потеряны. Перейти?')) return false;
+    navPending = { path: path, back: !!back, from: state.filePath, selectedId: state.formSelectedId };
+    send({ cmd: 'open', path: path });
+    return true;
+}
+
+/* `rel` is relative to the object's own folder: Catalogs/Имя.xml owns
+ * Catalogs/Имя/Forms/..., exactly as the Designer dump lays them out. */
+function relatedPath(rel) {
+    /* Another object of the configuration comes with its full path. */
+    if (/^([A-Za-z]:[\\/]|\\\\|\/)/.test(String(rel || ''))) return String(rel);
+    var base = String(state.filePath || '').replace(/\.xml$/i, '');
+    if (!base || !rel) return '';
+    var sep = base.indexOf('\\') >= 0 ? '\\' : '/';
+    return base + sep + String(rel).split('/').join(sep);
+}
+
+function openRelated(rel) {
+    var path = relatedPath(rel);
+    if (path) navigateTo(path, false);
+}
+
+/* Whether a related file exists, asked through the same configuration host the
+ * form context reads from; a host that cannot answer says "yes", so nothing is
+ * hidden by mistake. */
+function relatedExists(rel) {
+    var path = relatedPath(rel);
+    if (!path || !window.fetch) return Promise.resolve(true);
+    return fetch('https://bslcfg.invalid/file?p=' + encodeURIComponent(path) + '&exists=1')
+        .then(function (r) { return r.ok ? r.text() : '1'; })
+        .then(function (t) { return t !== '0'; }, function () { return true; });
+}
+
+function navigateBack() {
+    if (!navHistory.length) return;
+    navigateTo(navHistory[navHistory.length - 1].path, true);
+}
+
+function trackNavigation(path) {
+    var nav = navPending;
+    navPending = null;
+    if (!nav || nav.path !== path) {
+        navHistory = [];
+        return;
+    }
+    if (nav.back) {
+        var entry = navHistory.pop();
+        if (entry && entry.selectedId) state.formSelectedId = entry.selectedId;
+    } else if (nav.from) {
+        navHistory.push({ path: nav.from, selectedId: nav.selectedId });
+    }
+}
+
+function onOpenFailed(d) {
+    navPending = null;
+    window.alert('Не удалось открыть файл:\n' + ((d && d.path) || ''));
+}
+
+/* Help pages (Справка) of an object or a form. The dump keeps them the same
+ * way for both: <owner>/Ext/Help.xml lists the pages, <owner>/Ext/Help/<lang>.html
+ * holds each one. The owner is the object for its root XML and the form for
+ * its Ext/Form.xml. Files are read through the configuration host. */
+var helpState = { base: '', available: false, token: 0 };
+
+function helpBaseFor(path) {
+    var p = String(path || '');
+    var sep = p.indexOf('\\') >= 0 ? '\\' : '/';
+    if (/[\\/]Ext[\\/]Form\.xml$/i.test(p)) return p.replace(/Form\.xml$/i, 'Help');
+    var provider = currentProvider();
+    if (provider && provider.id === 'metadata' && /\.xml$/i.test(p))
+        return p.replace(/\.xml$/i, '') + sep + 'Ext' + sep + 'Help';
+    return '';
+}
+
+function configFileUrl(path, existsOnly) {
+    return 'https://bslcfg.invalid/file?p=' + encodeURIComponent(path) + (existsOnly ? '&exists=1' : '');
+}
+
+function readConfigText(path) {
+    return fetch(configFileUrl(path)).then(function (r) {
+        if (!r.ok) throw new Error('not found');
+        return r.arrayBuffer();
+    }).then(function (buffer) {
+        return new TextDecoder('utf-8').decode(buffer).replace(/^\uFEFF/, '');
+    });
+}
+
+function syncHelpButton() {
+    var button = document.getElementById('btn-help');
+    if (button) button.style.display = helpState.available ? '' : 'none';
+    var inWindow = document.querySelectorAll('#form-preview .md-help-button');
+    for (var i = 0; i < inWindow.length; i++) inWindow[i].hidden = !helpState.available;
+}
+
+function refreshHelp() {
+    var token = ++helpState.token;
+    helpState.base = host && window.fetch ? helpBaseFor(state.filePath) : '';
+    helpState.available = false;
+    hideHelp();
+    syncHelpButton();
+    if (!helpState.base) return;
+    fetch(configFileUrl(helpState.base + '.xml', true))
+        .then(function (r) { return r.ok ? r.text() : '0'; })
+        .then(function (t) {
+            if (token !== helpState.token) return;
+            helpState.available = t === '1';
+            syncHelpButton();
+        }, function () { /* no configuration host: no help */ });
+}
+
+function helpTitle() {
+    var parts = String(state.filePath || '').split(/[\\/]/);
+    var name = parts[parts.length - 1] || '';
+    if (/^Form\.xml$/i.test(name) && parts.length > 2) return parts[parts.length - 3];
+    return name.replace(/\.xml$/i, '');
+}
+
+/* The page body without the platform's v8help stylesheet, which a browser
+ * cannot load; links inside help lead into the platform's help system and
+ * are shown as text. */
+function helpDocument(html) {
+    var body = String(html).replace(/<link[^>]*v8help:[^>]*>(\s*<\/link>)?/gi, '');
+    var style = '<style>body{font:13px Arial,Segoe UI,sans-serif;color:#000;background:#fff;margin:12px 16px;}' +
+        'h1{font-size:18px;margin:0 0 10px;}h2{font-size:15px;}h3{font-size:13px;}' +
+        'a{color:#0645ad;text-decoration:none;cursor:default;}table{border-collapse:collapse;}' +
+        'td,th{border:1px solid #ccc;padding:3px 6px;}img{max-width:100%;}</style>';
+    return /<head[^>]*>/i.test(body) ? body.replace(/<head[^>]*>/i, function (m) { return m + style; })
+        : style + body;
+}
+
+function showHelp() {
+    if (!helpState.available || !helpState.base) return;
+    var base = helpState.base;
+    var token = helpState.token;
+    var sep = base.indexOf('\\') >= 0 ? '\\' : '/';
+    readConfigText(base + '.xml').then(function (xml) {
+        var pages = [];
+        xml.replace(/<Page>\s*([^<\s]+)\s*<\/Page>/g, function (m, lang) { pages.push(lang); return m; });
+        var lang = pages.indexOf('ru') >= 0 ? 'ru' : (pages[0] || 'ru');
+        return readConfigText(base + sep + lang + '.html');
+    }).then(function (html) {
+        if (token !== helpState.token) return;
+        var panel = document.getElementById('help-panel');
+        var frame = document.getElementById('help-frame');
+        document.getElementById('help-title').textContent = 'Справка: ' + helpTitle();
+        frame.onload = function () {
+            var doc = frame.contentDocument;
+            if (!doc) return;
+            doc.addEventListener('click', function (e) {
+                var link = e.target.closest && e.target.closest('a');
+                if (link) e.preventDefault();
+            });
+            doc.addEventListener('keydown', function (e) { if (e.key === 'Escape') hideHelp(); });
+        };
+        frame.srcdoc = helpDocument(html);
+        panel.hidden = false;
+    }).catch(function () {
+        window.alert('Не удалось прочитать справку.');
+    });
+}
+
+function hideHelp() {
+    var panel = document.getElementById('help-panel');
+    if (!panel || panel.hidden) return;
+    panel.hidden = true;
+    document.getElementById('help-frame').removeAttribute('srcdoc');
+}
+
+/* Re-read the file from disk so an agent's edit shows without reopening the
+ * lister; cached configuration metadata is dropped with it. */
+function reloadFromDisk() {
+    if (!host) return;
+    if (anyDirty() && !window.confirm('Несохранённые изменения будут потеряны. Перечитать файл?')) return;
+    Object.keys(formContextCache).forEach(function (key) { delete formContextCache[key]; });
+    Object.keys(mdRelationsCache).forEach(function (key) { delete mdRelationsCache[key]; });
+    send({ cmd: 'reload' });
+}
+
 function onReverted(d) {
     if (d && d.ok && typeof d.content === 'string') applyRevert(d.content);
+    if (d && d.ok && typeof d.formModule === 'string') applyModuleRevert(d.formModule);
     pendingLeaveEdit = false;
 }
 
-function onSaveResult(ok) {
+function savedSnapshotState(currentContent, snapshot) {
+    return { baseline: snapshot, dirty: currentContent !== snapshot };
+}
+
+function onSaveResult(ok, saveId, conflict, target) {
+    var pending = pendingSaveSnapshots[String(saveId)] || {};
+    delete pendingSaveSnapshots[String(saveId)];
+    var toModule = target === 'module';
+    var snapshot = pending.snapshot;
     var btnSave = document.getElementById('btn-save');
-    btnSave.classList.remove('save-ok', 'save-err');
-    btnSave.classList.add(ok ? 'save-ok' : 'save-err');
-    btnSave.innerHTML = ok ? '&#10004; Сохранено' : '&#10006; Ошибка';
+    /* The layout and the module save as one batch: a failure of either stays
+     * on the button even when the other one lands after it. */
+    if (!ok) saveBatchFailed = true;
+    if (!ok || !saveBatchFailed) {
+        btnSave.classList.remove('save-ok', 'save-err');
+        btnSave.classList.add(ok ? 'save-ok' : 'save-err');
+        btnSave.innerHTML = ok ? '&#10004; Сохранено'
+            : (conflict ? '&#9888; ' + (toModule ? 'Модуль изменён извне' : 'Файл изменён извне')
+                : '&#10006; Ошибка' + (toModule ? ' записи модуля' : ''));
+    }
     if (ok) {
-        state.dirty = false;
-        if (model) baselineContent = model.getValue();
-        if (pendingLeaveEdit) {
-            pendingLeaveEdit = false;
-            setEditing(false);
+        if (toModule) {
+            var savedModule = savedSnapshotState(formModuleModel ? formModuleModel.getValue() : moduleBaselineContent,
+                typeof snapshot === 'string' ? snapshot : moduleBaselineContent);
+            moduleBaselineContent = savedModule.baseline;
+            state.moduleDirty = savedModule.dirty;
+        } else {
+            var saved = savedSnapshotState(model ? model.getValue() : baselineContent,
+                typeof snapshot === 'string' ? snapshot : baselineContent);
+            baselineContent = saved.baseline;
+            state.dirty = saved.dirty;
         }
-        if (pendingClose) {
-            pendingClose = false;
-            send({ cmd: 'closeAck', allow: true });
+        /* Pending leave/close waits for the other half of the batch. */
+        if (!Object.keys(pendingSaveSnapshots).length) {
+            if (pendingLeaveEdit && !anyDirty()) {
+                pendingLeaveEdit = false;
+                setEditing(false);
+            }
+            if (pendingClose && !anyDirty()) {
+                pendingClose = false;
+                send({ cmd: 'closeAck', allow: true });
+            } else if ((pendingClose || pendingLeaveEdit) && anyDirty()) {
+                showSavePrompt();
+            }
         }
     } else {
         // Save failed: keep the window open so the error stays visible and
         // the user can retry instead of losing the edit on a forced close.
+        var wasClosing = pendingClose;
         pendingLeaveEdit = false;
         pendingClose = false;
+        if (wasClosing) send({ cmd: 'closeAck', allow: false });
     }
     setTimeout(function () {
         btnSave.classList.remove('save-ok', 'save-err');
@@ -1504,15 +2738,31 @@ function onSaveResult(ok) {
     }, 2000);
 }
 
-function saveFile() {
-    if (!sourceEditingActive() || !model) return;
+function saveFile(forPendingAction) {
+    if (state.sarifMode) return;
+    if ((!sourceEditingActive() && !forPendingAction) || !state.isEditing || !model) return;
     flushPreviewEdits();
-    send({ cmd: 'save', content: model.getValue() });
+    /* Save whatever part of the form changed: the layout, the module or both.
+     * With nothing changed, save the part on screen, as a plain file would. */
+    var targets = [];
+    if (state.dirty) targets.push('form');
+    if (state.moduleDirty && formModuleModel) targets.push('module');
+    if (!targets.length) targets.push(formModuleOpen() && formModuleModel ? 'module' : 'form');
+    saveBatchFailed = false;
+    targets.forEach(function (target) {
+        var snapshot = target === 'module' ? formModuleModel.getValue() : model.getValue();
+        var saveId = String(nextSaveId++);
+        pendingSaveSnapshots[saveId] = { target: target, snapshot: snapshot };
+        var msg = { cmd: 'save', content: snapshot, saveId: saveId };
+        if (target === 'module') msg.target = 'module';
+        send(msg);
+    });
 }
 
 // ------------------------------------------------------------------ search
 
 function doFind(req) {
+    var model = editor && editor.getModel();
     if (!editor || !model || !req.text) return;
     var sel = editor.getSelection();
     var from = req.first
@@ -1573,7 +2823,9 @@ function loadTurndown() {
 
 function loadPreviewDeps() {
     if (state.language !== 'markdown') return Promise.resolve();
-    return Promise.all([loadMarked(), loadTurndown()]);
+    /* Turndown is only needed once the user edits inside the preview. */
+    loadTurndown();
+    return loadMarked();
 }
 
 function countNewlines(s) {
@@ -1698,7 +2950,7 @@ function refreshDocPreview() {
     var host = formPreviewEl();
     var was = currentProvider();
     if (!host || !model || !was) return;
-    var src = model.getValue();
+    var src = was.id === 'sarif' ? sarifReportContent : model.getValue();
     var p = detectProvider(src);
     state.previewId = p ? p.id : '';
     if (!p) {
@@ -1708,12 +2960,63 @@ function refreshDocPreview() {
         setPreviewMode(false);
         return;
     }
-    var parsed = parseWithProvider(p, src);
+    var parsed = p.id === 'sarif' && sarifParsedModel ? { model: sarifParsedModel } : parseWithProvider(p, src);
     if (parsed.error) {
         showPreviewMessage(host, p, parsed.error);
         return;
     }
-    window[p.viewer].render(parsed.model, host, { onSelect: onDocPreviewSelect });
+    window[p.viewer].render(parsed.model, host, {
+        onSelect: p.id === 'sarif' ? onSarifSelect : onDocPreviewSelect,
+        onOpen: window.chrome && window.chrome.webview ? openRelated : null,
+        onHelp: window.chrome && window.chrome.webview ? showHelp : null,
+        sortByName: !!state.sortByName,
+        probe: window.chrome && window.chrome.webview ? relatedExists : null,
+        windowTitle: state.formTitle
+    });
+    syncHelpButton();
+    /* A redrawn document keeps the selection the outline already shows. */
+    if (p.selectHighlightsPreview && state.formSelectedId && window[p.viewer].highlight)
+        window[p.viewer].highlight(host, state.formSelectedId);
+    scheduleFormFit();
+}
+
+/* «Вписать по ширине»: a form wider than the pane is zoomed out until its
+ * minimum layout fits. The form still stretches like a 1C window, so one
+ * narrower than the pane is never scaled up. Zoom rather than transform keeps
+ * scrolling, hit-testing and the layout width in step. */
+function scheduleFormFit() {
+    var host = formPreviewEl();
+    var token = ++formFitToken;
+    syncFormFitButton();
+    if (!host) return;
+    host.classList.remove('fp-fit-width');
+    host.style.removeProperty('--fp-fit-zoom');
+    if (!formFitWidth || !isFormView() || !formPreviewOpen()
+        || document.documentElement.classList.contains('screenshot-mode')) return;
+    function afterLayout(fn) {
+        requestAnimationFrame(function () {
+            requestAnimationFrame(function () { if (token === formFitToken) fn(); });
+        });
+    }
+    /* The form relays itself out at every zoom, so its minimum width moves a
+     * little: converge over a few passes instead of trusting one measurement. */
+    var zoom = 1, passes = 0;
+    function step() {
+        var body = host.querySelector('.fp-body');
+        if (!body || body.scrollWidth <= body.clientWidth * 1.01 + 1 || zoom <= 0.3 || ++passes > 8) return;
+        zoom = Math.max(0.3, zoom * body.clientWidth / body.scrollWidth * 0.99);
+        host.style.setProperty('--fp-fit-zoom', String(zoom));
+        host.classList.add('fp-fit-width');
+        afterLayout(step);
+    }
+    afterLayout(step);
+}
+
+function syncFormFitButton() {
+    var button = document.getElementById('btn-form-fit');
+    if (!button) return;
+    button.classList.toggle('active', formFitWidth);
+    button.setAttribute('aria-pressed', formFitWidth ? 'true' : 'false');
 }
 
 function showPreviewMessage(host, provider, text) {
@@ -1765,10 +3068,17 @@ function highlightFormOutline(id) {
         renderOutline();
         return;
     }
+    highlightOutlineRow(state.formSelectedId);
+    renderPropertyInspector();
+    updateStatusBar();
+}
+
+function highlightOutlineRow(id) {
+    var selectedId = id ? String(id) : '';
     var rows = document.querySelectorAll('.proc-item.form-el');
     var hit = null;
     for (var r = 0; r < rows.length; r++) {
-        var on = rows[r].getAttribute('data-id') === state.formSelectedId;
+        var on = rows[r].getAttribute('data-id') === selectedId;
         rows[r].classList.toggle('selected', on);
         rows[r].style.background = '';
         if (on) hit = rows[r];
@@ -1816,33 +3126,66 @@ function refreshPreviewContent() {
     frame.srcdoc = buildPreviewDoc();
 }
 
-function setPreviewMode(on) {
+function setPreviewMode(on, onShown) {
     var frame = previewFrame();
     var formEl = formPreviewEl();
     var editorEl = document.getElementById('editor');
     var handle = document.getElementById('preview-handle');
     var btn = document.getElementById('btn-preview');
+    var tabsEl = document.getElementById('form-workbench-tabs');
     var apply = function () {
         state.previewMode = on;
+        state.previewPending = false;
         if (on) {
             btn.classList.add('active');
             if (isDocPreview()) {
-                editorEl.style.display = 'none';
-                editorEl.style.width = '';
-                editorEl.style.flex = '';
-                handle.style.display = 'none';
+                var provider = currentProvider();
+                if (provider && provider.keepsEditor) {
+                    editorEl.style.display = '';
+                    editorEl.style.width = '';
+                    editorEl.style.flex = '1';
+                    editorEl.style.order = '0';
+                    handle.style.display = 'block';
+                    handle.style.order = provider.previewFirst ? '-1' : '';
+                    formEl.style.order = provider.previewFirst ? '-2' : '';
+                    formEl.style.flex = '0 0 34%';
+                    formEl.style.minWidth = '280px';
+                } else {
+                    editorEl.style.display = 'none';
+                    editorEl.style.width = '';
+                    editorEl.style.flex = '';
+                    editorEl.style.order = '';
+                    handle.style.display = 'none';
+                    handle.style.order = '';
+                    formEl.style.order = '';
+                    formEl.style.minWidth = '';
+                    formEl.style.flex = '1';
+                }
                 frame.style.display = 'none';
                 frame.removeAttribute('srcdoc');
                 formEl.hidden = false;
                 formEl.style.display = 'flex';
-                formEl.style.flex = '1';
-                btn.title = 'Показать исходник';
-                refreshDocPreview();
+                btn.title = provider && provider.sourceTitle || 'Показать исходник';
+                /* applyTheme() below renders the document; doing it here too
+                 * laid the whole form out twice on every open. */
             } else {
                 hideFormPreview();
                 editorEl.style.display = '';
                 handle.style.display = 'block';
                 frame.style.display = 'block';
+                if (onShown) {
+                    var shown = onShown;
+                    onShown = null;
+                    var fired = false;
+                    var once = function () {
+                        if (fired) return;
+                        fired = true;
+                        frame.removeEventListener('load', once);
+                        shown();
+                    };
+                    frame.addEventListener('load', once);
+                    setTimeout(once, 1500);
+                }
                 frame.srcdoc = buildPreviewDoc();
                 btn.title = 'Скрыть превью';
             }
@@ -1854,19 +3197,66 @@ function setPreviewMode(on) {
             frame.style.display = 'none';
             frame.removeAttribute('srcdoc');
             hideFormPreview();
+            tabsEl.hidden = true;
             editorEl.style.display = '';
             editorEl.style.flex = '1';
             editorEl.style.width = '';
+            editorEl.style.order = '';
+            formEl.style.order = '';
+            formEl.style.minWidth = '';
             btn.classList.remove('active');
             var shown = currentProvider();
             btn.title = shown ? shown.sourceTitle : 'Исходник и просмотр';
             if (editor) editor.layout();
         }
+        applyFormWorkbenchView(state.formWorkbenchView);
         applyTheme();
+        if (onShown) onShown();
     };
     if (on && (state.language === 'markdown' || state.language === 'html'))
         loadPreviewDeps().then(apply);
     else apply();
+}
+
+function applyFormWorkbenchView(view) {
+    var available = !!(state.previewMode && isFormView() && state.formModulePath);
+    var tabs = document.getElementById('form-workbench-tabs');
+    tabs.hidden = !available;
+    if (!available) view = 'form';
+    state.formWorkbenchView = view === 'module' ? 'module' : 'form';
+    var moduleOpen = state.formWorkbenchView === 'module';
+    tabs.querySelectorAll('button[data-view]').forEach(function (button) {
+        var active = button.getAttribute('data-view') === state.formWorkbenchView;
+        button.classList.toggle('active', active);
+        button.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+    if (!moduleOpen) {
+        if (editor && model && editor.getModel() !== model) editor.setModel(model);
+        if (editor) editor.updateOptions(editingOptions(isBslModule()));
+        refreshOutline();
+        updateStatusBar();
+        return;
+    }
+    if (editor && formModuleModel && editor.getModel() !== formModuleModel)
+        editor.setModel(formModuleModel);
+    if (editor) editor.updateOptions(editingOptions(true));
+    var editorEl = document.getElementById('editor');
+    editorEl.style.display = '';
+    editorEl.style.flex = '1';
+    editorEl.style.width = '';
+    document.getElementById('preview').style.display = 'none';
+    document.getElementById('preview-handle').style.display = 'none';
+    document.getElementById('form-preview').hidden = true;
+    document.getElementById('form-preview').style.display = 'none';
+    refreshOutline();
+    updateStatusBar();
+    if (editor) editor.layout();
+}
+
+function switchFormWorkbenchView(view) {
+    if (!state.previewMode || !isFormView() || !state.formModulePath) return;
+    state.formWorkbenchView = view === 'module' ? 'module' : 'form';
+    setPreviewMode(true);
 }
 
 function previewAnchors(win) {
@@ -2547,6 +3937,88 @@ function wirePreviewScroll() {
     });
 }
 
+var formScreenshotScroll = null;
+
+// CapturePreview is viewport-sized. Freeze the layout size before applying a
+// paint-only scale: zoom on a percentage-sized root expands its layout again.
+function requestFormScreenshot() {
+    if (!formPreviewOpen() || !host || document.documentElement.classList.contains('screenshot-mode')) return;
+    var preview = formPreviewEl();
+    var body = preview && preview.querySelector('.fp-body');
+    formFitToken++;
+    if (preview) {
+        preview.classList.remove('fp-fit-width');
+        preview.style.removeProperty('--fp-fit-zoom');
+    }
+    formScreenshotScroll = [];
+    [preview, body].forEach(function (node) {
+        if (!node) return;
+        formScreenshotScroll.push({ node: node, left: node.scrollLeft, top: node.scrollTop });
+        node.scrollLeft = node.scrollTop = 0;
+    });
+    document.documentElement.classList.add('screenshot-mode');
+    if (preview) {
+        preview.style.setProperty('--screenshot-width', preview.clientWidth + 'px');
+        preview.style.setProperty('--screenshot-height', preview.clientHeight + 'px');
+        preview.classList.add('screenshot-fit');
+    }
+    var actions = document.getElementById('form-preview-actions');
+    if (actions) actions.hidden = true;
+    syncFormContextProgress();
+    // The form refits inside its ResizeObserver, before paint, but its command
+    // bars still settle in a frame callback. Measure after that, then let the
+    // scaled frame paint before native capture.
+    requestAnimationFrame(function () {
+        requestAnimationFrame(function () {
+            if (!document.documentElement.classList.contains('screenshot-mode')) return;
+            if (preview) {
+                var rect = preview.getBoundingClientRect();
+                var bodyRect = body && body.getBoundingClientRect();
+                var width = Math.max(preview.scrollWidth, body ? bodyRect.left - rect.left + body.scrollWidth : 0);
+                var height = Math.max(preview.scrollHeight, body ? bodyRect.top - rect.top + body.scrollHeight : 0);
+                var scale = Math.min(1, preview.clientWidth / Math.max(1, width), preview.clientHeight / Math.max(1, height));
+                preview.style.setProperty('--screenshot-scale', String(scale));
+            }
+            requestAnimationFrame(function () {
+                if (document.documentElement.classList.contains('screenshot-mode')) send({ cmd: 'screenshot' });
+            });
+        });
+    });
+}
+
+function finishFormScreenshot() {
+    var preview = formPreviewEl();
+    if (preview) {
+        preview.classList.remove('screenshot-fit');
+        preview.style.removeProperty('--screenshot-scale');
+        preview.style.removeProperty('--screenshot-width');
+        preview.style.removeProperty('--screenshot-height');
+    }
+    document.documentElement.classList.remove('screenshot-mode');
+    applyChrome();
+    scheduleFormFit();
+    var scroll = formScreenshotScroll;
+    formScreenshotScroll = null;
+    var previousSize = '', stableFrames = 0, frames = 0;
+    function restoreScroll() {
+        if (document.documentElement.classList.contains('screenshot-mode')) return;
+        var size = '';
+        (scroll || []).forEach(function (entry) {
+            if (!entry.node.isConnected) return;
+            size += [entry.node.clientWidth, entry.node.clientHeight,
+                entry.node.scrollWidth, entry.node.scrollHeight].join(',') + ';';
+            entry.node.scrollLeft = entry.left;
+            entry.node.scrollTop = entry.top;
+        });
+        // Responsive tables can publish their scroll canvas over several
+        // frames. Restoring earlier clamps the old position to a transient max.
+        stableFrames = size === previousSize ? stableFrames + 1 : 0;
+        previousSize = size;
+        if (++frames < 12 && stableFrames < 3) requestAnimationFrame(restoreScroll);
+    }
+    requestAnimationFrame(restoreScroll);
+}
+
 // --------------------------------------------------------------------- PDF
 
 function printFrame() { return document.getElementById('print-frame'); }
@@ -2633,6 +4105,15 @@ function clearPrintContent() {
 
 function wireUi() {
     document.getElementById('outline-list').addEventListener('click', function (e) {
+        var usageLink = e.target.closest && e.target.closest('a.handler-usage[data-usage-id]');
+        if (usageLink) {
+            e.preventDefault();
+            e.stopPropagation();
+            var usageId = usageLink.getAttribute('data-usage-id');
+            switchFormWorkbenchView('form');
+            selectFormElement(usageId);
+            return;
+        }
         var tw = e.target.closest && e.target.closest('.twisty');
         if (tw && docTree()) {
             e.preventDefault();
@@ -2652,10 +4133,91 @@ function wireUi() {
         editor.setPosition({ lineNumber: ln, column: 1 });
         var view = previewView();
         var rowId = el.getAttribute('data-id');
+        if (el.getAttribute('data-kind') === 'attribute') {
+            state.selectedAttributeId = rowId || '';
+            highlightOutlineRow(state.selectedAttributeId);
+            renderPropertyInspector();
+            return;
+        }
         if (view && view.highlight && rowId) {
             view.highlight(formPreviewEl(), rowId);
             highlightFormOutline(rowId);
         }
+    });
+
+    /* The Roles tab filter: a right ticked or cleared redraws the list. */
+    document.getElementById('outline-list').addEventListener('change', function (e) {
+        var box = e.target.closest && e.target.closest('input[data-right]');
+        if (!box) return;
+        var right = box.getAttribute('data-right');
+        if (box.checked) state.mdRoleRights[right] = true;
+        else delete state.mdRoleRights[right];
+        renderOutline();
+    });
+    document.getElementById('outline-list').addEventListener('toggle', function (e) {
+        if (e.target.classList && e.target.classList.contains('roles-filter')) state.mdRoleFilterOpen = e.target.open;
+    }, true);
+    document.getElementById('outline-list').addEventListener('click', function (e) {
+        if (!(e.target.closest && e.target.closest('#roles-filter-clear'))) return;
+        e.preventDefault();
+        state.mdRoleRights = {};
+        renderOutline();
+    });
+
+    /* An object's structure panel opens what its window would: a form, a
+     * template, a command module, another object of the configuration. */
+    document.getElementById('outline-list').addEventListener('dblclick', function (e) {
+        var el = e.target.closest && e.target.closest('.proc-item');
+        var p = currentProvider();
+        if (!el || !host || !p || p.id !== 'metadata') return;
+        var rowId = el.getAttribute('data-id');
+        for (var i = 0; i < allItems.length; i++) {
+            if (allItems[i].id !== rowId) continue;
+            var target = allItems[i].node ? allItems[i].node.open : allItems[i].role ? allItems[i].role.path : '';
+            if (target) { e.preventDefault(); openRelated(target); }
+            return;
+        }
+    });
+
+    document.getElementById('outline-kinds').addEventListener('click', function (e) {
+        var button = e.target.closest && e.target.closest('button[data-outline-kind]');
+        if (button) selectOutlineKind(button.getAttribute('data-outline-kind'));
+    });
+    document.getElementById('property-inspector').addEventListener('click', function (e) {
+        var attributeLink = e.target.closest && e.target.closest('a[data-attribute-id]');
+        if (attributeLink) {
+            e.preventDefault();
+            state.selectedAttributeId = attributeLink.getAttribute('data-attribute-id') || '';
+            selectOutlineKind('attributes');
+            return;
+        }
+        var openLink = e.target.closest && e.target.closest('a[data-open-related]');
+        if (openLink) {
+            e.preventDefault();
+            openRelated(openLink.getAttribute('data-open-related'));
+            return;
+        }
+        var handlerLink = e.target.closest && e.target.closest('a[data-form-handler]');
+        if (handlerLink) {
+            e.preventDefault();
+            var line = findFormHandlerLine(handlerLink.getAttribute('data-form-handler') || '');
+            if (!line) return;
+            switchFormWorkbenchView('module');
+            if (editor && formModuleModel) {
+                editor.revealLineInCenter(line);
+                editor.setPosition({ lineNumber: line, column: 1 });
+                editor.focus();
+            }
+            return;
+        }
+        if (!e.target.closest || !e.target.closest('#property-inspector-close')) return;
+        if (state.outlineKind === 'attributes') state.selectedAttributeId = '';
+        else {
+            state.formSelectedId = '';
+            var view = previewView();
+            if (view && view.highlight) view.highlight(formPreviewEl(), '');
+        }
+        renderOutline();
     });
 
     document.getElementById('outline-filter').addEventListener('input', applyFilter);
@@ -2668,6 +4230,8 @@ function wireUi() {
     document.getElementById('sort-btn').addEventListener('click', function () {
         state.sortByName = !state.sortByName;
         renderOutline();
+        /* The object window's own tree follows the same order. */
+        if (sortKeepsTree()) refreshDocPreview();
     });
     document.getElementById('outline-fold').addEventListener('click', function () {
         var collapseView = docTree() ? previewView() : null;
@@ -2691,12 +4255,14 @@ function wireUi() {
     document.getElementById('outline-toggle').addEventListener('click', function () {
         var p = document.getElementById('outline-panel');
         p.style.display = (p.style.display === 'none') ? 'flex' : 'none';
+        syncOutlineToggle();
         editor.layout();
     });
 
     document.getElementById('btn-theme').addEventListener('click', function () {
         if (formPreviewOpen()) return;
         state.isDark = !state.isDark;
+        writeStoredBool(THEME_KEY, state.isDark);
         applyTheme();
     });
     document.getElementById('btn-minimap').addEventListener('click', toggleMinimap);
@@ -2712,10 +4278,54 @@ function wireUi() {
         if (e.key === 'Escape') { e.preventDefault(); onSavePromptCancel(); }
         else if (e.key === 'Enter') { e.preventDefault(); onSavePromptYes(); }
     });
-    document.getElementById('btn-preview').addEventListener('click', function () { setPreviewMode(!state.previewMode); });
+    document.getElementById('btn-preview').addEventListener('click', function () {
+        if (state.sarifMode) toggleSarifSource();
+        else setPreviewMode(!state.previewMode);
+    });
+    document.querySelectorAll('#form-workbench-tabs button[data-view]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            switchFormWorkbenchView(button.getAttribute('data-view'));
+        });
+    });
+    document.getElementById('btn-reload').addEventListener('click', reloadFromDisk);
+    document.getElementById('btn-back').addEventListener('click', navigateBack);
+    document.addEventListener('keydown', function (e) {
+        if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'ArrowLeft' && navHistory.length) {
+            e.preventDefault();
+            navigateBack();
+        }
+    }, true);
+    document.getElementById('btn-help').addEventListener('click', showHelp);
+    document.getElementById('help-close').addEventListener('click', hideHelp);
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !document.getElementById('help-panel').hidden) {
+            e.preventDefault();
+            hideHelp();
+        }
+    });
     document.getElementById('btn-pdf').addEventListener('click', function () {
         preparePrintContent(function () { send({ cmd: 'pdf' }); });
     });
+    document.getElementById('btn-form-screenshot').addEventListener('click', requestFormScreenshot);
+    document.getElementById('btn-form-fit').addEventListener('click', function () {
+        formFitWidth = !formFitWidth;
+        writeStoredBool('1cFormViewer.fitWidth', formFitWidth);
+        scheduleFormFit();
+    });
+    document.getElementById('statusbar').addEventListener('click', function (e) {
+        var crumb = e.target.closest && e.target.closest('a[data-crumb-id]');
+        if (!crumb) return;
+        e.preventDefault();
+        selectFormElement(crumb.getAttribute('data-crumb-id'));
+    });
+    if (window.ResizeObserver && formPreviewEl()) {
+        var fitResizeTimer = null;
+        new ResizeObserver(function () {
+            if (!formFitWidth) return;
+            clearTimeout(fitResizeTimer);
+            fitResizeTimer = setTimeout(scheduleFormFit, 120);
+        }).observe(formPreviewEl());
+    }
 
     document.getElementById('preview').addEventListener('load', function () {
         if (!state.previewMode) return;
@@ -2752,15 +4362,52 @@ function wireUi() {
         document.body.style.userSelect = 'none';
     });
 
+    var propertyResizeHandle = document.getElementById('property-resize-handle');
+    var propertyInspector = document.getElementById('property-inspector');
+    var propertyStartY = 0, propertyStartH = 0;
+    function onPropertyResize(e) {
+        var available = panel.clientHeight;
+        var h = propertyStartH - (e.clientY - propertyStartY);
+        h = Math.max(132, Math.min(h, Math.floor(available * 0.9)));
+        propertyInspector.style.flex = '0 0 ' + h + 'px';
+        propertyInspector.style.height = h + 'px';
+    }
+    function stopPropertyResize() {
+        document.removeEventListener('mousemove', onPropertyResize);
+        document.removeEventListener('mouseup', stopPropertyResize);
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        try { sessionStorage.setItem('1cFormViewer.propertyInspectorHeight', propertyInspector.offsetHeight); } catch (error) {}
+    }
+    propertyResizeHandle.addEventListener('mousedown', function (e) {
+        if (propertyInspector.hidden) return;
+        propertyStartY = e.clientY;
+        propertyStartH = propertyInspector.offsetHeight;
+        e.preventDefault();
+        document.addEventListener('mousemove', onPropertyResize);
+        document.addEventListener('mouseup', stopPropertyResize);
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+    });
+    try {
+        var savedPropertyHeight = parseInt(sessionStorage.getItem('1cFormViewer.propertyInspectorHeight'), 10);
+        if (savedPropertyHeight > 0) {
+            propertyInspector.style.flex = '0 0 ' + savedPropertyHeight + 'px';
+            propertyInspector.style.height = savedPropertyHeight + 'px';
+        }
+    } catch (error) {}
+
     var splitHandle = document.getElementById('preview-handle');
     var editorEl = document.getElementById('editor');
+    var splitTarget = editorEl;
     var splitStartX = 0, splitStartW = 0;
     function onSplitResize(e) {
         var w = splitStartW + (e.clientX - splitStartX);
         var max = document.getElementById('main').clientWidth - 140;
-        w = Math.max(160, Math.min(w, max));
-        editorEl.style.flex = 'none';
-        editorEl.style.width = w + 'px';
+        var min = splitTarget === formPreviewEl() ? 280 : 160;
+        w = Math.max(min, Math.min(w, max));
+        splitTarget.style.flex = 'none';
+        splitTarget.style.width = w + 'px';
         if (editor) editor.layout();
     }
     function stopSplitResize() {
@@ -2770,8 +4417,10 @@ function wireUi() {
         document.body.style.userSelect = '';
     }
     splitHandle.addEventListener('mousedown', function (e) {
+        var p = currentProvider();
+        splitTarget = p && p.keepsEditor && p.previewFirst ? formPreviewEl() : editorEl;
         splitStartX = e.clientX;
-        splitStartW = editorEl.offsetWidth;
+        splitStartW = splitTarget.offsetWidth;
         e.preventDefault();
         document.addEventListener('mousemove', onSplitResize);
         document.addEventListener('mouseup', stopSplitResize);
@@ -2790,6 +4439,7 @@ window.ViewerInternals = {
     PreviewProviders: PreviewProviders,
     state: state,
     detectProvider: detectProvider,
+    loadThemeClass: loadThemeClass,
     providerById: providerById,
     currentProvider: currentProvider,
     previewView: previewView,
@@ -2799,7 +4449,13 @@ window.ViewerInternals = {
     docTree: docTree,
     formPreviewOpen: formPreviewOpen,
     canPreviewLang: canPreviewLang,
-    uiIsDark: uiIsDark
+    uiIsDark: uiIsDark,
+    savedSnapshotState: savedSnapshotState
+    ,languageForPath: languageForPath
+    ,severityFor: severityFor
+    ,onSarifSelect: onSarifSelect
+    ,sarifRemapPath: sarifRemapPath
+    ,minimapButtonVisible: minimapButtonVisible
 };
 
 function fail(text) {

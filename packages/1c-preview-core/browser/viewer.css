@@ -8,7 +8,7 @@ body { display:flex; flex-direction:column; }
 html.theme-dark, html.theme-dark body, html.theme-dark #main, html.theme-dark #editor { background:#1e1e1e; color:#d4d4d4; }
 html.theme-light, html.theme-light body, html.theme-light #main, html.theme-light #editor { background:#fff; color:#000; }
 #main { display:flex; flex-direction:column; width:100%; flex:1; min-height:0; }
-#workspace { display:flex; width:100%; flex:1; min-height:0; }
+#workspace { display:flex; width:100%; flex:1; min-height:0; position:relative; }
 #editor { flex:1; height:100%; min-width:0; min-height:0; overflow:hidden; }
 
 #preview-handle {
@@ -44,7 +44,7 @@ html.theme-light #form-preview.tp-root {
 #outline-panel { width:420px; min-width:200px; max-width:60%; height:100%; border-left:1px solid #ddd; font-size:12px; display:none; flex-shrink:0; overflow:hidden; position:relative; }
 #outline-panel.dark { border-left-color:#333; background:#1e1e1e; color:#d4d4d4; }
 #outline-panel.light { background:#f8f8f8; color:#000; }
-#outline-content { display:flex; flex-direction:column; height:100%; overflow:hidden; }
+#outline-content { display:flex; flex-direction:column; width:100%; min-width:0; height:100%; overflow:hidden; }
 
 #resize-handle { position:absolute; left:0; top:0; width:5px; height:100%; cursor:col-resize; z-index:2; }
 #resize-handle:hover { background:rgba(0,120,212,0.3); }
@@ -54,6 +54,28 @@ html.theme-light #form-preview.tp-root {
 #outline-top.dark { background:#1e1e1e; }
 #outline-header { padding:6px 10px; font-weight:bold; font-size:13px; border-bottom:1px solid #ddd; user-select:none; display:flex; align-items:center; gap:6px; }
 #outline-panel.dark #outline-header { border-bottom-color:#333; }
+
+#outline-kinds { display:flex; gap:2px; padding:5px 10px 0; border-bottom:1px solid #ddd; }
+#outline-kinds[hidden] { display:none; }
+#outline-panel.dark #outline-kinds { border-bottom-color:#333; }
+#outline-kinds button {
+    flex:1 1 0; min-width:0; padding:5px 8px 6px; border:0; border-bottom:2px solid transparent;
+    background:transparent; color:inherit; font:inherit; cursor:pointer; opacity:.72;
+}
+#outline-kinds button[hidden] { display:none; }
+#outline-kinds button:hover { opacity:1; background:rgba(0,0,0,.04); }
+.outline-note { padding:10px 12px; opacity:.7; font-style:italic; }
+.roles-filter { position:sticky; top:0; z-index:1; background:inherit; padding:4px 10px 6px; border-bottom:1px solid #ddd; }
+#outline-panel.light .roles-filter { background:#f8f8f8; }
+#outline-panel.dark .roles-filter { background:#1e1e1e; border-bottom-color:#333; }
+.roles-filter summary { cursor:pointer; display:flex; align-items:center; gap:6px; font-weight:600; padding:2px 0; }
+.roles-filter-count { font-weight:normal; opacity:.7; }
+#roles-filter-clear { margin-left:auto; font:inherit; font-weight:normal; padding:1px 8px; cursor:pointer; }
+#roles-filter-clear:disabled { cursor:default; opacity:.5; }
+.roles-filter-list { display:flex; flex-direction:column; gap:1px; padding:4px 0 0 2px; max-height:40vh; overflow:auto; }
+.roles-filter-list label { display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; }
+#outline-panel.dark #outline-kinds button:hover { background:rgba(255,255,255,.05); }
+#outline-kinds button.active { opacity:1; border-bottom-color:#0078d4; font-weight:600; }
 
 #sort-btn { border:none; background:none; cursor:pointer; padding:3px; opacity:0.6; border-radius:3px; display:flex; align-items:center; justify-content:center; }
 #sort-btn:hover { opacity:1; background:rgba(0,0,0,0.06); }
@@ -76,6 +98,63 @@ html.theme-light #form-preview.tp-root {
 #outline-panel.dark #filter-clear:hover { color:#eee; }
 
 #outline-list { overflow-y:auto; flex:1; }
+
+#property-resize-handle { display:none; flex:0 0 5px; cursor:row-resize; border-top:1px solid #cfcfcf; }
+#property-resize-handle:hover, #property-resize-handle:focus { background:rgba(0,120,212,.18); outline:none; }
+#outline-panel.dark #property-resize-handle { border-top-color:#444; }
+
+#property-inspector {
+    flex:0 1 44%; min-height:132px; max-height:90%; overflow:auto;
+    border-top:1px solid #cfcfcf; background:#fff;
+}
+#property-inspector[hidden] { display:none; }
+#outline-panel.dark #property-inspector { border-top-color:#444; background:#252526; }
+.attribute-inspector-head {
+    position:sticky; top:0; z-index:1; display:flex; align-items:flex-start; justify-content:space-between;
+    gap:8px; padding:9px 10px 7px; background:inherit; border-bottom:1px solid #e5e5e5;
+}
+#outline-panel.dark .attribute-inspector-head { border-bottom-color:#3c3c3c; }
+.attribute-inspector-head strong { display:block; font-size:13px; overflow-wrap:anywhere; }
+.attribute-inspector-head span { display:block; margin-top:2px; color:#707070; font-size:11px; overflow-wrap:anywhere; }
+#outline-panel.dark .attribute-inspector-head span { color:#aaa; }
+#property-inspector-close { border:0; background:transparent; color:#777; font-size:18px; line-height:16px; cursor:pointer; }
+#property-inspector-close:hover { color:inherit; }
+.attribute-inspector-title {
+    display:flex; justify-content:space-between; gap:8px; padding:7px 10px 4px;
+    color:#666; font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.02em;
+}
+#outline-panel.dark .attribute-inspector-title { color:#aaa; }
+.attribute-inspector-title span { font-weight:400; }
+.attribute-properties { margin:0; padding:0 0 8px; }
+.attribute-property { display:grid; grid-template-columns:minmax(105px, 42%) minmax(0, 1fr); padding:4px 10px; gap:8px; }
+.attribute-property:hover { background:rgba(0,0,0,.035); }
+#outline-panel.dark .attribute-property:hover { background:rgba(255,255,255,.04); }
+.attribute-property dt { min-width:0; color:#666; overflow-wrap:anywhere; }
+#outline-panel.dark .attribute-property dt { color:#aaa; }
+.attribute-property dd { min-width:0; margin:0; overflow-wrap:anywhere; }
+.attribute-before { color:#888; text-decoration:line-through; }
+.attribute-arrow { margin:0 5px; color:#999; }
+.attribute-value { color:#111; }
+#outline-panel.dark .attribute-value { color:#eee; }
+.property-color { display:inline-block; width:12px; height:12px; margin-right:5px; border:1px solid #999; vertical-align:-2px; box-sizing:border-box; }
+.attribute-inspector-empty { padding:10px; color:#888; font-style:italic; }
+.attribute-detail { margin:0 10px 8px; border-top:1px solid #e7e7e7; }
+#outline-panel.dark .attribute-detail { border-top-color:#3c3c3c; }
+.attribute-detail summary { padding:7px 0; color:#555; cursor:pointer; user-select:none; }
+#outline-panel.dark .attribute-detail summary { color:#bbb; }
+.attribute-detail dl { margin:0 0 6px; }
+.attribute-detail dl div { display:grid; grid-template-columns:minmax(95px, 42%) minmax(0, 1fr); gap:8px; padding:3px 0 3px 14px; }
+.attribute-detail dt { color:#777; overflow-wrap:anywhere; }
+.attribute-detail dd { margin:0; overflow-wrap:anywhere; }
+.form-handler-link { color:#06c; text-decoration:underline; text-underline-offset:2px; }
+.form-handler-link:hover { color:#04a; }
+#outline-panel.dark .form-handler-link { color:#6cb6ff; }
+#outline-panel.dark .form-handler-link:hover { color:#9dccff; }
+
+@media (max-width:760px) {
+    #outline-panel { width:300px; }
+    .attribute-property { grid-template-columns:1fr; gap:2px; }
+}
 
 .proc-item { padding:3px 10px 3px 20px; cursor:pointer; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .proc-item:hover { background:rgba(0,0,0,0.06); }
@@ -117,6 +196,7 @@ html.theme-light #form-preview.tp-root {
 .proc-item .icon-form-grp { background:#64748b; color:#fff; }
 .proc-item .icon-form-attr { background:#db2777; color:#fff; }
 .proc-item .icon-form-cmd { background:#ea580c; color:#fff; }
+.proc-item .icon-form-number { background:#b45309; color:#fff; font-size:8px; letter-spacing:-1px; }
 .proc-item .icon-form-etc { background:#94a3b8; color:#fff; }
 .proc-item svg.icon-form-btn { color:#2563eb; }
 .proc-item svg.icon-form-in { color:#0ea5e9; }
@@ -131,6 +211,17 @@ html.theme-light #form-preview.tp-root {
 #outline-panel.dark .proc-item.form-el .name-sub { color:#888; }
 .proc-item .name { vertical-align:middle; }
 .proc-item .line-num { float:right; color:#999; font-size:11px; margin-left:8px; }
+/* A form element's ancestor path; only a flat list (filter or name sort) needs it. */
+.proc-item .name-path { display:none; }
+#outline-list.flat .proc-item.form-el .name-path {
+    display:block; overflow:hidden; text-overflow:ellipsis; color:#888; font-size:11px; padding-left:20px;
+}
+.proc-item .handler-usages { display:block; overflow:hidden; text-overflow:ellipsis; padding-left:20px; font-size:11px; color:#888; }
+.proc-item .handler-usage { color:#1c55ae; text-decoration:none; }
+.proc-item .handler-usage:hover { text-decoration:underline; }
+#outline-panel.dark .proc-item .handler-usage { color:#6cb6ff; }
+.data-path-link { color:#1c55ae; }
+#outline-panel.dark .data-path-link { color:#6cb6ff; }
 #outline-panel.dark .proc-item .line-num { color:#666; }
 
 .region-group { padding:4px 10px 2px 10px; font-size:11px; color:#888; font-weight:bold; margin-top:4px; border-top:1px solid #eee; }
@@ -141,7 +232,22 @@ html.theme-light #form-preview.tp-root {
     position:absolute; inset:0; z-index:100;
     font-size:16px; color:#333; background:#f0f0f0;
 }
-html.theme-dark #loading { color:#ddd; background:#2d2d2d; }
+html.theme-dark #loading { color:#ddd; background:#1e1e1e; }
+#loading { font-size:0; background:#fff; }
+/* Startup waits on Chromium and Monaco; show motion, not a static label.
+ * The spinner fades in late so a fast open shows nothing at all. */
+#loading::before {
+    content:''; width:28px; height:28px; box-sizing:border-box; border-radius:50%;
+    border:3px solid rgba(0,120,212,0.2); border-top-color:#0078d4; opacity:0;
+    animation-name:bsl-spin, bsl-fade-in; animation-duration:0.8s, 0.2s;
+    animation-timing-function:linear; animation-delay:0s, 0.3s;
+    animation-iteration-count:infinite, 1; animation-fill-mode:none, forwards;
+}
+html.theme-dark #loading::before { border-color:rgba(55,148,255,0.2); border-top-color:#3794ff; }
+#loading.error { font-size:16px; }
+#loading.error::before { display:none; }
+@keyframes bsl-spin { to { transform:rotate(360deg); } }
+@keyframes bsl-fade-in { to { opacity:1; } }
 #loading.error { color:#c0392b; flex-direction:column; text-align:center; padding:0 24px; line-height:1.6; }
 
 /* A real in-flow header bar: buttons hug the right edge, wrap to a second
@@ -170,6 +276,7 @@ html.theme-dark .tb-btn:hover { background:rgba(255,255,255,0.1); }
 .tb-btn.save-err { background:#c0392b; color:#fff; opacity:1; }
 
 .tb-icon { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; display:block; pointer-events:none; }
+.platform-icon { object-fit: contain; }
 
 .tb-sep { width:1px; height:18px; flex:0 0 auto; background:rgba(0,0,0,0.14); margin:0 3px; }
 html.theme-dark .tb-sep { background:rgba(255,255,255,0.16); }
@@ -183,6 +290,74 @@ html.theme-dark .tb-sep { background:rgba(255,255,255,0.16); }
 html.theme-dark #statusbar { background:#252526; color:#ccc; border-top-color:#3c3c3c; }
 #sb-sel:empty { display:none; }
 #sb-lines { margin-left:auto; }
+#sb-crumbs { min-width:0; overflow:hidden; text-overflow:ellipsis; }
+#sb-crumbs:empty, #sb-element:empty { display:none; }
+#sb-crumbs .sb-crumb { color:inherit; text-decoration:none; }
+#sb-crumbs .sb-crumb:hover { color:#0078d4; text-decoration:underline; }
+#sb-crumbs .sb-crumb-sep { margin:0 5px; color:#999; }
+#sb-element { margin-left:auto; color:#666; overflow:hidden; text-overflow:ellipsis; }
+html.theme-dark #sb-element { color:#aaa; }
+#sb-status:empty, #sb-summary:empty, #sb-file:empty { display:none; }
+#sb-status.error { color:#c42b1c; font-weight:600; }
+#sb-summary, #sb-file { padding-left:8px; border-left:1px solid #c8c8c8; }
+html.theme-dark #sb-summary, html.theme-dark #sb-file { border-left-color:#555; }
+
+/* SARIF diagnostic tree. */
+.sf-root { display:flex; flex-direction:column; min-width:280px; min-height:0; overflow:auto; padding:8px; box-sizing:border-box; background:#f7f7f7; color:#222; }
+html.theme-dark .sf-root { background:#1e1e1e; color:#ddd; }
+/* #form-preview has a generic forced-light rule above with ID specificity.
+ * Override it explicitly for SARIF; otherwise Monaco is dark while the whole
+ * diagnostic tree remains white. */
+#form-preview.sf-root { overflow:auto; font-size:15px; }
+html.theme-dark #form-preview.sf-root { background:#1e1e1e; color:#ddd; }
+.sf-toolbar { display:flex; gap:7px; align-items:center; position:sticky; top:0; z-index:2; padding:0 0 10px; background:inherit; }
+.sf-toolbar button, .sf-toolbar select, .sf-more { border:1px solid #aaa; border-radius:3px; background:#fff; color:inherit; padding:5px 8px; font:inherit; font-size:14px; }
+html.theme-dark .sf-toolbar button, html.theme-dark .sf-toolbar select, html.theme-dark .sf-more { background:#2d2d30; border-color:#555; }
+.sf-toolbar button.active { border-color:#0078d4; background:#e5f3ff; }
+html.theme-dark .sf-toolbar button.active { background:#094771; }
+.sf-group { margin-left:calc(var(--sf-depth, 0) * 10px); }
+.sf-group-head { display:flex; align-items:center; gap:6px; min-height:30px; cursor:pointer; user-select:none; border-radius:3px; line-height:1.35; }
+.sf-group-head:hover { background:rgba(0,120,212,.09); }
+.sf-group-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; }
+.sf-error { --sf-severity-color:#a1260d; }
+.sf-warning { --sf-severity-color:#8a5a00; }
+.sf-note { --sf-severity-color:#005a9e; }
+.sf-none { --sf-severity-color:#5f6368; }
+html.theme-dark .sf-error { --sf-severity-color:#f48771; }
+html.theme-dark .sf-warning { --sf-severity-color:#dcdcaa; }
+html.theme-dark .sf-note { --sf-severity-color:#75beff; }
+html.theme-dark .sf-none { --sf-severity-color:#b7b7b7; }
+.sf-group-head.sf-error .sf-group-label, .sf-group-head.sf-warning .sf-group-label,
+.sf-group-head.sf-note .sf-group-label, .sf-group-head.sf-none .sf-group-label { color:var(--sf-severity-color); }
+.sf-counts { margin-left:auto; color:#666; font-size:12px; }
+html.theme-dark .sf-counts { color:#aaa; }
+.sf-group-body { padding-left:12px; }
+.sf-card { content-visibility:auto; contain-intrinsic-size:0 96px; display:flex; flex-direction:column; width:100%; text-align:left; gap:9px; margin:6px 0; padding:11px 12px 9px; border:1px solid #ddd; border-left-width:4px; border-radius:4px; background:#fff; color:inherit; font:inherit; }
+html.theme-dark .sf-card { background:#252526; border-color:#444; }
+.sf-card.sf-error { border-left-color:#d13438; } .sf-card.sf-warning { border-left-color:#ca8a04; } .sf-card.sf-note, .sf-card.sf-none { border-left-color:#2878c8; }
+.sf-card.selected { outline:2px solid #9184f4; outline-offset:-1px; }
+.sf-message { white-space:normal; font-size:15px; line-height:1.45; }
+.sf-card-meta { display:flex; align-items:center; gap:10px; min-height:20px; font-size:12px; }
+.sf-severity { display:flex; align-items:center; gap:6px; }
+.sf-icon { width:16px; height:16px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:1.8; }
+.sf-level { padding:2px 6px; border-radius:3px; font-weight:700; text-transform:uppercase; letter-spacing:.02em; }.sf-line { margin-left:auto; opacity:.75; }
+.sf-error .sf-icon, .sf-error .sf-level, .sf-warning .sf-icon, .sf-warning .sf-level,
+.sf-note .sf-icon, .sf-note .sf-level, .sf-none .sf-icon, .sf-none .sf-level { color:var(--sf-severity-color); }
+.sf-error .sf-level { background:#fde7e9; }
+.sf-warning .sf-level { background:#fff4ce; }
+.sf-note .sf-level { background:#deecf9; }
+.sf-none .sf-level { background:#ececec; }
+html.theme-dark .sf-error .sf-level { background:#4b2527; }
+html.theme-dark .sf-warning .sf-level { background:#463d1f; }
+html.theme-dark .sf-note .sf-level { background:#173c5b; }
+html.theme-dark .sf-none .sf-level { background:#3a3a3a; }
+.sf-empty { margin:auto; color:#777; }
+.sf-diag-line { background:rgba(240,127,140,.1); }
+.sf-diag-inline { background:rgba(240,127,140,.2); outline:1px solid rgba(240,127,140,.45); }
+.sf-diag-sel-line { background:rgba(145,132,244,.16); }
+.sf-diag-sel-inline { background:rgba(145,132,244,.27); outline:1px solid rgba(145,132,244,.7); }
+.sf-source-error { position:absolute; z-index:20; inset:16px auto auto 16px; max-width:70%; display:flex; gap:10px; align-items:center; padding:10px; border:1px solid #d13438; border-radius:4px; background:#fff4f4; color:#8a1519; box-shadow:0 2px 8px rgba(0,0,0,.2); }
+html.theme-dark .sf-source-error { background:#3b1d20; color:#ffd9dc; }
 
 #save-prompt {
     position:absolute; inset:0; z-index:50;
@@ -221,13 +396,31 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     --fp-btn-fg: #4d4d4d;
     --fp-bar: #ffffff;
     --fp-card: #ffffff;
+    /* The colour a Pages control is standing on. A group with an authored
+     * BackColor republishes it to its descendants, so the selected tab can
+     * merge into the page panel the way the reference paints it, on grey as on white. */
+    --fp-surface: #ffffff;
     --fp-focus: #1e90ff;
     --fp-link: #1c55ae;
-    --fp-tab: #ebebeb;
+    --fp-tab: #e0e0e0;
     --fp-readonly: #f2f2f2;
     --fp-chip: #ffe9a8;
-    /* Convex chrome sampled from 1C:Enterprise 8.3 Taxi screenshots
-     * (docs/скриншоты). Buttons are a white-to-#ececec vertical gradient
+    --fp-commandbar-height: 27px;
+    --fp-textbox-height: 25px;
+    --fp-check-height: 17px;
+    --fp-radio-height: 17px;
+    --fp-button-height: 26px;
+    --fp-view-status-height: 23px;
+    --fp-side-title-gap: 5px;
+    --fp-top-title-gap: 4px;
+    --fp-row-gap: 9px;
+    --fp-page-padding-x: 10px;
+    --fp-page-padding-y: 9px;
+    /* Reference field frames end 2px further out on each side than the
+     * text box alone suggests. */
+    --fp-field-trailing-inset: 1px;
+    /* Convex chrome sampled from 1C:Enterprise 8.3 Taxi screenshots.
+     * Buttons are a white-to-#ececec vertical gradient
      * with a darker bottom edge, which is what reads as "raised" in 1C. */
     --fp-btn-face: linear-gradient(180deg, #ffffff 0%, #ffffff 46%, #ececec 100%);
     --fp-btn-face-hover: linear-gradient(180deg, #fffdf5 0%, #fdf3d8 46%, #fbe6ac 100%);
@@ -240,6 +433,8 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     --fp-btn-border-default-bottom: #948300;
     --fp-tab-border: #b3b3b3;
     --fp-green: #009646;
+    --fp-scrollbar-track: #d6d6d6;
+    --fp-scrollbar-thumb: #9a9a9a;
     display: flex;
     flex-direction: column;
     height: 100%;
@@ -256,10 +451,263 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 .fp-body {
     width: 100%; height: 100%; min-height: 0; flex: 1;
     box-sizing: border-box; border: none; border-radius: 0;
-    background: var(--fp-card); padding: 4px 10px 6px;
+    /* The root command bar is window chrome and starts at y=0. Page content
+     * uses the 10x9 inset below; only the body sides/bottom own it here. */
+    background: var(--fp-card); padding: 0 var(--fp-page-padding-x) var(--fp-page-padding-y);
     overflow: auto; display: flex; flex-direction: column;
 }
-.fp-body.fp-mockup { gap: 4px; overflow: hidden; }
+.fp-body.fp-mockup { gap: var(--fp-row-gap); overflow: auto; }
+/* A Taxi window reserves its vertical scrollbar lane on the right: root chrome
+ * ends 20 px before the client edge (a 12 px stable window gutter plus 8 px
+ * padding). The reference keeps it even when nothing scrolls vertically: the
+ * command bar ends at width - 20 whether or not the form scrolls.
+ * The lane is unconditional: fp-window-overflow toggles between layout passes,
+ * and making the lane depend on it made the allocations unstable. */
+.fp-body.fp-mockup { scrollbar-gutter: stable; padding-right: 8px; }
+/* A form wider than the window scrolls horizontally and the reference runs its command
+ * bar to the ordinary 10 px inset («Еще» ends 10 px before the window edge). The bar
+ * is not an allocation input, so only its paint box takes the lane back. */
+.fp-body.fp-mockup.fp-window-overflow:not(.fp-vertical-scroll-needed)
+    > .fp-item[data-tag="AutoCommandBar"] {
+    width: calc(100% + 10px); max-width: none;
+}
+/* A semantic Form canvas (min wider than the window) is the width the platform
+ * lays the root command bar out on: a wide canvas keeps its commands on the
+ * bar instead of moving them to «Еще». */
+.fp-body.fp-mockup.fp-window-overflow.fp-semantic-canvas > .fp-item[data-tag="AutoCommandBar"] {
+    width: var(--fp-content-width); min-width: var(--fp-content-width); max-width: none;
+}
+.fp-body.fp-mockup.fp-root-native-inset {
+    padding-top: 12px;
+    padding-left: 12px;
+}
+/* A form without the platform command bar opens on the native top inset. */
+.fp-body.fp-mockup.fp-root-content-top-inset { padding-top: 12px; }
+/* Form.Group=AlwaysHorizontal: root groups share one
+ * row; the root AutoCommandBar, if any, stays a full-width strip above. */
+.fp-body.fp-mockup.fp-root-horizontal { display: grid; grid-template-rows: minmax(0, 1fr); align-items: stretch; }
+.fp-body.fp-mockup.fp-root-horizontal:has(> .fp-item[data-tag="AutoCommandBar"]) { grid-template-rows: auto minmax(0, 1fr); }
+.fp-body.fp-mockup.fp-root-horizontal > .fp-item[data-tag="AutoCommandBar"] { grid-column: 1 / -1; }
+.fp-body.fp-mockup.fp-root-horizontal > .fp-item:not([data-tag="AutoCommandBar"]) {
+    min-width: 0 !important; width: auto !important; max-width: none !important;
+}
+.fp-body.fp-mockup.fp-root-native-inset > .fp-item[data-tag="Pages"]:first-child {
+    margin-left: -1px;
+    margin-top: -2px;
+}
+.fp-body.fp-mockup.fp-root-native-inset > .fp-item[data-tag="Pages"]:first-child .fp-pages-panel-wrap {
+    padding: calc(var(--fp-page-padding-y) - 1px) var(--fp-page-padding-x) var(--fp-page-padding-y);
+}
+/* The reference's simple root logical grid publishes 25px leaf bounds on a 34px
+ * baseline. Selection chrome belongs outside those bounds. */
+.fp-body.fp-mockup.fp-root-simple-vertical-column { gap: var(--fp-row-gap); }
+.fp-body.fp-mockup.fp-root-notice-band { row-gap: var(--fp-row-gap) !important; }
+/* PagesRepresentation=None is dissolved into the Form flow by the reference. It does
+ * not consume an additional root-row separator before its Page content. */
+.fp-body.fp-mockup > .fp-item.fp-root-flattened-page:not(:first-child) {
+    margin-top: calc(-1 * var(--fp-row-gap));
+}
+.fp-body.fp-window-overflow > .fp-item:not([data-tag="AutoCommandBar"]):not([data-tag="Pages"]) {
+    width: var(--fp-content-width); min-width: var(--fp-content-width); max-width: none;
+}
+/* PagesRepresentation=None shares the body scrollport, but its wide content
+ * does not change independent root bands before/after the dissolved Pages. */
+.fp-body.fp-window-overflow.fp-flattened-page-overflow
+    > .fp-item:not([data-tag="AutoCommandBar"]):not([data-tag="Pages"]) {
+    width: 100%; min-width: 0; max-width: 100%;
+}
+.fp-body.fp-window-overflow.fp-flattened-page-overflow > .fp-item[data-tag="Pages"] {
+    width: var(--fp-content-width);
+    min-width: var(--fp-content-width);
+    max-width: none;
+    overflow: visible;
+}
+/* A wide row nested in one root band remains overflow-visible to the Form's
+ * body scrollport. Its authored canvas must not become the width of independent
+ * root siblings. */
+.fp-body > .fp-item.fp-root-band-overflow {
+    width: 100%; min-width: 0; max-width: 100%; overflow: visible;
+}
+.fp-body.fp-window-overflow > .fp-item.fp-root-band-overflow {
+    width: 100% !important; min-width: 0 !important; max-width: 100% !important; overflow: visible;
+}
+/* A root band that hosts a wide tabbed Pages is widened as a whole and the
+ * Form scrolls; its Pages paints the full canvas instead of
+ * scrolling locally. Independent root siblings stay viewport-wide. */
+.fp-body.fp-body > .fp-item.fp-root-band-canvas.fp-root-band-canvas.fp-root-band-canvas {
+    width: var(--fp-band-canvas-width) !important;
+    min-width: var(--fp-band-canvas-width) !important;
+    max-width: none !important;
+    flex-shrink: 0;
+}
+.fp-body > .fp-item.fp-root-band-canvas .fp-pages-panel-wrap { overflow-x: visible !important; }
+.fp-body.fp-window-overflow:has(> .fp-root-band-canvas)
+    > .fp-item:not(.fp-root-band-canvas):not([data-tag="AutoCommandBar"]) {
+    width: 100%; min-width: 0; max-width: 100%;
+}
+.fp-pages-active-panel.fp-window-overflow > .fp-item {
+    width: var(--fp-content-width); min-width: var(--fp-content-width); max-width: none;
+}
+/* A horizontal scrollbar is shown only for real overflow (the reference paints none for
+ * a wide canvas that still fits the active page). */
+.fp-pages-active-panel.fp-window-overflow { overflow-x: auto; }
+.fp-body.fp-vertical-scroll-without-stretch > .fp-item.fp-vstretch {
+    flex: 0 0 auto !important; min-height: auto !important;
+}
+.fp-body.fp-vertical-scroll-needed { overflow-y: scroll; scrollbar-gutter: stable; }
+/* A vertically stretched PagesRepresentation=None owns the vertical scroll of
+ * its dissolved Page: the command bar and the root bands above it
+ * stay fixed and the lane sits at the Page's right edge inside the window's
+ * reserved 20 px. Page rows already keep their own 4 px right inset. */
+.fp-body.fp-mockup.fp-vertical-scroll-needed:has(> .fp-item.fp-root-flattened-page.fp-vstretch) {
+    overflow-y: hidden;
+}
+.fp-body.fp-mockup.fp-vertical-scroll-needed > .fp-item.fp-root-flattened-page.fp-vstretch {
+    flex: 1 1 0 !important; min-height: 0 !important;
+    width: 100% !important; min-width: 0 !important; max-width: 100% !important;
+    overflow-x: hidden !important; overflow-y: auto !important;
+    scrollbar-gutter: stable; box-sizing: border-box;
+}
+/* Inside that scrollport the Page content scrolls instead of shrinking: a
+ * vertically stretched descendant keeps at least its content height, otherwise
+ * stacked groups collapse to 0 px and their children overlap. */
+.fp-body.fp-mockup.fp-vertical-scroll-needed > .fp-item.fp-root-flattened-page.fp-vstretch > .fp-control-wrap,
+.fp-body.fp-mockup.fp-vertical-scroll-needed > .fp-item.fp-root-flattened-page.fp-vstretch > .fp-control-wrap > .fp-group-block,
+.fp-body.fp-mockup.fp-vertical-scroll-needed > .fp-item.fp-root-flattened-page.fp-vstretch .fp-item.fp-vstretch {
+    flex: 1 0 auto !important;
+}
+/* The root visibility tumbler paint band sits two pixels above the unchanged
+ * root layout row, so the following dissolved Page keeps its origin. */
+.fp-body.fp-mockup.fp-form-catalog.fp-vertical-scroll-needed.fp-flattened-page-overflow
+    > .fp-item:has(.fp-segmented) .fp-segmented {
+    position: relative;
+    top: -2px;
+}
+/* CheckBoxType=Tumbler / RadioButtonType=Tumbler */
+.fp-switch {
+    /* The reference paints a thin grey track under a larger white knob that overhangs it. */
+    position: relative; display: inline-block; flex: 0 0 auto;
+    width: 34px; height: 18px; box-sizing: border-box;
+}
+.fp-switch::before {
+    content: ''; position: absolute; left: 2px; right: 0; top: 3px; height: 12px;
+    border-radius: 6px; background: #b3b3b3;
+}
+.fp-switch-knob {
+    position: absolute; left: 0; top: 0; box-sizing: border-box;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: #fff; border: 1px solid #8c8c8c;
+}
+.fp-segmented {
+    position: relative;
+    top: -2px;
+}
+.fp-body.fp-mockup.fp-form-catalog.fp-vertical-scroll-needed.fp-flattened-page-overflow
+    > .fp-item:has(.fp-segmented) {
+    margin-bottom: 2px;
+}
+/* Taxi scrollbars: a 16 px lane, a flat #9a9a9a thumb, and 23 px arrows.
+ * Inactive lanes (no thumb) stay transparent so they blend with the form.
+ * An active lane paints an 8 px #d6d6d6 strip — the same geometry as the thumb. */
+.fp-mockup::-webkit-scrollbar, .fp-mockup ::-webkit-scrollbar {
+    width: 16px; height: 16px; background: transparent;
+}
+.fp-mockup::-webkit-scrollbar-corner, .fp-mockup ::-webkit-scrollbar-corner { background: transparent; }
+.fp-mockup::-webkit-scrollbar-track, .fp-mockup ::-webkit-scrollbar-track { background: transparent; }
+.fp-mockup::-webkit-scrollbar-track-piece:vertical, .fp-mockup ::-webkit-scrollbar-track-piece:vertical {
+    background: transparent;
+}
+.fp-mockup::-webkit-scrollbar-track-piece:horizontal, .fp-mockup ::-webkit-scrollbar-track-piece:horizontal {
+    background: transparent;
+}
+.fp-mockup::-webkit-scrollbar-track-piece:disabled, .fp-mockup ::-webkit-scrollbar-track-piece:disabled {
+    background: transparent;
+}
+.fp-mockup::-webkit-scrollbar-thumb:vertical, .fp-mockup ::-webkit-scrollbar-thumb:vertical {
+    background: linear-gradient(90deg, transparent 5px, #9a9a9a 5px, #9a9a9a 13px, transparent 13px);
+}
+.fp-mockup::-webkit-scrollbar-thumb:horizontal, .fp-mockup ::-webkit-scrollbar-thumb:horizontal {
+    background: linear-gradient(180deg, transparent 5px, #9a9a9a 5px, #9a9a9a 13px, transparent 13px);
+}
+.fp-mockup::-webkit-scrollbar-button, .fp-mockup ::-webkit-scrollbar-button { display: none; }
+.fp-mockup::-webkit-scrollbar-button:vertical:start:decrement,
+.fp-mockup ::-webkit-scrollbar-button:vertical:start:decrement {
+    display: block; height: 23px; background: no-repeat 5px 9px
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M3 0L6 4H0z' fill='%23595959'/%3E%3C/svg%3E");
+}
+.fp-mockup::-webkit-scrollbar-button:vertical:end:increment,
+.fp-mockup ::-webkit-scrollbar-button:vertical:end:increment {
+    display: block; height: 23px; background: no-repeat 5px 10px
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 0H6L3 4z' fill='%23595959'/%3E%3C/svg%3E");
+}
+.fp-mockup::-webkit-scrollbar-button:horizontal:start:decrement,
+.fp-mockup ::-webkit-scrollbar-button:horizontal:start:decrement {
+    display: block; width: 23px; background: no-repeat 9px 5px
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='6'%3E%3Cpath d='M0 3L4 0V6z' fill='%23595959'/%3E%3C/svg%3E");
+}
+.fp-mockup::-webkit-scrollbar-button:horizontal:end:increment,
+.fp-mockup ::-webkit-scrollbar-button:horizontal:end:increment {
+    display: block; width: 23px; background: no-repeat 10px 5px
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='6'%3E%3Cpath d='M0 0L4 3L0 6z' fill='%23595959'/%3E%3C/svg%3E");
+}
+.fp-mockup::-webkit-scrollbar-button:vertical:start:decrement:disabled,
+.fp-mockup ::-webkit-scrollbar-button:vertical:start:decrement:disabled {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M3 0L6 4H0z' fill='%23c2c2c2'/%3E%3C/svg%3E");
+}
+.fp-mockup::-webkit-scrollbar-button:vertical:end:increment:disabled,
+.fp-mockup ::-webkit-scrollbar-button:vertical:end:increment:disabled {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 0H6L3 4z' fill='%23c2c2c2'/%3E%3C/svg%3E");
+}
+.fp-mockup::-webkit-scrollbar-button:horizontal:start:decrement:disabled,
+.fp-mockup ::-webkit-scrollbar-button:horizontal:start:decrement:disabled {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='6'%3E%3Cpath d='M0 3L4 0V6z' fill='%23c2c2c2'/%3E%3C/svg%3E");
+}
+.fp-mockup::-webkit-scrollbar-button:horizontal:end:increment:disabled,
+.fp-mockup ::-webkit-scrollbar-button:horizontal:end:increment:disabled {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='6'%3E%3Cpath d='M0 0L4 3L0 6z' fill='%23c2c2c2'/%3E%3C/svg%3E");
+}
+/* The window's own scrollbar keeps the established 12 px layout lane. The reference paints
+ * the window strip 3 px from the client edge (W-11..W-4), so inside 12 px the
+ * strip and glyphs move to 1..9 px; nested pages and tables keep 16 px lanes. */
+.fp-body.fp-mockup::-webkit-scrollbar { width: 12px; height: 12px; }
+.fp-body.fp-mockup::-webkit-scrollbar-track-piece:vertical {
+    background: transparent;
+}
+.fp-body.fp-mockup::-webkit-scrollbar-track-piece:horizontal {
+    background: transparent;
+}
+.fp-body.fp-mockup::-webkit-scrollbar-track-piece:disabled { background: transparent; }
+.fp-body.fp-mockup.fp-vertical-scroll-needed::-webkit-scrollbar-track-piece:vertical {
+    background: linear-gradient(90deg, transparent 1px, #d6d6d6 1px, #d6d6d6 9px, transparent 9px);
+}
+.fp-body.fp-mockup.fp-vertical-scroll-needed::-webkit-scrollbar-track-piece:horizontal {
+    background: linear-gradient(180deg, transparent 1px, #d6d6d6 1px, #d6d6d6 9px, transparent 9px);
+}
+.fp-body.fp-mockup.fp-vertical-scroll-needed > .fp-item.fp-root-flattened-page.fp-vstretch::-webkit-scrollbar-track-piece:vertical {
+    background: linear-gradient(90deg, transparent 6px, #d6d6d6 6px, #d6d6d6 14px, transparent 14px);
+}
+.fp-body.fp-mockup.fp-vertical-scroll-needed > .fp-item.fp-root-flattened-page.fp-vstretch::-webkit-scrollbar-thumb:vertical {
+    background: linear-gradient(90deg, transparent 6px, #9a9a9a 6px, #9a9a9a 14px, transparent 14px);
+}
+.fp-body.fp-mockup:not(.fp-vertical-scroll-needed)::-webkit-scrollbar-thumb:vertical,
+.fp-body.fp-mockup:not(.fp-vertical-scroll-needed)::-webkit-scrollbar-thumb:horizontal {
+    background: transparent;
+}
+.fp-body.fp-mockup.fp-vertical-scroll-needed::-webkit-scrollbar-thumb:vertical {
+    background: linear-gradient(90deg, transparent 1px, #9a9a9a 1px, #9a9a9a 9px, transparent 9px);
+}
+.fp-body.fp-mockup.fp-vertical-scroll-needed::-webkit-scrollbar-thumb:horizontal {
+    background: linear-gradient(180deg, transparent 1px, #9a9a9a 1px, #9a9a9a 9px, transparent 9px);
+}
+.fp-body.fp-mockup::-webkit-scrollbar-button:vertical:end:increment { background-position: 2px 10px; }
+.fp-body.fp-mockup::-webkit-scrollbar-button:horizontal:start:decrement { background-position: 9px 2px; }
+.fp-body.fp-mockup::-webkit-scrollbar-button:horizontal:end:increment { background-position: 10px 2px; }
+/* The window command bar is chrome above the scrolled content: the window
+ * scrollbar lane starts at the first content row. */
+.fp-body.fp-mockup::-webkit-scrollbar-button:vertical:start:decrement {
+    height: calc(var(--fp-window-scroll-start, 0px) + 23px);
+    background-position: 2px calc(var(--fp-window-scroll-start, 0px) + 9px);
+}
 .fp-body > .fp-item[data-tag="Pages"] {
     flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
 }
@@ -272,12 +720,70 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 .fp-meta { display: none; }
 
 .fp-item { min-width: 0; width: auto; max-width: 100%; box-sizing: border-box; padding: 1px 0; margin: 0; cursor: pointer; border-radius: 0; border: 1px solid transparent; }
+.fp-body.fp-root-simple-vertical-column > .fp-item {
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
+}
 .fp-body > .fp-item { width: 100%; min-width: 0; }
+.fp-body > .fp-item.fp-no-hstretch { width: auto; align-self: flex-start; }
 .fp-item:hover { border-color: transparent; background: transparent; }
 .fp-item.fp-container { border-color: transparent; }
 .fp-item.fp-container:hover { border-color: transparent; }
 .fp-item.fp-bare { border: none; padding: 0; margin: 0; background: transparent; }
 .fp-item.fp-bare:hover { border: none; background: transparent; }
+.fp-item.fp-bare.fp-compact-color-band { padding: 5px; }
+.fp-item.fp-compact-color-band .fp-native-label-decoration {
+    padding-top: 0; padding-bottom: 0; border-top-width: 0; border-bottom-width: 0;
+}
+.fp-item.fp-compact-color-band .fp-native-label-decoration > .fp-control-wrap { min-height: 0; }
+.fp-item.fp-bare.fp-color-surface:not(.fp-compact-color-band):not(.fp-root-color-surface) { padding: 3px 5px; }
+/* A card of a separator-spaced stack takes the vertical half of that inset, at
+ * the 6px root-surface depth rather than the 3px nested-band one: the reference
+ * leaves 11 painted rows between the grey separator and the card's first glyph
+ * row and 12 below the last glyph row. The asymmetry is what the reference
+ * paints, not a derived value.
+ * Sideways the reference leaves five white columns between the grey column
+ * gutter and the first glyph where we leave one, but that inset is
+ * NOT landed here: adding padding-inline feeds back into the column width
+ * resolution and squeezed the grey gutter out of the render entirely. Fixing it
+ * needs the width model, not another padding. */
+.fp-item.fp-stack-card { padding-top: 6px; padding-bottom: 9px; }
+.fp-item.fp-stack-card, .fp-item.fp-neutral-surface { padding-left: 5px; padding-right: 5px; }
+.fp-item.fp-bare.fp-color-surface.fp-color-surface-picture:not(.fp-root-color-surface) { padding-top: 5px; padding-bottom: 5px; }
+.fp-item.fp-bare.fp-root-color-surface:not(.fp-compact-color-band) { padding: 6px 5px; }
+.fp-body.fp-window-overflow .fp-item.fp-root-band-overflow .fp-search-picture-surface {
+    /* The reference keeps the search row on the window band: the field fills the
+     * viewport and DataSearch sits at the right edge. Publishing the local
+     * overflow canvas here pushed the glyph past the window. */
+    width: 100% !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+    position: relative;
+    box-shadow: 0 6px 0 #fff;
+}
+.fp-item.fp-search-picture-surface > .fp-control-wrap > .fp-group-bare > .fp-children {
+    position: relative;
+    column-gap: 0 !important;
+    width: 100%;
+    max-width: none;
+    flex-wrap: nowrap !important;
+}
+.fp-item.fp-search-picture-surface > .fp-control-wrap > .fp-group-bare > .fp-children
+    > .fp-item[data-tag="InputField"]:first-child {
+    position: relative;
+    left: 4px;
+    top: 3px;
+    flex: 0 0 calc(100% - 20px) !important;
+    width: calc(100% - 20px) !important;
+}
+/* A compact logical row keeps the authored colour fill, while the generic
+ * surface inset is editor paint and must not increase the native row band. */
+.fp-item.fp-ordinary-row-control.fp-bare.fp-color-surface:not(.fp-root-color-surface):not(.fp-tooltip-bg):not(.fp-color-surface-picture) {
+    padding-top: 0;
+    padding-bottom: 0;
+}
 .fp-item.selected,
 .fp-item.fp-bare.selected,
 .fp-item.fp-container.selected {
@@ -289,26 +795,182 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     position: relative;
 }
 .fp-control { background: transparent; }
+/* Selection/hover belong to editor paint, not the native ordinary-row flow.
+ * Special button, radio, table and command layouts never receive this class. */
+.fp-item.fp-ordinary-row-control {
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
+}
+.fp-item.fp-ordinary-row-control.fp-vertical-compact-field {
+    padding-top: 1px;
+    border-top-width: 1px;
+}
+/* The 2px top chrome places the first TextBox of a compact stack. Between two
+ * stacked editors the reference keeps the ordinary 34px step (25 + 9), so the second one
+ * must not pay it again (that made the step 36). */
+.fp-item.fp-ordinary-row-control.fp-vertical-compact-field
+    + .fp-item.fp-ordinary-row-control.fp-vertical-compact-field {
+    padding-top: 0;
+    border-top-width: 0;
+}
 .fp-item.fp-bar-item { flex: 0 0 auto !important; flex-shrink: 0 !important; min-width: min-content !important; max-width: none !important; width: auto !important; border: none; padding: 0; margin: 0; background: transparent; overflow: visible; }
 .fp-item.fp-bar-item:hover { background: var(--fp-hover); }
 .fp-item.fp-vstretch { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; }
 .fp-item[data-tag="Table"],
 .fp-item.fp-pages-tabs { width: 100%; align-self: stretch; max-width: 100%; min-width: 0; }
-.fp-item.fp-pages-none { width: auto !important; flex: 0 0 auto !important; align-self: flex-start; max-width: none; }
+.fp-item[data-tag="Table"].fp-table-authored-width {
+    align-self: flex-start;
+}
+/* Exception: a page row led by a stretching LabelField keeps the row width,
+ * so its trailing hyperlink sits at the right as in the reference. */
+.fp-item.fp-pages-none:not(.fp-vstretch):not([data-fp-authored-width-present="1"]):not(:has(> .fp-control-wrap > .fp-group-block > .fp-children > .fp-item[data-tag="LabelField"].fp-hstretch)) { width: auto !important; flex: 0 0 auto !important; align-self: flex-start; max-width: none; }
+/* PagesRepresentation=None is dissolved on the trailing edge: the 1px bottom
+ * padding/border stacked onto the next radio. Top chrome stays for a
+ * checkbox-only page. An editor page still inherited the generic item
+ * padding and pushed the next editor down. */
+.fp-item.fp-pages-none {
+    padding-bottom: 0;
+    border-bottom-width: 0;
+}
+.fp-item.fp-pages-none > .fp-control-wrap { min-height: 0; }
+/* A Pages=None nested in another Pages=None is the same native 20 px row:
+ * the inner one carries no second top band. */
+.fp-item.fp-pages-none > .fp-control-wrap > .fp-group-block > .fp-children-horizontal > .fp-item.fp-pages-none:only-child { padding-top: 0; border-top-width: 0; }
+/* Its row of a picture and a hyperlink button is the native 20 px link row
+ * (a 16 px picture and a 20 px button), not two 28 px editor lanes. */
+.fp-item.fp-pages-none > .fp-control-wrap > .fp-group-block > .fp-children-horizontal > .fp-item.fp-pages-none:only-child
+    .fp-children-horizontal > .fp-item.fp-control:is([data-tag="PictureDecoration"], [data-tag="Button"]):has(.fp-link, .fp-picture-decoration, img) {
+    padding-top: 0; padding-bottom: 0; border-top-width: 0; border-bottom-width: 0;
+}
+.fp-item.fp-pages-none > .fp-control-wrap > .fp-group-block > .fp-children-horizontal > .fp-item.fp-pages-none:only-child
+    .fp-children-horizontal > .fp-item.fp-control:is([data-tag="PictureDecoration"], [data-tag="Button"]):has(.fp-link, .fp-picture-decoration, img) > .fp-control-wrap {
+    min-height: 20px; height: 20px; align-items: center;
+}
+/* A trailing wizard footer is window-wide. Flattened Pages=None
+ * would otherwise shrink to the CommandBar and leave Далее on the left. */
+.fp-item.fp-root-command-footer {
+    width: 100% !important;
+    max-width: 100% !important;
+    align-self: stretch !important;
+}
+.fp-item.fp-root-command-footer > .fp-control-wrap,
+.fp-item.fp-root-command-footer > .fp-control-wrap > .fp-group-block,
+.fp-item.fp-root-command-footer > .fp-control-wrap > .fp-group-bare,
+.fp-item.fp-root-command-footer > .fp-control-wrap > .fp-children,
+.fp-item.fp-root-command-footer > .fp-control-wrap > .fp-group-block > .fp-children,
+.fp-item.fp-root-command-footer > .fp-control-wrap > .fp-group-bare > .fp-children,
+.fp-item.fp-root-command-footer .fp-item.fp-pages-none {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 1 1 auto !important;
+    align-self: stretch !important;
+}
+.fp-item.fp-pages-none.fp-footer-pages-track:not(.fp-vstretch) {
+    width: 100% !important;
+    max-width: 100% !important;
+    flex: 1 1 auto !important;
+    align-self: stretch !important;
+}
+.fp-item.fp-root-command-footer .fp-item.fp-pages-none > .fp-control-wrap,
+.fp-item.fp-root-command-footer .fp-item.fp-pages-none > .fp-control-wrap > .fp-group-block,
+.fp-item.fp-root-command-footer .fp-item.fp-pages-none > .fp-control-wrap > .fp-page-block,
+.fp-item.fp-root-command-footer .fp-item.fp-pages-none > .fp-control-wrap > .fp-group-block > .fp-children,
+.fp-item.fp-root-command-footer .fp-item.fp-pages-none > .fp-control-wrap > .fp-page-block > .fp-children {
+    width: 100% !important;
+    max-width: 100% !important;
+}
+.fp-item[data-tag="CommandBar"].fp-align-right > .fp-control-wrap,
+.fp-item[data-tag="CommandBar"].fp-align-right > .fp-control-wrap > .fp-commandbar {
+    width: auto;
+    max-width: none;
+    flex: 0 0 auto;
+}
+/* Taxi section-nav: AlwaysHorizontal + HorizontalSpacing=None + ≥3
+ * PagesRepresentation=None chips. Captions wrap at the longest word;
+ * extras clip at the window. A lone Pages=None status label is not a chip
+ * and must stay one line. */
+.fp-children-horizontal.fp-section-nav > .fp-item.fp-pages-none .fp-label-decoration,
+.fp-children-horizontal.fp-section-nav > .fp-item.fp-pages-none .fp-link {
+    display: inline-block;
+    width: min-content;
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: normal;
+    word-break: normal;
+    box-sizing: content-box;
+    padding-left: 13px;
+    padding-right: 13px;
+}
+.fp-children-horizontal.fp-section-nav {
+    overflow-x: clip;
+    overflow-y: visible;
+}
 .fp-item.fp-vstretch > .fp-control-wrap,
 .fp-item.fp-vstretch > .fp-group-block,
 .fp-item.fp-vstretch > .fp-page-block { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.fp-item.fp-vstretch > .fp-control-wrap > .fp-group-bare,
+.fp-item.fp-vstretch > .fp-control-wrap > .fp-group-block,
+.fp-item.fp-vstretch > .fp-control-wrap > .fp-page-block {
+    flex: 1 1 auto; min-height: 0; min-width: 0; display: flex; flex-direction: column; align-self: stretch;
+}
+.fp-item.fp-vstretch > .fp-control-wrap > .fp-group-bare > .fp-children,
+.fp-item.fp-vstretch > .fp-control-wrap > .fp-group-block > .fp-children,
+.fp-item.fp-vstretch > .fp-control-wrap > .fp-page-block > .fp-children {
+    flex: 1 1 auto; min-height: 0; min-width: 0;
+}
 .fp-item.fp-vstretch > .fp-control-wrap.fp-field-row {
     align-items: stretch; width: 100%; min-height: 0; flex-shrink: 1;
 }
-.fp-item.fp-vstretch .fp-input-wrap { flex: 1 1 auto; min-height: 0; width: 100%; }
-.fp-item.fp-vstretch textarea.fp-input {
-    resize: none; min-height: 60px; flex: 1 1 auto; height: auto; align-self: stretch;
+.fp-item.fp-vstretch > .fp-control-wrap.fp-field-row > .fp-input-wrap {
+    flex: 1 1 auto; min-height: 0; width: 100%;
+}
+.fp-item.fp-vstretch > .fp-control-wrap.fp-field-row textarea.fp-input {
+    resize: none; min-height: 0; flex: 1 1 auto; height: auto; align-self: stretch;
 }
 .fp-field-row.fp-multiline { align-items: flex-start; }
 .fp-field-row.fp-multiline textarea.fp-input { resize: none; line-height: 1.3; }
+/* Authored wrap in a left title (Сокр. юр.\\nнаименование) is as tall as two
+ * caption lines. Centering the TextBox in that band drops it 11px below the reference.
+ * The editor stays the 25px Taxi box; the row grows with the label. Stretching
+ * the wrap to the caption (Сокр 35, Публичное 33) is not the reference. */
+.fp-field-row.fp-title-wrap { align-items: flex-start; }
+.fp-field-row.fp-title-wrap > .fp-input-wrap {
+    align-self: flex-start;
+    height: var(--fp-textbox-height);
+    min-height: var(--fp-textbox-height);
+    max-height: var(--fp-textbox-height);
+    flex-grow: 0;
+}
+.fp-children-horizontal > .fp-item:has(> .fp-control-wrap.fp-title-wrap)
+    + .fp-item[data-tag="Button"] {
+    align-self: flex-start;
+}
 .fp-pages-active-panel > .fp-item.fp-vstretch { width: 100%; align-self: stretch; }
+/* Taxi pins "Еще" to the right edge of a root form command bar: the reference
+ * puts it at 942..970 of a 992 px form while the commands stay packed left.
+ * Without this the button followed the last command. Deliberately not
+ * !important: the document-posting rules below, which pack "Еще" a couple of
+ * pixels after a trailing text command, still win where they apply. */
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar > .fp-more-item { margin-left: auto; }
 .fp-item.fp-align-right { margin-left: auto; }
+.fp-children-horizontal > .fp-item.fp-align-right + .fp-item.fp-align-right { margin-left: 0 !important; }
+/* The auto margin needs a row as wide as its group: the group item already
+ * spans its column, but its wrappers shrank to the content, so a
+ * right-located command bar sat right after the preceding item. */
+.fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal > .fp-item.fp-align-right) > .fp-control-wrap,
+.fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal > .fp-item.fp-align-right) > .fp-control-wrap > .fp-group-bare,
+.fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal > .fp-item.fp-align-right) > .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal {
+    flex: 1 1 auto; width: 100%; box-sizing: border-box;
+}
+.fp-item.fp-align-center { margin-left: auto; margin-right: auto; }
+.fp-item.fp-align-left { margin-right: auto; }
 .fp-item.fp-totals-bg { background: #f0f0f0; padding: 2px 6px; }
 .fp-item.fp-highlight-bg .fp-input-wrap { background: #ffe8b3; }
 .fp-item.fp-tooltip-bg { background: #fffad9; padding: 4px 8px; }
@@ -321,42 +983,602 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 .fp-body.fp-children, .fp-item.fp-hstretch > .fp-control-wrap > .fp-children,
 .fp-pages-active-panel.fp-children, .fp-group-bare.fp-children { width: 100%; }
 .fp-children.fp-children-vertical { flex-direction: column; align-items: flex-start; }
+/* Nested vertical field stacks inside a horizontal parent keep the 29px editor
+ * band (1px pad + 1px border on both sides). Omitted spacing then needs 5px to
+ * hit the reference's 34px row cadence; the 3px compact fallback leaves 32px and
+ * accumulates down the stack. Two-child compactOrdinaryRows
+ * already publish Single 9px inline and must keep that. */
+.fp-children-horizontal .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""] {
+    row-gap: 5px;
+}
+/* The compact 3/5px fallbacks assume items that carry the editor band chrome
+ * (1px pad + 1px border). A bare group of decorations and hyperlinks has no
+ * such chrome, so Auto spacing is the plain Taxi Single step between its
+ * native rows (step 27 between 18px rows, not 21). A picture hyperlink beside
+ * the caption is centred on that 18px
+ * row instead of growing it to the 26px button band. A Page keeps its
+ * compact cadence: adjacent labels on a Page stay adjacent. */
+.fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""]:not(.fp-pages-active-panel)
+    > .fp-item.fp-container.fp-bare:has(.fp-native-label-decoration):not(:has(
+        .fp-input-wrap, [data-tag="LabelField"], .fp-button, a.fp-link:not(.fp-icon-btn),
+        input, textarea, select, table))
+    + .fp-item.fp-container.fp-bare:has(.fp-native-label-decoration):not(:has(
+        .fp-input-wrap, [data-tag="LabelField"], .fp-button, a.fp-link:not(.fp-icon-btn),
+        input, textarea, select, table)) {
+    margin-top: 6px;
+}
+/* Parallel decoration columns of a VerticalSpacing=Half row share one 21px
+ * text track, so labels, values and trend pictures stay row-aligned. An empty
+ * spacer decoration is one text line, a ByFontSize picture sits on that line. */
+.fp-children-horizontal[data-fp-vertical-spacing-mode="half"]
+    > .fp-item.fp-container.fp-bare > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""] {
+    row-gap: 3px;
+}
+.fp-children-horizontal[data-fp-vertical-spacing-mode="half"]
+    > .fp-item.fp-container.fp-bare > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""]
+    > .fp-item.fp-control:is(:has(> .fp-control-wrap > .fp-deco-spacer:only-child), .fp-picture-byfontsize-control) {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+    height: 18px;
+}
+.fp-children-horizontal[data-fp-vertical-spacing-mode="half"]
+    > .fp-item.fp-container.fp-bare > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""]
+    > .fp-item.fp-control:is(:has(> .fp-control-wrap > .fp-deco-spacer:only-child), .fp-picture-byfontsize-control)
+    > .fp-control-wrap {
+    min-height: 0; height: 18px;
+}
+/* An empty indent before a lone checkbox does not set the row height: an
+ * «indent + checkbox» row is the 21px checkbox row (the reference 26px check
+ * cadence), 26px only because the spacer kept the 22px editor band.
+ * Rows with editors keep it. */
+.fp-children-horizontal:has(> .fp-item:nth-child(2):last-child .fp-check):not(:has(.fp-input-wrap, .fp-button, table, textarea, .fp-deco-spacer ~ *, .fp-item:nth-child(3)))
+    > .fp-item.fp-control[data-tag="LabelDecoration"]:first-child:has(> .fp-control-wrap > .fp-deco-spacer:only-child) {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+    min-height: 23px; /* the 26px check pitch less the 3px compact gap */
+}
+.fp-children-horizontal:has(> .fp-item:nth-child(2):last-child .fp-check):not(:has(.fp-input-wrap, .fp-button, table, textarea, .fp-deco-spacer ~ *, .fp-item:nth-child(3)))
+    > .fp-item.fp-control[data-tag="LabelDecoration"]:first-child:has(> .fp-control-wrap > .fp-deco-spacer:only-child) > .fp-control-wrap {
+    min-height: 0;
+}
+/* An untitled LabelField has no editor frame: in a VerticalSpacing=None stack
+ * it is one text line, like the decoration above it (18px rather than the
+ * 22px editor band). */
+.fp-children.fp-children-vertical[data-fp-vertical-spacing-mode="none"]
+    > .fp-item.fp-control[data-tag="LabelField"] > .fp-control-wrap.fp-title-none {
+    min-height: 18px;
+}
+/* Inside a horizontal owner the omitted gap is already 5px, so the same
+ * Single 9px step needs only 4px more (26px in the reference, 29px with the
+ * 6px compact top-up). */
+.fp-children-horizontal .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""]:not(.fp-pages-active-panel)
+    > .fp-item.fp-container.fp-bare:has(.fp-native-label-decoration):not(:has(
+        .fp-input-wrap, [data-tag="LabelField"], .fp-button, a.fp-link:not(.fp-icon-btn),
+        input, textarea, select, table))
+    + .fp-item.fp-container.fp-bare:has(.fp-native-label-decoration):not(:has(
+        .fp-input-wrap, [data-tag="LabelField"], .fp-button, a.fp-link:not(.fp-icon-btn),
+        input, textarea, select, table)) {
+    margin-top: 4px;
+}
+.fp-children.fp-children-horizontal > .fp-item.fp-native-label-decoration
+    ~ .fp-item.fp-control:has(> .fp-control-wrap > a.fp-link.fp-icon-btn) {
+    height: 18px;
+    align-self: center;
+    overflow: visible;
+}
+.fp-children.fp-children-horizontal > .fp-item.fp-native-label-decoration
+    ~ .fp-item.fp-control:has(> .fp-control-wrap > a.fp-link.fp-icon-btn) > .fp-control-wrap {
+    min-height: 0;
+    height: 18px;
+}
+/* The same 18px row holds a standard picture decoration and a frameless
+ * button: a caption + History button row steps 26/16px in the reference,
+ * not over a 26px control band. */
+.fp-children.fp-children-horizontal > .fp-item.fp-native-label-decoration
+    ~ .fp-item.fp-control:has(> .fp-control-wrap > .fp-picture-decoration.fp-standard-picture),
+.fp-children.fp-children-horizontal > .fp-item.fp-native-label-decoration
+    ~ .fp-item.fp-shape-none-button {
+    height: 18px;
+    align-self: center;
+    overflow: visible;
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-children.fp-children-horizontal > .fp-item.fp-native-label-decoration
+    ~ .fp-item.fp-control:has(> .fp-control-wrap > .fp-picture-decoration.fp-standard-picture) > .fp-control-wrap,
+.fp-children.fp-children-horizontal > .fp-item.fp-native-label-decoration
+    ~ .fp-item.fp-shape-none-button > .fp-control-wrap {
+    min-height: 0;
+    height: 18px;
+}
+/* A bare group with no rendered children (filled only at runtime) takes no
+ * row in the reference. As a zero-height flex item it still
+ * opened a row gap, so the nested 5px cadence pushed the following Pages
+ * down by an extra slot. */
+.fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""]
+    > .fp-item.fp-container.fp-bare:not(:has(.fp-item)) {
+    display: none;
+}
+/* Page-direct titled stacks use the same 34px
+ * editor cadence: 29px item band + 5px omitted gap. Generic chrome-drop
+ * otherwise leaves 25+3=28 and accumulates down the section. */
+.fp-pages-active-panel.fp-children-vertical
+    > .fp-item.fp-container
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""] {
+    row-gap: 5px;
+}
+.fp-pages-active-panel.fp-children-vertical
+    > .fp-item.fp-container
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical
+    > .fp-item.fp-control[data-tag="InputField"]:not(.fp-ordinary-row-control) {
+    padding-top: 1px;
+    padding-bottom: 1px;
+    border-top-width: 1px;
+    border-bottom-width: 1px;
+}
+/* Nested 5px is the editor-row cadence. A painted notification
+ * surface stacks StaticText on the glyph line; the same rule added 10px to
+ * a 3-label banner and shifted every following row. */
+.fp-color-surface .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""]:not(:has(> .fp-item:not(.fp-native-label-decoration))) {
+    gap: 0;
+}
+/* Two detached titled logical columns use the reference's ordinary stacked-row cadence.
+ * Scope it to the semantic pair so tables, command bars and unrelated nested
+ * forms retain their own special layout contracts. */
+.fp-paired-titled-logical-column
+    .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""] { row-gap: 5px; }
+/* Detached columns governed by explicit Width/MaxWidth bands use the same
+ * 34px reference stacked-row cadence (29px item band + 5px gap). */
+.fp-authored-width-envelope-column
+    .fp-children.fp-children-vertical[data-fp-vertical-spacing-mode=""] { row-gap: 5px; }
+/* Parallel authored columns share the reference row tracks. Intrinsically short labels
+ * and checkboxes reserve the same band as the neighbouring editor. */
+.fp-authored-width-envelope-column
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical > .fp-item {
+    min-height: 29px;
+}
+/* GroupVerticalAlign=Center puts a one-line LabelDecoration on the editor's
+ * midline.  Its glyph box is 11.4px shorter than the native 26px editor, so
+ * the browser needs half that delta as a paint-only offset. */
+.fp-authored-width-envelope-column
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical
+    > .fp-item[data-tag="LabelDecoration"] > .fp-control-wrap {
+    position: relative;
+    top: 5.7px;
+}
+/* A one-line StaticText keeps its native 16px box inside that 29px slot:
+ * the reference centres it in the 25px editor row, floor((25 - 16) / 2) = 4px below
+ * the row top, which sits under our 2px editor band. */
+.fp-authored-width-envelope-column
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical
+    > .fp-item.fp-native-label-decoration:not([style*="height"]):not(:has(br)) {
+    min-height: 0;
+    margin-top: 6px;
+    margin-bottom: 7px;
+}
+.fp-authored-width-envelope-column
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical
+    > .fp-item.fp-native-label-decoration:not([style*="height"]):not(:has(br)) > .fp-control-wrap {
+    top: 0;
+}
+.fp-authored-width-envelope-column
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children.fp-children-vertical
+    > .fp-item.fp-native-label-decoration:not([style*="height"]):not(:has(br)):not(:has(.fp-link, .fp-label-has-link, a))
+    > .fp-control-wrap > .fp-label-decoration {
+    padding-top: 0; padding-bottom: 0;
+}
+/* A chrome-less full-width editor followed by a bare row of vertical columns:
+ * the stack gap is 3px and the first column editor adds only its 2px top
+ * chrome, 5px where the reference keeps the ordinary 9px row gap. A stack
+ * nested in a horizontal row already runs on the 5px cadence. */
+.fp-children.fp-children-vertical:not(.fp-children-horizontal *)
+    > .fp-item.fp-control[data-tag="InputField"]:not(.fp-ordinary-row-control)
+    + .fp-item.fp-container-horizontal.fp-bare {
+    margin-top: 4px;
+}
+/* A side-title multiline editor following a compound horizontal header is
+ * bottom-aligned inside the next reference row. Move only its painted control: the
+ * following semantic section already owns the correct flow coordinate.
+ * Untitled editors keep their flow position. */
+.fp-children.fp-children-vertical
+    > .fp-item.fp-container-horizontal
+    + .fp-item[data-tag="InputField"] > .fp-control-wrap.fp-multiline.fp-title-left {
+    position: relative;
+    top: 6px;
+}
+.fp-children[data-fp-unbounded-decoration-row="1"] > .fp-item:first-child {
+    position: relative;
+    top: 4px;
+}
 .fp-children.fp-children-horizontal {
     flex-direction: row; flex-wrap: nowrap; align-items: flex-start;
     justify-content: flex-start; gap: 8px; overflow-x: visible; min-width: 0; max-width: 100%;
 }
+/* Stretch editor + compact trailing button (MaxWidth=3): CSS
+ * gap 8px leaves the TextBox 5px past the reference. sideTitleGap pulls the paint
+ * without moving the button. Do not apply to authored-Width INN. */
+.fp-children-horizontal > .fp-item.fp-hstretch[data-tag="InputField"]:has(+ .fp-item[data-tag="Button"])
+    > .fp-control-wrap.fp-field-row > .fp-input-wrap {
+    margin-right: var(--fp-side-title-gap);
+}
+/* A pair of table-backed logical columns uses the compact Taxi separator
+ * gutter. The ordinary column separator remains visible, but its content
+ * inset is smaller than the generic form-column lane. */
+.fp-children.fp-children-horizontal.fp-table-column-responsive-pair { column-gap: 7px !important; }
+.fp-children.fp-table-column-responsive-pair.fp-auto-column-separators
+    > .fp-item.fp-container-vertical.fp-splitter-pane + .fp-item.fp-container-vertical.fp-splitter-pane {
+    position: relative;
+    border-left: 0;
+    padding-left: 3px;
+}
+.fp-children.fp-table-column-responsive-pair.fp-auto-column-separators
+    > .fp-item.fp-container-vertical.fp-splitter-pane + .fp-item.fp-container-vertical.fp-splitter-pane::before {
+    content: '';
+    position: absolute;
+    left: -1px;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed #b9b9b9;
+    pointer-events: none;
+}
+.fp-children.fp-detached-equal-leftwide-pair
+    > .fp-item:last-child
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children-vertical > .fp-item:last-child.fp-container-horizontal {
+    position: relative;
+    top: 5px;
+}
+/* A page of side-by-side tables uses the tab border itself as the first
+ * content pixel. The generic item selection shell otherwise spends two
+ * pixels above and below every authored grid and starves the lower grid. */
+.fp-pages-panel-wrap:has(.fp-table-column-responsive-pair) {
+    margin-top: -1px;
+    margin-bottom: -2px;
+    padding-right: calc(var(--fp-page-padding-x) - 6px);
+}
+.fp-item.fp-pages-tabs:has(.fp-table-column-responsive-pair) {
+    width: 100% !important;
+    margin-left: 1px;
+}
+.fp-table-column-responsive-pair .fp-item.fp-table-authored-height {
+    border-width: 0;
+    padding: 0;
+}
+.fp-table-column-responsive-pair > .fp-item:last-child .fp-table-mock {
+    width: calc(100% - 3px);
+    max-width: calc(100% - 3px);
+    align-self: flex-start;
+}
+.fp-table-column-responsive-pair > .fp-item:last-child
+    .fp-children-vertical
+    > .fp-item.fp-table-authored-height:has(+ .fp-item .fp-table-authored-height .fp-chips) {
+    flex: 0 0 91px !important;
+    height: 91px !important;
+    min-height: 91px !important;
+    max-height: 91px !important;
+}
+.fp-table-column-responsive-pair
+    .fp-item.fp-container:has(> .fp-control-wrap > .fp-collapsible-group
+        > .fp-collapsible-body > .fp-item.fp-table-authored-height .fp-chips)
+    > .fp-control-wrap > .fp-collapsible-group > .fp-collapsible-title {
+    margin-top: 12px;
+    margin-bottom: -1px;
+}
+.fp-table-column-responsive-pair .fp-table-authored-height:has(.fp-chips) > .fp-table-widget {
+    row-gap: 8px !important;
+}
+.fp-table-column-responsive-pair .fp-table-authored-height .fp-chips {
+    min-height: 21px;
+    height: 21px;
+    gap: 14px;
+}
+.fp-table-column-responsive-pair .fp-table-authored-height .fp-chip {
+    height: 21px;
+    padding-left: 10px;
+    padding-right: 8px;
+    box-sizing: border-box;
+    font-size: 12px;
+    line-height: 15px;
+}
+.fp-table-column-responsive-pair .fp-collapsible-title .fp-collapse-text {
+    position: relative;
+    top: -4px;
+}
+/* The fixed summary starts at the same logical boundary; its preceding Taxi
+ * cadence belongs to the table-backed stretch track rather than a third band. */
+.fp-pages-active-panel.fp-children-vertical:has(> .fp-item:first-child.fp-vstretch .fp-table-column-responsive-pair):has(> .fp-item:nth-child(2):last-child:not(.fp-vstretch)) { row-gap: 0 !important; }
 .fp-children.fp-children-nowrap { flex-wrap: nowrap; }
 .fp-children.fp-children-horizontal > .fp-item { width: auto; max-width: 100%; }
 .fp-children.fp-children-horizontal > .fp-item.fp-control { flex: 0 0 auto; min-width: min-content; width: auto; }
 .fp-children.fp-children-vertical > .fp-item.fp-hstretch { width: 100%; max-width: 100%; min-width: 0; align-self: stretch; }
-.fp-children.fp-children-vertical > .fp-item.fp-no-hstretch { width: auto; max-width: 100%; min-width: min-content; }
+.fp-children.fp-children-vertical > .fp-item.fp-no-hstretch { width: auto; max-width: 100%; min-width: 0; }
+/* A compact field block immediately followed by its large action keeps the
+ * native two-pixel pre-action cadence: only the fields move upward, while the
+ * action retains the row selected by the surrounding vertical allocator. */
+.fp-children.fp-children-vertical
+    > .fp-item.fp-container:has(+ .fp-item[data-tag="Button"] .fp-button) {
+    position: relative;
+    top: -2px;
+}
 .fp-children.fp-children-horizontal > .fp-item.fp-container { flex: 0 0 auto; min-width: min-content; width: auto; }
 .fp-children.fp-children-horizontal > .fp-item.fp-hstretch { flex: 1 1 auto; min-width: 0; }
 .fp-children.fp-children-horizontal > .fp-item.fp-no-hstretch { flex: 0 0 auto; width: auto; min-width: min-content; }
+.fp-children.fp-children-horizontal > .fp-item.fp-container.fp-no-hstretch {
+    flex: 0 1 auto; min-width: 0;
+}
+/* The leading column of a recursive numeric ThroughAlign tree uses Taxi's
+ * 97px compact title track; following nested columns keep their independent
+ * 100px compressed lanes. Only automatic title rows (totals) take
+ * that track: a stretchable totals column with ordinary side titles keeps
+ * its own caption glyph track. */
+.fp-recursive-leading-column .fp-field-row.fp-title-auto > .fp-field-label {
+    width: 97px !important;
+    min-width: 97px !important;
+}
 .fp-children.fp-ciwidth-equal.fp-children-horizontal > .fp-item { flex: 1 1 0; min-width: 0; }
-.fp-children.fp-ciwidth-leftwidest.fp-children-horizontal > .fp-item:first-child { flex: 2 1 260px; }
+.fp-children.fp-detached-equal-leftwide-pair > .fp-item.fp-container + .fp-item.fp-container {
+    padding-left: 15px;
+    padding-right: 10px;
+}
+.fp-children.fp-managed-compressed-leftwide > .fp-item:first-child {
+    flex: 0 0 var(--fp-managed-leftwide-leading) !important;
+    width: var(--fp-managed-leftwide-leading) !important;
+    min-width: var(--fp-managed-leftwide-leading) !important;
+    max-width: var(--fp-managed-leftwide-leading) !important;
+}
+.fp-children.fp-managed-compressed-leftwide > .fp-item:last-child {
+    flex: 0 0 var(--fp-managed-leftwide-trailing) !important;
+    width: var(--fp-managed-leftwide-trailing) !important;
+    min-width: var(--fp-managed-leftwide-trailing) !important;
+    max-width: var(--fp-managed-leftwide-trailing) !important;
+}
+.fp-children.fp-managed-compressed-leftwide > .fp-item
+    .fp-field-row.fp-title-left > .fp-field-label {
+    min-width: var(--fp-independent-title-track) !important;
+}
+.fp-children.fp-logical-subgrid[style*="--fp-compact-qualified-title-track"]
+    .fp-compact-qualified-field .fp-field-row.fp-title-left > .fp-field-label {
+    min-width: var(--fp-compact-qualified-title-track) !important;
+}
+.fp-children.fp-managed-compressed-leftwide > .fp-item .fp-field-row {
+    width: 100%;
+    max-width: 100%;
+}
+.fp-children.fp-managed-compressed-leftwide > .fp-item
+    .fp-control-wrap.fp-field-row > .fp-input-wrap {
+    flex: 1 1 0 !important;
+    width: 0 !important;
+    min-width: 0 !important;
+    max-width: 100%;
+}
+.fp-children.fp-detached-equal-leftwide-pair
+    .fp-item.fp-detached-overflow-field > .fp-control-wrap.fp-field-row {
+    width: calc(100% + 15px);
+    max-width: calc(100% + 15px);
+}
+.fp-children.fp-detached-equal-leftwide-pair
+    .fp-item.fp-detached-overflow-field > .fp-control-wrap.fp-field-row > .fp-input-wrap {
+    flex: 1 1 0 !important;
+    width: 0 !important;
+    min-width: 0 !important;
+}
+.fp-children.fp-detached-equal-leftwide-pair
+    .fp-item.fp-detached-trailing-editor-overhang
+    > .fp-control-wrap.fp-field-row > .fp-input-wrap {
+    flex: 1 1 auto !important;
+    margin-right: -15px;
+    max-width: none !important;
+    /* The compact reference paint (270px) is this editor's preferred width,
+     * not a minimum: in a squeezed Equal column it must yield like any
+     * flexible editor, or it paints ~190px into the next column. */
+    min-width: 0 !important;
+}
+.fp-children.fp-managed-compressed-leftwide.fp-auto-column-separators
+    > .fp-item.fp-container-vertical + .fp-item.fp-container-vertical {
+    border-left: 0;
+    padding-left: 0;
+}
+/* LeftWide surplus belongs to a stretchable leading child. A Width+no-stretch
+ * header column must keep its authored band
+ * so Дата/Номер stay in the trailing column instead of being crushed. */
+.fp-children.fp-ciwidth-leftwidest.fp-children-horizontal > .fp-item.fp-hstretch:first-child { flex: 2 1 260px; }
 .fp-children.fp-ciwidth-rightwidest.fp-children-horizontal > .fp-item:last-child { flex: 2 1 260px; }
+.fp-children.fp-ciwidth-leftwidest.fp-children-horizontal
+    > .fp-item.fp-automatic-trailing-leftwide
+    > .fp-control-wrap.fp-field-row > .fp-field-label {
+    min-width: 94px !important;
+}
+.fp-children.fp-ciwidth-leftwidest.fp-children-horizontal
+    > .fp-item.fp-automatic-trailing-leftwide
+    > .fp-control-wrap.fp-field-row > .fp-input-wrap {
+    flex: 0 1 410px !important;
+    width: 410px !important;
+    min-width: 0 !important;
+    max-width: 410px !important;
+}
 .fp-children.fp-throughalign-use.fp-children-horizontal { align-items: stretch; }
+/* The reference's splitter rule:
+ * between two neighbours that both stretch along the group axis and are more
+ * than one logical row high. */
+.fp-children.fp-auto-column-separators > .fp-item.fp-hstretch.fp-splitter-pane
+    + .fp-item.fp-hstretch.fp-splitter-pane {
+    border-left: 1px dashed #d2d2d2;
+    padding-left: 8px;
+}
+/* A pair the allocator already sized to the reference's columns takes the
+ * rule inside the gap without moving the pane. In flex rows the padding
+ * stands for the reference's wider Single spacing (the right column is 7-8px
+ * further right without it). */
+.fp-children.fp-auto-column-separators.fp-splitter-in-gap > .fp-item.fp-hstretch.fp-splitter-pane
+    + .fp-item.fp-hstretch.fp-splitter-pane { position: relative; border-left: 0; padding-left: 0; }
+.fp-children.fp-auto-column-separators.fp-splitter-in-gap > .fp-item.fp-hstretch.fp-splitter-pane
+    + .fp-item.fp-hstretch.fp-splitter-pane::before {
+    content: '';
+    position: absolute;
+    left: -5px;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed #d2d2d2;
+    pointer-events: none;
+}
+/* A horizontal Form root is a grid: its splitter sits in the column gap and
+ * moves nothing. */
+.fp-body.fp-root-horizontal > .fp-item.fp-hstretch.fp-splitter-pane
+    + .fp-item.fp-hstretch.fp-splitter-pane { position: relative; }
+.fp-body.fp-root-horizontal > .fp-item.fp-hstretch.fp-splitter-pane
+    + .fp-item.fp-hstretch.fp-splitter-pane::before {
+    content: '';
+    position: absolute;
+    left: -7px;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed #d2d2d2;
+    pointer-events: none;
+}
+/* The reference allocates a nested tree of bare logical columns as one physical row.
+ * Each terminal boundary contributes the compact inter-column gutter once;
+ * retaining the generic gap at every wrapper level accumulates 6px of drift. */
+.fp-children.fp-recursive-auto-column-tree,
+.fp-children.fp-recursive-auto-column-tree .fp-children.fp-auto-column-separators {
+    column-gap: 3px !important;
+}
+.fp-children.fp-recursive-auto-column-tree
+    > .fp-item.fp-container + .fp-item.fp-container {
+    position: relative;
+}
+.fp-children.fp-recursive-auto-column-tree
+    > .fp-item.fp-container + .fp-item.fp-container::before {
+    content: '';
+    position: absolute;
+    left: -1px;
+    top: 0;
+    bottom: 0;
+    border-left: 1px dashed #b9b9b9;
+    pointer-events: none;
+}
+/* A recursive totals tree keeps field tracks adjacent, while its visual
+ * separators belong to the shorter terminal value stacks. The reference paints those
+ * rules at the preceding stack edge rather than at the following wrapper's
+ * content origin. */
+.fp-children.fp-recursive-auto-column-tree:has(
+    > .fp-recursive-leading-column + .fp-container-horizontal)
+    > .fp-item:nth-child(2)::before {
+    left: -17px;
+    bottom: 11px;
+}
+.fp-children.fp-recursive-auto-column-tree:has(
+    > .fp-recursive-leading-column + .fp-container-horizontal)
+    > .fp-item:nth-child(3)::before {
+    left: -3px;
+    bottom: 11px;
+}
+.fp-children.fp-recursive-auto-column-tree {
+    column-gap: 1px !important;
+    width: 100% !important;
+}
+.fp-children.fp-recursive-auto-column-tree:has(> .fp-item.fp-native-card-stack) {
+    /* The leading white card owns its right edge; the reference leaves a plain Taxi
+     * gutter before the recursively packed summary columns. */
+    column-gap: 4px !important;
+}
+.fp-children.fp-recursive-auto-column-tree:has(
+    > .fp-recursive-leading-column.fp-native-card-stack + .fp-container-horizontal)
+    > .fp-item:nth-child(2)::before {
+    content: none;
+}
+/* The reference's splitter needs both neighbours to stretch: a non-stretching leading
+ * column gets no rule after it (АвансовыйОтчет «Состояние ЭДО» beside the
+ * totals band). */
+.fp-children.fp-recursive-auto-column-tree
+    > .fp-item.fp-container.fp-recursive-leading-column.fp-no-hstretch + .fp-item.fp-container::before {
+    content: none;
+}
 .fp-children.fp-children-indented { margin-left: 10px; }
 .fp-children.fp-container-page, .fp-children.fp-container-pages { border: none; border-radius: 0; padding: 0; }
 .fp-children.fp-container-bare { border: none; padding: 0; background: transparent; }
 
 .fp-control-wrap { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; min-height: 22px; width: auto; max-width: 100%; }
+.fp-container > .fp-control-wrap { min-height: 0; }
 .fp-item.fp-hstretch > .fp-control-wrap { width: 100%; }
-.fp-field-row { display: flex; align-items: center; flex-wrap: nowrap; gap: 8px; width: auto; max-width: none; flex-shrink: 0; }
+.fp-field-row { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--fp-side-title-gap); width: auto; max-width: 100%; flex-shrink: 1; }
 .fp-item.fp-hstretch > .fp-control-wrap.fp-field-row { width: 100%; }
-.fp-field-row.fp-check-row { width: auto; }
-.fp-field-label { min-width: 0; flex-shrink: 0; color: var(--fp-input-fg); text-align: left; white-space: nowrap; }
+.fp-field-row.fp-check-row { width: auto; min-height: var(--fp-check-height); }
+/* In a row of editors a right-titled checkbox is centred on the editor band
+ * (beside 25px date fields). A checkbox beside a nested group stays on the
+ * first line. */
+.fp-children-horizontal:has(> .fp-item[data-tag="InputField"]):not(:has(> .fp-item.fp-container))
+    > .fp-item.fp-control[data-tag="CheckBoxField"]:has(> .fp-check-row) {
+    display: flex; align-items: center;
+}
+.fp-field-label { min-width: 0; flex-shrink: 0; color: var(--fp-input-fg); text-align: left; white-space: pre-line; }
 .fp-field-row.fp-check-row .fp-field-label,
 .fp-field-row.fp-title-right .fp-field-label,
 .fp-field-row.fp-title-top .fp-field-label { text-align: left; }
-.fp-input-wrap { display: flex; flex: 0 0 auto; min-width: 80px; min-height: 25px; box-sizing: border-box; align-items: stretch; border: 1px solid var(--fp-input-border); background: var(--fp-input-bg); }
+.fp-input-wrap { display: flex; flex: 0 0 auto; min-width: 80px; min-height: var(--fp-textbox-height); box-sizing: border-box; align-items: stretch; border: 1px solid var(--fp-input-border); background: var(--fp-input-bg); }
 .fp-item.fp-hstretch .fp-input-wrap { flex: 1 1 auto; }
+/* Nested 1px Pages/group/item shells inset the painted TextBox 3px past
+ * native Taxi. Full-width vertical-stack editors keep that trailing inset;
+ * FIO columns inside a horizontal parent keep their own tracks. */
+.fp-children-vertical > .fp-item.fp-hstretch.fp-control[data-tag="InputField"]:not(.fp-ordinary-row-control)
+    > .fp-control-wrap.fp-field-row > .fp-input-wrap {
+    margin-right: var(--fp-field-trailing-inset);
+}
+.fp-children-horizontal .fp-children-vertical
+    > .fp-item.fp-hstretch.fp-control[data-tag="InputField"]
+    > .fp-control-wrap.fp-field-row > .fp-input-wrap {
+    margin-right: 0;
+}
+/* Transparent item selection shell (1px padding + 1px border) sits the
+ * TextBox 2px below the reference. Full-width vertical stack drops that chrome so
+ * the painted frame shares the reference y; FIO columns keep the 29px band. */
+.fp-children-vertical > .fp-item.fp-control[data-tag="InputField"]:not(.fp-ordinary-row-control) {
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
+}
+.fp-children-horizontal .fp-children-vertical
+    > .fp-item.fp-control[data-tag="InputField"]:not(.fp-ordinary-row-control) {
+    padding-top: 1px;
+    padding-bottom: 1px;
+    border-top-width: 1px;
+    border-bottom-width: 1px;
+}
+/* Sole checkbox in a bare horizontal wrapper. Do not drop
+ * CheckBoxField chrome in vertical stacks — that lifts the rows below by ~13px. */
+.fp-children-horizontal.fp-container-bare
+    > .fp-item.fp-control[data-tag="CheckBoxField"] {
+    padding-top: 0;
+    padding-bottom: 0;
+    border-top-width: 0;
+    border-bottom-width: 0;
+}
+/* ListChoiceMode is a presentation selector: its native compound value lane
+ * is 18 form units plus the two editor borders, regardless of String length. */
+.fp-compound-selector-track .fp-input-wrap { min-width: 182px; }
 /* LabelField draws no runtime value, but the configurator still reserves the
  * value's own layout space next to the title - an empty, unbordered slot
  * sized like a field (applyItemMetrics), underlined when Hiperlink=true. */
 .fp-labelfield-value { display: inline-block; flex: 0 0 auto; min-width: 60px; min-height: 1em; box-sizing: border-box; }
 .fp-item.fp-hstretch .fp-labelfield-value { flex: 1 1 auto; }
+/* TitleLocation=None suppresses both paint lanes of a LabelField. Without an
+ * authored Height it remains a zero-size logical item, so surrounding Taxi
+ * spacing is preserved without inventing an empty 22px control row. */
+.fp-item.fp-paintless-label-field {
+    height: 0; min-height: 0; padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-item.fp-paintless-label-field > .fp-control-wrap { height: 0; min-height: 0; }
 .fp-field-row .fp-input { flex: 1; min-width: 40px; }
 .fp-input-btn {
     display: flex; align-items: center; justify-content: center;
@@ -365,26 +1587,45 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     background: var(--fp-input-bg); color: var(--fp-btn-fg); font-size: 11px; line-height: 1;
 }
 .fp-input-btn:hover { background: var(--fp-btn-face-hover); }
+/* Multiline editor buttons: own bordered cells beside the frame, top-aligned. */
+.fp-multiline-buttons { display: flex; flex: 0 0 auto; align-self: flex-start; margin-left: 1px; }
+/* Beside a text area the buttons touch its frame, as in a one-line editor;
+ * the field row's 5px gap pushed them 6px off. */
+.fp-field-row.fp-multiline > .fp-multiline-buttons { margin-left: -4px; }
+.fp-multiline-buttons .fp-input-btn { height: 21px; box-sizing: border-box; border: 1px solid var(--fp-input-border); }
 .fp-input-wrap .fp-input { border: none; border-radius: 0; outline: none; }
-.fp-input-readonly, .fp-input-readonly-wrap { background: var(--fp-readonly); }
+/* The reference paints a ReadOnly editor without a face of its own inside a light
+ * #d7d7d7 frame: white on the form, the band's #f0f0f0 on a grey footer. */
+.fp-input-readonly, .fp-input-readonly-wrap { background: transparent; }
+.fp-input-readonly-wrap, .fp-input-readonly-wrap .fp-input-btn { border-color: #d7d7d7; }
 /* AutoMarkIncomplete: 1C paints a 1px red dotted rule inside the text part of
- * an unfilled mandatory field, 3px above its bottom edge. */
+ * an unfilled mandatory field, two rows above the bottom border, 3px in from
+ * the frame's left and right edges. The input sits inside the 1px frame,
+ * hence 2px / 1px here. */
 .fp-input-incomplete {
     background-image: repeating-linear-gradient(90deg, #f00 0 1px, transparent 1px 2px);
     background-repeat: no-repeat;
-    background-size: calc(100% - 6px) 1px;
-    background-position: 3px calc(100% - 3px);
+    background-size: calc(100% - 4px) 1px;
+    background-position: 2px calc(100% - 1px);
 }
-.fp-field-row.fp-title-top, .fp-field-row.fp-title-bottom { flex-direction: column; align-items: stretch; gap: 2px; width: 100%; }
+.fp-field-row.fp-title-top, .fp-field-row.fp-title-bottom { flex-direction: column; align-items: stretch; gap: var(--fp-top-title-gap); width: 100%; }
 .fp-field-row.fp-title-right { flex-direction: row-reverse; justify-content: flex-start; }
+/* A side caption centred on a 25px editor sits one pixel higher than the reference's:
+ * The reference's baseline is row 16 of the frame, Chromium's 12px Arial centred line
+ * box puts it on row 15 (25 fields over sets 1–2, form-element-fidelity).
+ * A paint offset only — the caption keeps its box, so layout is unchanged. */
+.fp-field-row.fp-title-left:has(> .fp-input-wrap) > .fp-field-label,
+.fp-field-row.fp-title-right:has(> .fp-input-wrap) > .fp-field-label { position: relative; top: 1px; }
 .fp-field-row.fp-title-none .fp-field-label { display: none; }
 .fp-field-row.fp-title-bottom .fp-field-label { order: 2; }
 .fp-field-row.fp-title-bottom .fp-input-wrap,
 .fp-field-row.fp-title-bottom .fp-labelfield-value { order: 1; }
-.fp-input { flex: 1; min-width: 40px; min-height: 23px; box-sizing: border-box; padding: 2px 5px; font-size: inherit; font-family: inherit; background: transparent; color: var(--fp-input-fg); border: 1px solid var(--fp-input-border); border-radius: 0; }
+/* text-overflow: the reference ends text and input hint that do not fit with «…» before
+ * the editor buttons. */
+.fp-input { flex: 1; min-width: 40px; min-height: 23px; box-sizing: border-box; padding: 2px 5px; font-size: inherit; font-family: inherit; background-color: transparent; color: var(--fp-input-fg); border: 1px solid var(--fp-input-border); border-radius: 0; text-overflow: ellipsis; }
 
 .fp-button {
-    padding: 2px 9px; min-height: 26px; box-sizing: border-box;
+    padding: 2px 12px 2px 13px; min-height: var(--fp-button-height); height: var(--fp-button-height); box-sizing: border-box;
     font-size: inherit; font-family: inherit;
     background: var(--fp-btn-face); color: var(--fp-btn-fg);
     border: 1px solid var(--fp-btn-border);
@@ -394,7 +1635,49 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     cursor: default; white-space: nowrap;
     display: inline-flex; align-items: center; justify-content: center; gap: 4px;
 }
+/* Every framed Taxi button in the reference has the rounded corner (2.6px reproduces its
+ * antialiased f6/c7/b4 corner pixels; 3px left the corner pixel white) and an opaque #d2d2d2 row
+ * under its bottom border, not only the command bar ones: form and table
+ * buttons have the same 9b9b9b/d2d2d2 edge. */
+.fp-body.fp-mockup .fp-button:not(.fp-button-shape-none) {
+    border-radius: 2.6px;
+    box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1765);
+}
 .fp-button:hover { background: var(--fp-btn-face-hover); border-color: var(--fp-btn-border-hover); }
+.fp-item.fp-shape-none-button {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-button.fp-button-shape-none,
+.fp-button.fp-button-shape-none:hover,
+.fp-button.fp-button-shape-none:active {
+    min-height: 18px; height: 18px; padding: 0;
+    border: 0; border-radius: 0; box-shadow: none;
+    background: transparent;
+}
+/* A flat None button keeps the ordinary #4d4d4d button text; only an authored
+ * TextColor makes it blue. The text sits in the 4px inset of the invisible
+ * frame and keeps authored leading spaces. */
+.fp-button.fp-button-shape-none { color: #4d4d4d; }
+.fp-item.fp-shape-none-button:not(.fp-bar-item) > .fp-control-wrap > .fp-button.fp-button-shape-none:not(.fp-icon-btn) {
+    padding: 0 4px; white-space: pre;
+}
+.fp-input::placeholder { color: #a7a7a7; opacity: 1; }
+.fp-item.fp-large-text-font:has(> .fp-control-wrap > .fp-button) {
+    height: 35px;
+    min-height: 35px;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: visible;
+}
+.fp-item.fp-large-text-font > .fp-control-wrap > .fp-button {
+    position: relative;
+    top: 3px;
+    min-height: 32px;
+    height: 32px;
+    padding-left: 20px;
+    padding-right: 20px;
+}
 .fp-button:active { background: var(--fp-btn-face-active); box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12); }
 .fp-button-default {
     background: var(--fp-btn-face-default); color: #1a1a1a; font-weight: 700;
@@ -402,7 +1685,17 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     border-bottom-color: var(--fp-btn-border-default-bottom);
 }
 .fp-button-default:hover { background: linear-gradient(180deg, #fff05c 0%, #ffe623 46%, #f5da12 100%); border-color: var(--fp-btn-border-default); }
-.fp-icon-btn { width: 28px; height: 26px; min-width: 28px; padding: 0; justify-content: center; border-radius: 2px; }
+/* A picture command is a 30 px frame in every reference bar and beside fields,
+ * not only in the root bar. */
+.fp-icon-btn { width: 30px; height: var(--fp-button-height); min-width: 30px; padding: 0; justify-content: center; border-radius: 2px; }
+/* Beside a field the reference keeps the 25px row but paints the 26px button from one
+ * pixel above the field's top edge. */
+.fp-children-horizontal > .fp-item[data-tag="InputField"] + .fp-item[data-tag="Button"] .fp-button {
+    margin-top: -1px;
+}
+.fp-children-horizontal > .fp-item[data-tag="InputField"] + .fp-item[data-tag="Button"] > .fp-control-wrap {
+    height: 25px; max-height: 25px;
+}
 .fp-btn-icon {
     width: 16px; height: 16px;
     fill: none; stroke: currentColor; stroke-width: 1.8;
@@ -410,11 +1703,38 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     display: block; flex-shrink: 0; pointer-events: none;
 }
 .fp-input-btn .fp-btn-icon { width: 12px; height: 12px; }
+/* The reference bitmap glyphs (▼, …, ×, open): alpha masks over the ink colour laid out
+ * on the whole 20×23 cell, so they land on the reference's pixel rows. */
+.fp-input-btn .fp-btn-icon.fp-px-glyph { width: 20px; height: 23px; fill: currentColor; stroke: none; }
 .fp-picture-icon .fp-btn-icon, .fp-th-icon .fp-btn-icon { width: 14px; height: 14px; }
-.fp-btn-glyph { font-size: 12px; line-height: 1; }
+.fp-picture-icon.fp-picture-decoration .fp-btn-icon { width: 24px; height: 24px; }
+/* A resolved raster keeps its ldpi glyph size inside the 24px Image box:
+ * The reference centres a 16px Внимание16 / red stop glyph there instead of upscaling. */
+.fp-picture-icon.fp-picture-decoration img.fp-btn-icon { width: auto; height: auto; max-width: 100%; max-height: 100%; }.fp-btn-glyph { font-size: 12px; line-height: 1; }
+/* The reference standard Help glyph: black bold "?", 7x11 px ink box centred in the button. */
+.fp-help-glyph {
+    font-family: Arial, sans-serif; font-weight: 700; font-size: 15px;
+    line-height: 1; color: #000; pointer-events: none;
+}
 .fp-caret { font-size: 9px; opacity: 0.75; margin-left: 2px; }
 .fp-link { color: var(--fp-link); text-decoration: underline; background: none; border: none; padding: 0 4px; cursor: default; font: inherit; }
+/* A picture-and-text hyperlink is one line: the picture, then the underlined
+ * caption. */
+a.fp-link.fp-picture-text-btn { display: inline-flex; align-items: center; gap: 4px; padding-left: 0; white-space: nowrap; }
+a.fp-link.fp-picture-text-btn .fp-btn-icon { width: 16px; height: 16px; flex: 0 0 auto; }
 .fp-link:hover { color: #d24726; }
+/* A picture Hyperlink is the bare 16px picture: no button box, no underline,
+ * the platform's #4d4d4d glyph colour. */
+/* A 0x0 native picture (see markUnpaintedStdPictureHyperlinks): nothing is
+ * painted, the owning row still spends its item gap. */
+.fp-link.fp-icon-btn.fp-unpainted-picture { width: 0 !important; min-width: 0 !important; height: 0 !important; overflow: hidden; }
+.fp-item:has(> .fp-control-wrap > .fp-unpainted-picture) { min-width: 0 !important; width: 0 !important; }
+.fp-picture-decoration.fp-unpainted-picture { width: 0 !important; min-width: 0 !important; height: 0 !important; overflow: hidden; }
+.fp-link.fp-icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: auto; min-width: 0; height: auto; padding: 0;
+    color: #4d4d4d; text-decoration: none;
+}
 .fp-rich-link { color: var(--fp-link); text-decoration: underline; }
 .fp-popup { font-weight: 400; }
 .fp-popup:not(:disabled) { cursor: pointer; }
@@ -431,7 +1751,9 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 }
 .fp-popup-wrap.fp-popup-open > .fp-popup-menu { display: block; }
 .fp-popup-entry {
-    display: block;
+    display: flex;
+    align-items: center;
+    gap: 7px;
     width: 100%;
     text-align: left;
     border: none;
@@ -446,18 +1768,360 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 .fp-popup-entry.selected { background: #ffe9a8; }
 .fp-popup-empty { padding: 6px 18px; color: var(--fp-muted); font-size: 0.92em; }
 .fp-label { padding: 1px 0; }
-.fp-label-decoration { font-style: normal; }
-.fp-picture-decoration { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; font-size: 14px; }
+.fp-label-decoration { font-style: normal; white-space: pre-line; font-size: 13px; line-height: 16px; }
+.fp-label-decoration.fp-label-one-line { white-space: pre; }
+/* Once the reference has selected the window-overflow strategy it preserves captions
+ * that are direct tracks of that horizontal row. Do not leak nowrap through a
+ * horizontal ancestor into a nested vertical group: its stretched explanatory
+ * labels are width-constrained blocks and must reflow before the next sibling. */
+.fp-body.fp-window-overflow
+    .fp-children-horizontal > .fp-item.fp-native-label-decoration .fp-label-decoration {
+    white-space: pre;
+}
+.fp-body.fp-window-overflow .fp-section-nav .fp-item.fp-pages-none
+    .fp-children-horizontal > .fp-item.fp-native-label-decoration .fp-label-decoration {
+    white-space: normal;
+}
+/* StaticText is an intrinsic text lane, not a 22px editor lane. The generic
+ * fp-item/control chrome otherwise turns every one-line LabelDecoration into
+ * a 26px row (the reference uses the glyph line, about 16px), accumulating large
+ * vertical drift in stacked notices and document headers. Authored Height is
+ * still enforced by the item's inline height/min-height. */
+.fp-item.fp-native-label-decoration {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-item.fp-native-label-decoration > .fp-control-wrap { min-height: 0; }
+/* A label's box is its text: a taller row centres it (beside a 26px «?»
+ * button the ink sits 8px under the row top). */
+.fp-children-horizontal > .fp-item.fp-native-label-decoration:has(> .fp-control-wrap:not(.fp-label-valign-top):not(.fp-label-valign-bottom)) {
+    display: flex; flex-direction: column; justify-content: center;
+}
+/* Beside a command bar the row is the 26px button; the label's 1px stack band
+ * (below) must not grow it (it made a 28px row, everything 2px low). */
+.fp-children.fp-children-horizontal:has(> .fp-item[data-tag="CommandBar"]) > .fp-item.fp-item.fp-native-label-decoration.fp-native-label-decoration { margin-top: 0; margin-bottom: 0; }
+.fp-item.fp-native-label-decoration > .fp-control-wrap.fp-label-valign-top { align-items: flex-start; }
+.fp-item.fp-native-label-decoration > .fp-control-wrap.fp-label-valign-bottom { align-items: flex-end; }
+/* Native StaticText box: lines x line height with no content padding; only a
+ * hyperlink label carries a 1px text padding on each side. In a nested stack every
+ * item carries a band outside its native box and the stack gap is the native
+ * Spacing row minus those bands (editor: 1px pad + 1px border per side). The
+ * label's band is 1px per side, so it lives in the margin, not in the box:
+ * banner rows 32/5/16/5/16 keep their 37/21 cadence with 3px gap.
+ * An authored height or an envelope min-height already fixes the slot. */
+.fp-item.fp-native-label-decoration:not([style*="height"]):not(:has(.fp-link, .fp-label-has-link, a)):not(.fp-authored-width-envelope-column .fp-item) {
+    margin-top: 1px; margin-bottom: 1px;
+}
+/* The band is outside the native box: the last StaticText of a vertical group
+ * does not extend the group past its native bottom (18 / 9 / 16 = 43, not 47). */
+.fp-children-vertical > .fp-item.fp-native-label-decoration:last-child:not([style*="height"]):not(:has(.fp-link, .fp-label-has-link, a)):not(.fp-authored-width-envelope-column .fp-item) {
+    margin-bottom: 0;
+}
+/* A United=false titled column dissolved into its logical grid: the caption
+ * is a native 16 px grid row one Spacing row below the previous row and one
+ * above the first editor (rows 16 / 9 / 25). */
+.fp-paired-titled-logical-column > .fp-control-wrap > .fp-group-bare > .fp-group-title {
+    margin: 6px 0 6px; line-height: 16px;
+}
+.fp-item.fp-native-label-decoration:not(:has(.fp-link, .fp-label-has-link, a)):not(.fp-authored-width-envelope-column .fp-item) > .fp-control-wrap > .fp-label-decoration {
+    padding-top: 0; padding-bottom: 0;
+}
+/* A row of untitled radio buttons and untitled LabelFields has no editor
+ * frame: the platform sizes it to its content, RadioButton 17 and the value
+ * Label 18 (an 18 px row, not the 22px editor lane plus a 2px band per side). */
+.fp-children-horizontal.fp-text-choice-row > .fp-item {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-children-horizontal.fp-text-choice-row > .fp-item > .fp-control-wrap { min-height: 17px; }
+.fp-children-horizontal.fp-text-choice-row > .fp-item[data-tag="LabelField"] > .fp-control-wrap { min-height: 18px; }
+/* An empty LabelDecoration in a vertical stack is one native text line,
+ * 16 px with no band; the stack pass spaces it. */
+.fp-item.fp-stack-spacer {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+    height: 16px;
+}
+.fp-item.fp-stack-spacer > .fp-control-wrap { min-height: 0; height: 16px; }
+/* An empty decoration whose tooltip is painted on the form is only that
+ * text: the reference draws no blank caption line above it. */
+.fp-item[data-tag="LabelDecoration"].fp-tooltip-side-v
+    > .fp-control-wrap:has(> .fp-deco-spacer:only-child) { display: none; }
+/* The title row of a radio list is a native Label: one 16px line plus its
+ * 4px bottom padding (a 20px row). */
+.fp-item[data-tag="RadioButtonField"] > .fp-control-wrap.fp-title-top > .fp-field-label { line-height: 16px; }
+/* A row that also holds a framed button is as tall as that button, and the reference
+ * centres its captions on it: they share the centre line of the row's buttons.
+ * The item is stretched to the row, so centre its glyph line inside it; a bare
+ * caption group without its own button is centred as a whole. Scoped to
+ * painted bands and framed buttons: applied to every button row it moved
+ * captions that were already right, and frameless history icons keep their
+ * captions on the glyph line. The group rule applies only to the painted
+ * band's own row (card rows keep their tracks). */
+.fp-color-surface .fp-children-horizontal:has(> .fp-item[data-tag="Button"]:not(.fp-shape-none-button))
+    > .fp-item.fp-native-label-decoration {
+    display: flex; flex-direction: column; justify-content: center;
+}
+.fp-item.fp-color-surface > .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal:has(> .fp-item.fp-container.fp-bare .fp-item[data-tag="Button"]:not(.fp-shape-none-button))
+    > .fp-item.fp-container.fp-bare:not(:has(.fp-item[data-tag="Button"])) {
+    align-self: center;
+}
+/* Hyperlink captions beside a framed button share its centre line on any
+ * row (one line in the reference, ours 6px higher). */
+.fp-children-horizontal:has(> .fp-item[data-tag="Button"]:not(.fp-shape-none-button))
+    > .fp-item.fp-native-label-decoration:has(.fp-label-decoration.fp-link) {
+    display: flex; flex-direction: column; justify-content: center;
+}
+.fp-children-horizontal:has(> .fp-item[data-tag="Button"]:not(.fp-shape-none-button))
+    > .fp-item.fp-container.fp-bare:has(.fp-label-decoration.fp-link):not(:has(.fp-item[data-tag="Button"])) {
+    align-self: center;
+}
+/* A LabelDecoration used as the caption of an InputField in the same row sits
+ * on the editor's 25px lane centre, not on the row top (a «ИНН:» label beside
+ * the field and its button, labels in a row with a two-line label or beside
+ * buttons — all 6px higher than the reference). Only the first 25px lane: a
+ * label taller than that, or one beside a multi-line editor, keeps its top. */
+.fp-children-horizontal:has(> .fp-item[data-tag="InputField"])
+    > .fp-item.fp-native-label-decoration:not(.fp-color-surface .fp-item):has(> .fp-control-wrap > .fp-label-decoration:not(.fp-link)) {
+    align-self: flex-start;
+    display: flex; flex-direction: column; justify-content: center;
+    min-height: 25px;
+}
+.fp-item.fp-empty-no-spacing-decoration {
+    flex: 0 0 8px !important;
+    height: 8px !important;
+    min-height: 8px !important;
+    max-height: 8px !important;
+    overflow: hidden;
+}
+.fp-item.fp-empty-no-spacing-decoration > .fp-control-wrap {
+    height: 8px;
+    min-height: 0;
+}
+.fp-item.fp-container-vertical.fp-empty-decoration-row {
+    flex: 0 0 22px !important;
+    height: 22px !important;
+    min-height: 22px !important;
+    max-height: 22px !important;
+    overflow: hidden;
+}
+.fp-item.fp-container-horizontal.fp-compact-decoration-value-row {
+    flex: 0 0 22px !important;
+    height: 22px !important;
+    min-height: 22px !important;
+    max-height: 22px !important;
+}
+/* A decoration-only tail is a real logical column, not an unbreakable caption.
+ * Its warning text wraps inside the assigned the reference presentation track while the
+ * leading picture lane keeps its intrinsic size. */
+.fp-logical-decoration-tail-track .fp-item.fp-container-horizontal,
+.fp-logical-decoration-tail-track .fp-children-horizontal {
+    width: var(--fp-logical-decoration-tail-width) !important; min-width: 0;
+    max-width: var(--fp-logical-decoration-tail-width) !important;
+}
+.fp-logical-decoration-tail-track .fp-item.fp-native-label-decoration {
+    width: calc(var(--fp-logical-decoration-tail-width)
+        - var(--fp-logical-decoration-fixed-width, 0px)) !important;
+    min-width: 0; max-width: calc(var(--fp-logical-decoration-tail-width)
+        - var(--fp-logical-decoration-fixed-width, 0px)) !important;
+    flex: 0 1 auto;
+}
+.fp-logical-decoration-tail-track .fp-label-decoration {
+    display: block; max-width: 100% !important; white-space: pre-line !important;
+}
+/* A label without WidthDependedHeight stays one line even in a tail track. */
+.fp-logical-decoration-tail-track .fp-label-decoration.fp-label-one-line { white-space: pre !important; }
+.fp-logical-leading-field-track .fp-field-row.fp-title-left > .fp-field-label:not(.fp-local-title-track) {
+    width: var(--fp-logical-leading-title-width) !important;
+    min-width: var(--fp-logical-leading-title-width) !important;
+}
+/* A standalone decoration immediately before a table is its native caption
+ * band, not a full form row: it keeps only its glyph line. A fixed 9px band
+ * let the text paint over the table toolbar; the reference keeps a gap
+ * between the caption and the toolbar. */
+.fp-pages-active-panel.fp-children-vertical
+    > .fp-item.fp-native-label-decoration:has(+ .fp-item[data-tag="Table"].fp-vstretch) {
+    min-height: 0 !important;
+}
+.fp-picture-decoration { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; font-size: 14px; }
 .fp-picture-icon { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; font-size: 13px; }
+.fp-picture-icon.fp-picture-decoration { width: 24px; height: 24px; }
+/* A picture before a top-aligned multi-line label keeps its glyph at the top
+ * of the row, beside the first text line (the reference icon top 2 px below the row). */
+.fp-children-horizontal > .fp-item[data-tag="PictureDecoration"]:has(+ .fp-item > .fp-control-wrap.fp-label-valign-top)
+    > .fp-control-wrap,
+.fp-children-horizontal > .fp-item[data-tag="PictureDecoration"]:has(+ .fp-item > .fp-control-wrap.fp-label-valign-top)
+    .fp-picture-decoration {
+    align-items: flex-start;
+}
+/* A vertical group made only of usual buttons is one native column: every
+ * button takes the column width. */
+.fp-children-vertical:not(:has(> .fp-item:not([data-tag="Button"]))):has(> .fp-item + .fp-item)
+    > .fp-item[data-tag="Button"] > .fp-control-wrap > .fp-button:not(.fp-icon-btn):not(.fp-button-shape-none) {
+    flex: 1 1 auto;
+}
+.fp-picture-icon.fp-picture-decoration.fp-standard-picture { width: 18px; height: 18px; }
+.fp-picture-icon.fp-picture-decoration.fp-standard-picture .fp-btn-icon { width: 16px; height: 16px; }
+/* PictureSize=ByFontSize is an inline glyph lane. The generic 24px image
+ * decoration and its selectable item border otherwise inflate every row in a
+ * vertical indicator column beyond the adjacent text baseline. */
+.fp-picture-icon.fp-picture-decoration.fp-picture-byfontsize { width: 18px; height: 18px; }
+/* Authored Height owns the decoration box; the picture shrinks into it. The
+ * generic control chrome (vertical padding, 22px wrap minimum) would otherwise
+ * make the content taller than the authored item again. */
+.fp-item.fp-decoration-height-bound {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-item.fp-decoration-height-bound > .fp-control-wrap { min-height: 0; }
+.fp-picture-decoration.fp-picture-height-bound { max-height: 100%; }
+.fp-picture-decoration.fp-picture-height-bound .fp-btn-icon { max-height: 100%; }
+.fp-item.fp-picture-byfontsize-control {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+/* A white-card stack owns the grey separator between its cards. The reference keeps the
+ * first card flush with the page; following cards sit on the parent's Half or
+ * Single gap. Extra 7/9 padding was an inner inset, but with white BackColor it
+ * only lengthened the stack and pushed the content below it off the first viewport. */
+.fp-picture-icon.fp-picture-progress { color: #ff9900; }
 
 .fp-commandbar, .fp-table-toolbar {
     display: flex; flex-direction: row; flex-wrap: nowrap; gap: 4px; align-items: center;
-    padding: 4px 2px; border: none; background: var(--fp-bar);
-    border-radius: 0; margin: 0 0 4px; min-height: 34px;
-    overflow-x: auto; overflow-y: hidden;
+    /* CommandBar has no BackColor of its own: the reference lets the owning group show
+     * through (a hyperlink bar on a grey group). */
+    padding: 0 2px; border: none; background: transparent;
+    border-radius: 0; margin: 0 0 4px; min-height: var(--fp-commandbar-height); height: var(--fp-commandbar-height);
+    overflow-x: hidden; overflow-y: hidden;
     width: 100%; box-sizing: border-box;
     scrollbar-width: thin;
 }
+/* A help-only CommandBar («?») inside a group is a row exactly as tall as its 26px
+ * buttons. The root bar's 27px band, the 4px gap under it and the item padding made
+ * that row 35px and pushed the whole form 9px down. */
+.fp-item[data-tag="CommandBar"].fp-help-item:not(.fp-body > .fp-item) { padding-top: 0; padding-bottom: 0; border-top-width: 0; border-bottom-width: 0; }
+.fp-item[data-tag="CommandBar"].fp-help-item:not(.fp-body > .fp-item) > .fp-control-wrap > .fp-commandbar {
+    margin-bottom: 0; min-height: var(--fp-button-height); height: var(--fp-button-height);
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar {
+    /* Root AutoCommandBar is platform chrome, not an ordinary form row. At
+     * 96 DPI the reference places its 26 px buttons 3 px below the 23 px caption. Keep
+     * nested authored CommandBar and table toolbars on their normal metrics. */
+    padding-block: 1px;
+    font-size: 13px;
+    padding-left: 2px;
+    padding-right: 0;
+    min-height: var(--fp-commandbar-height);
+    height: var(--fp-commandbar-height);
+    margin-bottom: 1px;
+    font-size: 14px;
+    gap: 7px;
+    /* Native 27px buttons paint their lower shadow outside the 25px bar
+     * content box. Preserve horizontal clipping without cropping that chrome. */
+    overflow-x: clip;
+    overflow-y: visible;
+}
+/* The reference spends exactly 10px from the painted command bar bottom to the first
+ * painted editor top. A grouped first root row already lands on it (bar paint
+ * bottom 52 -> editor 62). A bare control placed straight into the root
+ * ChildItems does not: it adds its own 2px item chrome on top of the full 9px
+ * row gap and the bar item's 3px bottom slack, spending 14px. The group
+ * absorbs that chrome; the bare control double-counts it. Give the gap back
+ * those 4px so both paths spend the reference's 10. This is a structural
+ * correction, not a tuned constant. */
+.fp-body > .fp-item[data-tag="AutoCommandBar"] + .fp-item[data-tag="InputField"],
+.fp-body > .fp-item[data-tag="AutoCommandBar"] + .fp-item[data-tag="CheckBoxField"],
+.fp-body > .fp-item[data-tag="AutoCommandBar"] + .fp-item[data-tag="RadioButtonField"] {
+    margin-top: -4px;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] {
+    /* .fp-item has a transparent selection border. The reference's root platform bar
+     * does not spend horizontal pixels on it, but keeps the vertical inset. */
+    border-left-width: 0;
+    border-right-width: 0;
+}
+/* An authored CommandBar is itself the native 27px row. The generic item
+ * selection chrome plus the toolbar's ordinary bottom margin otherwise make
+ * that row 35px high (visible in the sick-leave header). */
+.fp-children-horizontal:has(> .fp-item[data-tag="InputField"])
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item) {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-children-horizontal:has(> .fp-item[data-tag="InputField"])
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item)
+    > .fp-control-wrap > .fp-commandbar { margin-bottom: 0; }
+/* Its first command starts on the row edge as well: the transparent 1px
+ * selection border put the first command at x=13 (the reference 12). A
+ * too-narrow bold caption had hidden that offset. */
+.fp-children-horizontal > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item) {
+    border-left-width: 0; border-right-width: 0;
+}
+/* A vertical authored hyperlink CommandBar (a page switcher) is the
+ * same 27px Taxi row. Item chrome plus the toolbar's 4px bottom margin made
+ * that band 35px and shifted the Pages strip and chart down. Ordinary
+ * vertical CommandBars with CommandBarButton keep their previous metrics. */
+.fp-children-vertical > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):has(.fp-hyperlink-commandbar) {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-children-vertical > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):has(.fp-hyperlink-commandbar)
+    > .fp-control-wrap > .fp-commandbar { margin-bottom: 0; }
+/* A row built only from authored CommandBars is the form's own command strip.
+ * The reference paints it with the same command font as the platform bar and packs its
+ * buttons edge to edge, without the ordinary item chrome or toolbar margin
+ * (НачислениеЗарплаты: 12/172/264 against our 13px 14/171/260). */
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item) {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item)
+    > .fp-control-wrap > .fp-commandbar {
+    margin-bottom: 0;
+    font-size: 14px;
+}
+/* The trailing "Еще" affordance is platform chrome with its own metric: the
+ * root bar already keeps it at 13px, and widening it to the command font
+ * pushed its frame past every reference candidate (61px in НачислениеЗарплаты). */
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item)
+    > .fp-control-wrap > .fp-commandbar .fp-more-item > .fp-popup {
+    font-size: 13px;
+}
+/* The leading strip's commands drop their 1 px margins, so the 9 px gap is
+ * the whole separation for text and picture commands alike. A trailing
+ * right-aligned bar
+ * ("Еще") keeps its lane metrics — packing those made their frames wider
+ * than any reference candidate. */
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right)
+    > .fp-control-wrap > .fp-commandbar {
+    /* The reference keeps its ordinary 9 px between commands here too; the old
+     * edge-to-edge packing only offset 14 px captions that were too wide. */
+    gap: 9px;
+}
+/* Adjacent bars of such a strip read as one bar: the last command of one bar
+ * and the first picture command of the next are 10 px apart,
+ * so neither bar adds its own 2 px inset to the row gap. */
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right)
+    + .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right)
+    > .fp-control-wrap > .fp-commandbar {
+    padding-left: 0;
+}
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right):has(
+        + .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right))
+    > .fp-control-wrap > .fp-commandbar {
+    padding-right: 0;
+}
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right)
+    > .fp-control-wrap > .fp-commandbar .fp-button { margin: 0; }
+.fp-bar-overflow-hidden { display: none !important; }
 .fp-commandbar .fp-children, .fp-table-toolbar .fp-children,
 .fp-commandbar .fp-buttongroup, .fp-table-toolbar .fp-buttongroup {
     flex-direction: row !important; flex-wrap: nowrap !important; align-items: center;
@@ -474,6 +2138,39 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     overflow: visible;
     max-width: none;
     margin: 0 1px;
+    /* The reference draws every command-bar caption, root or nested, with one 13 px
+     * face. Against Chromium's 13 px Arial the reference frames of plain text
+     * commands leave a constant 23-26 px of chrome, while the old 12/14 px
+     * bars needed 11-22 px: long captions came out 9 px wider than the
+     * reference. */
+    font-size: 13px;
+}
+/* The same measurement for the other faces: a picture+text command keeps
+ * 39.5 px beside its caption (icon, gap and 9/10 padding) and a popup 15 px
+ * beside its caption and caret. */
+.fp-commandbar .fp-button.fp-picture-text-btn, .fp-table-toolbar .fp-button.fp-picture-text-btn {
+    padding-left: 9px; padding-right: 10px;
+}
+.fp-commandbar .fp-button.fp-popup:not(.fp-picture-text-btn),
+.fp-table-toolbar .fp-button.fp-popup:not(.fp-picture-text-btn) {
+    padding-left: 7px; padding-right: 8px;
+}
+/* «Еще» is 61 px wherever the reference draws it. */
+.fp-commandbar .fp-more-item > .fp-button.fp-popup,
+.fp-table-toolbar .fp-more-item > .fp-button.fp-popup {
+    padding-left: 8px; padding-right: 10px;
+}
+/* The bold default command. The reference widths fit one line,
+ * W ≈ 1.03 × Chromium bold caption + 26.5 (Записать 89, Отправить 98,
+ * Записать и закрыть 160, Провести и закрыть 161, Добавить в справочник 185):
+ * GDI rounds every bold advance up by ~0.25 px, so the extra grows with the
+ * caption instead of being a per-command padding (was 13/14, 14/15, 12/17). */
+.fp-commandbar .fp-button.fp-button-default:not(.fp-icon-btn):not(.fp-picture-text-btn),
+.fp-table-toolbar .fp-button.fp-button-default:not(.fp-icon-btn):not(.fp-picture-text-btn),
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-button.fp-button-default:not(.fp-icon-btn):not(.fp-picture-text-btn) {
+    padding-left: 12px !important; padding-right: 12.4px !important;
+    letter-spacing: 0.25px;
 }
 .fp-commandbar .fp-control-wrap, .fp-table-toolbar .fp-control-wrap {
     max-width: none;
@@ -481,15 +2178,180 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 }
 .fp-bar-spacer { flex: 1 1 auto; min-width: 12px; flex-shrink: 1; }
 .fp-buttongroup { display: flex; flex-direction: row; flex-wrap: nowrap; gap: 6px; align-items: center; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    > .fp-item[data-tag="ButtonGroup"]:not(:first-child) { margin-left: 12px; }
+/* Combined with the bar's base gap/button margins, the 12 px group boundary
+ * gives the reference's 22 px edge-to-edge separation. Inside a picture-button group,
+ * the calibrated 7 px gap preserves the reference's 96 DPI command rhythm. */
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-buttongroup { gap: 7px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    > .fp-item:first-child .fp-button,
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-buttongroup > .fp-item:first-child .fp-button { margin-left: 0; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-button:not(.fp-icon-btn) { padding-left: 12px; padding-right: 13px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-document-posting-commandbar
+    > .fp-item:first-child .fp-button:not(.fp-icon-btn) {
+        padding-left: 13px; padding-right: 14px;
+        margin-right: 1px;
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-document-posting-commandbar
+    .fp-button.fp-document-posting-write:not(.fp-icon-btn) {
+        padding-left: 12px !important; padding-right: 13px !important;
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-document-posting-commandbar
+    .fp-button.fp-document-posting-post.fp-std-post {
+        margin-left: 12px;
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-document-posting-commandbar
+    .fp-button.fp-document-posting-post:not(.fp-icon-btn) {
+        padding-left: 12px !important; padding-right: 13px !important;
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-standard-commandbar
+    .fp-button.fp-document-posting-writeandclose:not(.fp-icon-btn),
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-standard-commandbar
+    .fp-button.fp-document-posting-write:not(.fp-icon-btn) {
+        border-radius: 2.6px;
+        box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1765);
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-document-posting-commandbar .fp-button,
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-standard-commandbar .fp-button {
+    height: 26px;
+    min-height: 26px;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-buttongroup .fp-button:not(.fp-icon-btn):not(.fp-picture-text-btn):not(.fp-popup) {
+        padding-left: 12px; padding-right: 13px;
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-button {
+        border-radius: 2.6px;
+        background: linear-gradient(180deg, #ffffff 0%, #ffffff 50%, #ececec 96%, #ececec 100%);
+        box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1765);
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-button-default {
+        background: linear-gradient(180deg, #ffe83c 0%, #ffe83c 4%, #ffe100 50%, #ecd000 96%, #ecd000 100%);
+        color: var(--fp-btn-fg);
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-root-commandbar
+    .fp-button { font-size: 13px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-root-commandbar
+    .fp-primary-write { padding-right: 14px !important; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    > .fp-item:not(:first-child) > .fp-control-wrap > .fp-button:not(.fp-icon-btn) {
+        padding-left: 12px; padding-right: 13px;
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-icon-btn { width: 30px; min-width: 30px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar .fp-icon-btn {
+    width: 30px; min-width: 30px;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar
+    > .fp-item:has(.fp-document-posting-post)
+    + .fp-item:has(.fp-icon-btn) {
+    margin-left: 12px !important;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar .fp-create-based-on {
+    padding-left: 7px !important; padding-right: 9px !important;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar .fp-generated-command-group {
+    padding-left: 5px !important; padding-right: 4px !important;
+    margin-right: 2px;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar
+    > .fp-item:has(.fp-create-based-on)
+    + .fp-item:has(.fp-generated-command-group) {
+    margin-left: 1px !important;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar
+    > .fp-item:has(.fp-generated-command-group)
+    + .fp-item:has(.fp-trailing-text-command) {
+    margin-left: 3px !important;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar
+    > .fp-item:has(.fp-trailing-text-command)
+    + .fp-more-item {
+    margin-left: 2px !important;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar .fp-trailing-text-command {
+    padding-left: 8px !important; padding-right: 9px !important;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap
+    > .fp-commandbar.fp-document-posting-commandbar {
+    width: 100%;
+}
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-root-commandbar
+    .fp-icon-btn { width: 30px; min-width: 30px; }
+/* Taxi uses a denser caption metric for compound commands than for the three
+ * primary document actions. This applies by representation, not by caption or
+ * form id: picture+text commands and popup commands share the compact face. */
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-picture-text-btn { padding-left: 9px !important; padding-right: 10px !important; font-size: 13px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-root-commandbar
+    .fp-picture-text-btn { padding-left: 8px !important; padding-right: 10px !important; font-size: 12px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-root-table-glyph-text { font-size: 13px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-popup:not(.fp-picture-text-btn) { padding-left: 7px; padding-right: 8px; font-size: 13px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-root-commandbar
+    .fp-popup:not(.fp-picture-text-btn) { padding-left: 7px !important; padding-right: 6px !important; font-size: 13px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-root-commandbar
+    .fp-create-based-on:not(.fp-picture-text-btn) { padding-right: 9px !important; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar
+    .fp-more-item > .fp-popup {
+        padding-inline: 8px 9px !important; margin-right: 0; font-size: 13px;
+    }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-root-commandbar
+    .fp-more-item > .fp-popup { width: 61px; min-width: 61px; }
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar.fp-catalog-root-commandbar
+    .fp-help-btn { position: relative; left: 1px; }
+/* Text popups (setPopupCaption): the reference starts the caption at the ordinary 13px
+ * inset and ends the arrow 6px before the right border — caption ink at 15,
+ * arrow ink ending at width−8 over 48 popups. The in-flow caption keeps the
+ * width every context above tunes as a transparent ::before; the caption and
+ * arrow spans sit at the reference's insets on top of it. */
+.fp-button.fp-text-popup { position: relative; }
+.fp-button.fp-text-popup::before { content: attr(data-popup-label) " ▾"; color: transparent; }
+.fp-text-popup > .fp-popup-label,
+.fp-text-popup > .fp-popup-caret {
+    position: absolute; top: 0; bottom: 0; display: flex; align-items: center;
+    white-space: pre; pointer-events: none;
+}
+.fp-text-popup > .fp-popup-label { left: 13px; }
+.fp-text-popup > .fp-popup-caret { right: 4px; }
 .fp-group-bare { margin: 0; width: auto; max-width: 100%; }
 .fp-item.fp-hstretch > .fp-control-wrap > .fp-group-bare,
 .fp-item.fp-hstretch > .fp-control-wrap > .fp-group-block { width: 100%; }
+.fp-item.fp-sized-width > .fp-control-wrap,
+.fp-item.fp-sized-width > .fp-control-wrap > .fp-group-bare,
+.fp-item.fp-sized-width > .fp-control-wrap > .fp-group-block,
+.fp-item.fp-sized-width > .fp-control-wrap > .fp-group-bare > .fp-children,
+.fp-item.fp-sized-width > .fp-control-wrap > .fp-group-block > .fp-children {
+    width: 100%; box-sizing: border-box;
+}
+.fp-item.fp-sized-height > .fp-control-wrap,
+.fp-item.fp-sized-height > .fp-control-wrap > .fp-group-bare,
+.fp-item.fp-sized-height > .fp-control-wrap > .fp-group-block,
+.fp-item.fp-sized-height > .fp-control-wrap > .fp-group-bare > .fp-children,
+.fp-item.fp-sized-height > .fp-control-wrap > .fp-group-block > .fp-children {
+    height: 100%; min-height: 0; box-sizing: border-box;
+}
 .fp-group-block { width: auto; max-width: 100%; }
 .fp-check {
     -webkit-appearance: none; appearance: none;
-    width: 13px; height: 13px; min-width: 13px; margin: 0; padding: 0;
+    width: 15px; height: 15px; min-width: 15px; margin: 0; padding: 0;
     box-sizing: border-box; border: 1px solid var(--fp-input-border);
-    background: var(--fp-input-bg); border-radius: 0; position: relative;
+    background: var(--fp-input-bg); border-radius: 2px; position: relative;
 }
 .fp-check:checked::after {
     content: ''; position: absolute; left: 3px; top: 0px;
@@ -499,18 +2361,31 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 }
 .fp-radio-option input[type='radio'] {
     -webkit-appearance: none; appearance: none;
-    width: 13px; height: 13px; min-width: 13px; margin: 0; padding: 0;
+    width: 15px; height: 15px; min-width: 15px; margin: 0; padding: 0;
     box-sizing: border-box; border: 1px solid var(--fp-input-border);
     background: var(--fp-input-bg); border-radius: 50%; position: relative;
 }
 .fp-radio-option input[type='radio']:checked::after {
-    content: ''; position: absolute; left: 3px; top: 3px;
+    content: ''; position: absolute; left: 4px; top: 4px;
     width: 5px; height: 5px; border-radius: 50%; background: var(--fp-green);
 }
-.fp-radio-stack { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.fp-radio-stack { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+/* A radio list laid out in a row is a native 17 px row (rows 17 / 9 / 25),
+ * not the 22 px editor lane; the item band stays around it. */
+.fp-item.fp-control > .fp-control-wrap.fp-title-left:has(> .fp-radio-stack.fp-radio-grid) { min-height: 17px; }
 .fp-radio-row { flex-wrap: nowrap; }
-.fp-radio-option { display: inline-flex; align-items: center; gap: 6px; }
-.fp-deco-sep { display: inline-block; width: 1px; height: 14px; background: #c8c8c8; margin: 0 10px; vertical-align: middle; }
+.fp-radio-column {
+    flex-direction: column; flex-wrap: nowrap; align-items: flex-start;
+    gap: var(--fp-row-gap);
+}
+.fp-radio-grid {
+    display: grid; column-gap: 4px; row-gap: var(--fp-row-gap);
+    align-items: center;
+}
+.fp-radio-option { display: inline-flex; align-items: center; gap: 4px; min-height: var(--fp-radio-height); }
+.fp-deco-sep { display: inline-block; background: #c8c8c8; vertical-align: middle; }
+.fp-deco-sep-vertical { width: 1px; min-width: 1px; height: 100%; min-height: 14px; margin: 0 10px; align-self: stretch; }
+.fp-deco-sep-horizontal { width: 100%; height: 1px; min-height: 1px; margin: 5px 0; }
 .fp-deco-spacer { display: inline-block; min-width: 8px; height: 1px; vertical-align: middle; }
 .fp-list-mock { min-width: 180px; border: 1px solid var(--fp-border); background: var(--fp-input-bg); overflow: hidden; }
 .fp-list-row { padding: 4px 8px; border-bottom: 1px solid var(--fp-border); font-size: 0.92em; }
@@ -522,45 +2397,218 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 }
 .fp-spreadsheet-field { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 160px; align-items: stretch; }
 .fp-spreadsheet-viewport {
-    flex: 1 1 auto; width: 100%; min-width: 0; min-height: 160px; overflow: scroll;
+    flex: 1 1 auto; width: 100%; min-width: 0; min-height: 160px; overflow: auto;
     border: 1px solid var(--fp-border-strong); background: #fff; box-sizing: border-box;
 }
-.fp-spreadsheet-surface { position: relative; width: 1400px; height: 900px; background: #fff; }
-.fp-spreadsheet-cell {
-    position: absolute; left: 0; top: 0; width: 62px; height: 16px;
-    border: 2px solid #cfd4ee; background: #f5f6ff; box-sizing: border-box;
+/* An empty spreadsheet document is effectively unbounded, so the reference's thumbs are
+ * minimal round knobs at the start of an 8px rounded track, and no cell is
+ * selected in the designer. */
+.fp-spreadsheet-surface { position: relative; width: 100000px; height: 100000px; background: #fff; }
+.fp-body.fp-mockup .fp-spreadsheet-cell { display: none; }
+.fp-mockup .fp-spreadsheet-viewport::-webkit-scrollbar-track-piece:vertical {
+    background: linear-gradient(90deg, transparent 5px, #d6d6d6 5px, #d6d6d6 13px, transparent 13px);
+    border-radius: 9px;
+}
+.fp-mockup .fp-spreadsheet-viewport::-webkit-scrollbar-track-piece:horizontal {
+    background: linear-gradient(180deg, transparent 5px, #d6d6d6 5px, #d6d6d6 13px, transparent 13px);
+    border-radius: 9px;
+}
+.fp-mockup .fp-spreadsheet-viewport::-webkit-scrollbar-thumb:vertical,
+.fp-mockup .fp-spreadsheet-viewport::-webkit-scrollbar-thumb:horizontal {
+    background: radial-gradient(circle at 9px 9px, #9a9a9a 4px, transparent 4.5px);
 }
 .fp-fallback { font-size: 0.9em; color: var(--fp-muted); }
 .fp-fallback-widget { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px; border: 1px dashed var(--fp-border-strong); }
 .fp-fallback-tag { font-size: 0.85em; color: var(--fp-muted); }
+.fp-html-document { display: block; width: 100%; height: 100%; background: transparent; }
+.fp-item:is([data-tag="HTMLDocumentField"], [data-tag="TextDocumentField"], [data-tag="FormattedDocumentField"]) { display: flex; flex-direction: column; min-height: 0; }
+.fp-document-field { flex: 1 1 auto; display: flex; flex-direction: column; align-items: stretch; gap: 4px; width: 100%; min-height: 0; }
+.fp-document-field.fp-title-left { flex-direction: row; gap: var(--fp-side-title-gap); }
+.fp-document-field > :is(.fp-html-document, .fp-text-document) { flex: 1 1 auto; min-height: 21px; box-sizing: border-box; }
+.fp-document-framed { border: 1px solid var(--fp-input-border); background: #fff; }
+.fp-item[data-tag="ChartField"] { display: flex; flex-direction: column; }
+.fp-item[data-tag="ChartField"] > .fp-control-wrap {
+    flex: 1 1 auto; min-height: 0; height: 100%; width: 100%; max-width: 100%;
+    align-items: stretch;
+}
+.fp-chart-widget { width: 100%; height: 100%; min-width: 0; min-height: 0; overflow: hidden; background: #fff; }
+.fp-chart-svg { display: block; width: 100%; height: 100%; font: 12px Arial, sans-serif; }
+.fp-chart-grid { fill: none; stroke: #ddd; stroke-width: 1; }
+.fp-chart-labels { fill: #222; text-anchor: end; }
+.fp-chart-line { fill: none; stroke-width: 2; }
+.fp-chart-line-red { stroke: #f36c6d; }
+.fp-chart-line-blue { stroke: #29b0f7; }
+.fp-chart-line-yellow { stroke: #fbb82b; }
+.fp-chart-marker-red { fill: #f36c6d; }
+.fp-chart-marker-blue { fill: #29b0f7; }
+.fp-chart-marker-yellow { fill: #fbb82b; }
 
 .fp-table-widget { display: flex; flex-direction: column; flex: 1; min-height: 120px; min-width: 0; width: 100%; max-width: 100%; gap: 0; overflow: hidden; }
 .fp-table-widget .fp-table-toolbar { margin-bottom: 0; flex: 0 0 auto; }
+/* The reference keeps one Single vertical spacing (9px) between a table's own command
+   bar and the grid or its filter chips (НачислениеЗарплаты, Пояснения). */
+.fp-table-widget > .fp-table-toolbar { margin-bottom: 9px; }
+.fp-page-table-chrome-cadence .fp-table-widget:has(> .fp-chips) > .fp-table-toolbar { margin-bottom: 0; }
+/* The reference starts a table's command bar on the grid edge and keeps 9 px between
+ * commands, 20 px around a separated group; the standard MoveUp/MoveDown
+ * group is drawn as one segmented pair sharing a border. */
+.fp-table-widget > .fp-table-toolbar { padding-left: 0; gap: 9px; }
+.fp-table-widget > .fp-table-toolbar .fp-button { margin: 0; }
+.fp-table-widget > .fp-table-toolbar .fp-button.fp-std-move-up {
+    margin-left: 11px; border-top-right-radius: 0; border-bottom-right-radius: 0;
+}
+.fp-table-widget > .fp-table-toolbar .fp-item:has(> .fp-control-wrap > .fp-std-move-down) { margin-left: -10px; }
+.fp-table-widget > .fp-table-toolbar .fp-button.fp-std-move-down {
+    margin-right: 11px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+}
+/* A compact headerless List column is a 64px native track. Its toolbar is
+ * bounded by that track so fitCommandBar moves commands into More (the reference shows
+ * only «Еще»), instead of publishing a min-content lane that the no-overlap
+ * pass would reserve as the column minimum. */
+.fp-compact-list-group .fp-table-widget .fp-table-toolbar { min-width: 0; max-width: 100%; }
+.fp-compact-list-group .fp-table-widget .fp-table-toolbar > .fp-bar-spacer { min-width: 0; }
+.fp-item.fp-table-authored-height { display: flex; flex-direction: column; }
+.fp-item.fp-table-authored-height > .fp-table-widget { flex: 1 1 0; min-height: 0; }
 .fp-table-widget > .fp-chips { flex: 0 0 auto; width: 100%; align-self: stretch; }
+.fp-table-filter-active { box-shadow: inset 0 0 0 1px rgba(23, 117, 199, .35); }
+.fp-table-period-active { border-top-color: var(--fp-focus); }
+.fp-footer-picture { width: 16px; height: 16px; margin-right: 4px; vertical-align: middle; }
+.fp-has-back-picture { position: relative; }
+.fp-back-picture { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; overflow: hidden; opacity: .14; pointer-events: none; }
+.fp-back-picture-opaque { opacity: .24; }
+.fp-back-picture-image { width: 100%; height: 100%; object-fit: contain; }
+.fp-has-back-picture > :not(.fp-back-picture) { position: relative; z-index: 1; }
 .fp-search-wrap { margin-left: 0; }
-.fp-search-item { margin-left: 0; flex: 0 1 220px !important; min-width: 160px !important; max-width: 260px !important; }
-.fp-search-field { min-width: 160px; max-width: 260px; width: 100%; }
+.fp-commandbar .fp-search-item, .fp-table-toolbar .fp-search-item { margin-left: 0; flex: 0 1 260px !important; min-width: 140px !important; max-width: 260px !important; }
+/* The reference paints the loupe 41px wide beside the search. */
+.fp-commandbar .fp-search-control-item { flex: 0 0 auto; margin-left: 4px; }
+.fp-search-control-btn { min-width: 41px; padding: 0 5px; display: inline-flex; align-items: center; gap: 3px; }
+.fp-search-field { min-width: 0; max-width: 260px; width: 100%; }
 .fp-chips {
     display: flex; flex-wrap: wrap; justify-content: flex-start; align-items: center;
-    gap: 6px; padding: 4px 2px; width: 100%; max-width: 100%;
+    gap: 14px; padding: 0; width: 100%; max-width: 100%;
+    min-height: var(--fp-view-status-height); height: var(--fp-view-status-height);
     margin: 0; box-sizing: border-box;
 }
+/* The chips never touch the list they describe: the reference leaves 9px of air under
+ * the 21px chip. Page cadence and responsive column pairs already put that
+ * air into the widget row-gap. */
+.fp-table-widget > .fp-table-toolbar + .fp-chips + .fp-table-mock { margin-top: 8px; }
+.fp-page-table-chrome-cadence .fp-table-widget > .fp-chips + .fp-table-mock,
+.fp-table-column-responsive-pair .fp-table-widget > .fp-chips + .fp-table-mock { margin-top: 0; }
 .fp-item:has(> .fp-chips) {
     align-self: stretch; width: 100%; max-width: 100%;
 }
+/* Control showcase read-out: ordinary 13px text from 7px after the border, the
+ * remove disc 6px after the text, 5px before the right border and 4px under
+ * the top one. The reference's horizontal edges are antialiased over two rows (#e4d9b2
+ * inside, #dedbd2 outside), the vertical ones a crisp #cbc19f. */
 .fp-chip {
-    display: inline-flex; align-items: center; gap: 6px;
-    background: var(--fp-chip); border: 1px solid #e0c56e;
-    padding: 1px 6px; font-size: 12px; border-radius: 2px;
+    display: inline-flex; align-items: flex-start; gap: 4px;
+    background: #fef2c7; border: 1px solid #cbc19f; border-top-color: #e4d9b2; border-bottom-color: #e4d9b2;
+    box-shadow: 0 -1px 0 #dedbd2, 0 1px 0 #dedcd3;
+    padding: 2px 5px 0 5px; height: 21px; box-sizing: border-box;
+    font: 13px/18px Arial, sans-serif; border-radius: 2px;
+    color: #504f48;
 }
-.fp-chip-x { opacity: 0.6; font-size: 11px; }
+.fp-chip > .fp-chip-x { margin-top: 1px; }
+/* The reference's remove glyph is a 12px disc of black at ~33% with the cross cut out
+ * (control showcase, pixel mask «i-px-chip-x»), not a text «×». */
+.fp-chip-x {
+    display: block; flex: 0 0 auto; width: 12px; height: 12px;
+    fill: #000; stroke: none; pointer-events: none;
+}
 .fp-table-mock {
     overflow-x: auto; overflow-y: auto; border: 1px solid var(--fp-border-strong); border-radius: 0;
     margin: 0; flex: 1 1 auto; min-height: 80px; min-width: 0; width: 100%; max-width: 100%; background: #fff;
+    box-sizing: border-box; contain: inline-size; position: relative;
 }
-.fp-table-mock table { width: max-content; border-collapse: collapse; font-size: inherit; }
+.fp-table-mock.fp-table-explicit-rows { overflow-y: auto; scrollbar-gutter: stable; }
+.fp-table-mock::-webkit-scrollbar { width: 12px; height: 12px; }
+.fp-table-mock::-webkit-scrollbar-track { background: transparent; }
+.fp-mockup .fp-table-mock::-webkit-scrollbar-thumb {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}
+.fp-mockup .fp-table-mock::-webkit-scrollbar-thumb:vertical,
+.fp-mockup .fp-table-mock::-webkit-scrollbar-thumb:horizontal {
+    background: transparent;
+}
+.fp-mockup .fp-table-mock.fp-table-overflow-y::-webkit-scrollbar-thumb:vertical {
+    background: linear-gradient(90deg, transparent 1px, #9a9a9a 1px, #9a9a9a 9px, transparent 9px);
+}
+.fp-mockup .fp-table-mock.fp-table-overflow-x::-webkit-scrollbar-thumb:horizontal {
+    background: linear-gradient(180deg, transparent 1px, #9a9a9a 1px, #9a9a9a 9px, transparent 9px);
+}
+.fp-mockup .fp-table-mock.fp-table-overflow-y::-webkit-scrollbar-track-piece:vertical {
+    background: linear-gradient(90deg, transparent 1px, #d6d6d6 1px, #d6d6d6 9px, transparent 9px);
+}
+.fp-mockup .fp-table-mock.fp-table-overflow-x::-webkit-scrollbar-track-piece:horizontal {
+    background: linear-gradient(180deg, transparent 1px, #d6d6d6 1px, #d6d6d6 9px, transparent 9px);
+}
+/* Disabled table scrolling blends with the table surface, same as the reference. */
+.fp-mockup .fp-table-mock::-webkit-scrollbar-track-piece:vertical,
+.fp-mockup .fp-table-mock::-webkit-scrollbar-track-piece:horizontal {
+    background: transparent;
+}
+.fp-table-mock::-webkit-scrollbar-corner { background: transparent; }
+/* Designer/runtime tables with only the generated empty body retain the reference's
+ * vertical scrollbar lane and disabled arrows, but have no movable thumb.
+ * With overflow-y:auto the reserved gutter stayed blank unless the rows
+ * happened to overflow by a pixel (a shorter grid had arrows, a taller one
+ * had none); scroll keeps the disabled bar painted. */
+.fp-mockup .fp-table-mock.fp-table-explicit-rows.fp-table-empty-runtime { overflow-y: scroll; }
+.fp-mockup .fp-table-mock.fp-table-empty-runtime::-webkit-scrollbar-thumb:vertical {
+    background: transparent;
+    border-color: transparent;
+}
+.fp-table-column-responsive-pair .fp-table-mock::-webkit-scrollbar-track { background: transparent; }
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock::-webkit-scrollbar-track-piece:vertical,
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock::-webkit-scrollbar-track-piece:horizontal {
+    background: transparent;
+}
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock::-webkit-scrollbar-thumb:vertical,
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock::-webkit-scrollbar-thumb:horizontal {
+    background: transparent;
+    border: 0;
+    border-radius: 0;
+}
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock.fp-table-overflow-y::-webkit-scrollbar-thumb:vertical {
+    background: linear-gradient(90deg, transparent 1px, #9a9a9a 1px, #9a9a9a 9px, transparent 9px);
+}
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock.fp-table-overflow-x::-webkit-scrollbar-thumb:horizontal {
+    background: linear-gradient(180deg, transparent 1px, #9a9a9a 1px, #9a9a9a 9px, transparent 9px);
+}
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock.fp-table-overflow-y::-webkit-scrollbar-track-piece:vertical {
+    background: linear-gradient(90deg, transparent 1px, #d6d6d6 1px, #d6d6d6 9px, transparent 9px);
+}
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock.fp-table-overflow-x::-webkit-scrollbar-track-piece:horizontal {
+    background: linear-gradient(180deg, transparent 1px, #d6d6d6 1px, #d6d6d6 9px, transparent 9px);
+}
+.fp-table-column-responsive-pair .fp-table-mock::-webkit-scrollbar-corner { background: transparent; }
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock.fp-table-empty-runtime::-webkit-scrollbar-thumb:vertical {
+    background: transparent;
+    border-color: transparent;
+}
+/* An empty runtime grid has nothing to scroll: the reference keeps the vertical lane
+   disabled even when the column header alone overflows. */
+.fp-mockup .fp-table-mock.fp-table-empty-runtime::-webkit-scrollbar-track-piece:vertical,
+.fp-mockup .fp-table-column-responsive-pair .fp-table-mock.fp-table-empty-runtime::-webkit-scrollbar-track-piece:vertical {
+    background: transparent;
+}
+.fp-mockup .fp-table-mock.fp-table-empty-runtime::-webkit-scrollbar-button:vertical:start:decrement {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M3 0L6 4H0z' fill='%23c2c2c2'/%3E%3C/svg%3E");
+}
+.fp-mockup .fp-table-mock.fp-table-empty-runtime::-webkit-scrollbar-button:vertical:end:increment {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 0H6L3 4z' fill='%23c2c2c2'/%3E%3C/svg%3E");
+}
+img.fp-btn-icon { object-fit: contain; }
+/* 1C stretches a short grid to the full table field, but keeps the declared
+ * column widths as minima when the grid needs a local horizontal scrollbar. */
+.fp-table-mock table { width: 100%; min-width: max-content; border-collapse: collapse; font-size: inherit; table-layout: fixed; }
 .fp-table-mock th, .fp-table-mock td {
-    padding: 5px 8px; text-align: left; height: 26px; box-sizing: border-box;
+    padding: 5px 8px; text-align: left; height: 30px; box-sizing: border-box;
     border-bottom: 1px solid var(--fp-border); border-right: 1px solid var(--fp-border);
     white-space: nowrap;
 }
@@ -568,16 +2616,18 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 .fp-table-mock th {
     background: #f2f2f2; font-weight: 400; font-size: inherit; text-transform: none;
     letter-spacing: 0; cursor: pointer; border-bottom: 1px solid #ccc;
+    box-shadow: inset 1px 1px #fff;
     color: var(--fp-btn-fg);
     position: sticky; top: 0; z-index: 1;
 }
 .fp-table-mock th.fp-th-icon { width: 22px; text-align: center; }
-.fp-table-mock th.fp-th-group { text-align: center; font-weight: 400; border-bottom: 1px solid var(--fp-border); }
+.fp-table-mock th.fp-th-group { text-align: left; font-weight: 400; border-bottom: 1px solid var(--fp-border); }
 .fp-table-mock th.selected { background: #d7ebff; outline: 2px solid var(--fp-focus); outline-offset: -2px; }
-.fp-table-mock tbody td { color: var(--fp-muted); height: 22px; }
-.fp-table-empty { height: 22px; }
+.fp-table-mock tbody td { color: var(--fp-muted); height: 30px; }
+.fp-table-empty { height: 30px; }
+.fp-table-mock tbody td.fp-table-empty-body { border-right: none; border-bottom: none; }
 /* A grid with no HeightInTableRows still shows one roomy placeholder row. */
-.fp-table-mock tbody tr:only-child .fp-table-empty { height: 48px; }
+.fp-table-mock:not(.fp-table-explicit-rows) tbody tr:only-child .fp-table-empty { height: 48px; }
 /* Table.VerticalLines / HorizontalLines / UseAlternationRowColor.
  * VerticalLines=false keeps the column separators but fades them out: a grid
  * with no vertical rules at all reads as a blank slab, and the columns stop
@@ -590,82 +2640,216 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 .fp-table-mock.fp-table-noheader { border-top: 1px solid var(--fp-border-strong); }
 .fp-table-mock td.fp-cell-link { color: var(--fp-link); text-decoration: underline; }
 .fp-tree-toggle { color: var(--fp-btn-fg); font-size: 10px; margin-right: 4px; }
+/* The totals strip sits on the bottom edge of the grid frame, not right
+ * under the placeholder row: the empty body takes the rest of the height. */
+.fp-table-mock.fp-table-has-footer > table { height: 100%; }
+.fp-table-mock.fp-table-has-footer > table > thead > tr,
+.fp-table-mock.fp-table-has-footer > table > tfoot > tr { height: 1px; }
 .fp-table-mock tfoot td.fp-table-footer-cell {
     background: #f2f2f2; border-top: 1px solid var(--fp-border-strong);
     color: var(--fp-btn-fg); height: 24px;
 }
 
-/* Form caption (Form.Title), drawn above the mockup body. */
+/* Managed-client window caption. The reference keeps this #bfcdDB strip even when the
+ * form title itself is hidden or empty. */
 .fp-form-title {
-    flex: 0 0 auto; padding: 6px 10px 4px; background: var(--fp-card);
-    color: #1a1a1a; font-size: 14px; font-weight: 700;
+    flex: 0 0 23px; width: 100%; height: 23px; min-height: 23px;
+    box-sizing: border-box; padding: 3px 4px 2px; overflow: hidden;
+    background: #bfcdDB; color: #000; font-size: 12px; line-height: 18px;
+    font-weight: 700; white-space: nowrap; text-overflow: ellipsis;
 }
 
 /* Enabled=false — the control keeps its place but goes grey. */
-.fp-item.fp-disabled { opacity: 0.55; }
 .fp-item.fp-disabled .fp-input, .fp-item.fp-disabled .fp-field-label,
 .fp-item.fp-disabled .fp-button, .fp-item.fp-disabled .fp-label { color: var(--fp-muted); }
+/* The reference greys a disabled input field by colour, not by fading the whole
+ * subtree: caption #a6a6a6, the ReadOnly frame colour #d7d7d7, the input
+ * hint unchanged, and no AutoMarkIncomplete rule. Other leaves keep the
+ * faded look. */
+.fp-item.fp-disabled:not(:has(.fp-input-wrap, .fp-item)),
+.fp-item.fp-disabled .fp-item:not(:has(.fp-input-wrap, .fp-item)) { opacity: 0.55; }
+.fp-item.fp-disabled .fp-field-label, .fp-item.fp-disabled .fp-input,
+.fp-item.fp-disabled .fp-group-title { color: #a6a6a6; }
+.fp-item.fp-disabled .fp-input::placeholder { color: #a7a7a7; }
+.fp-item.fp-disabled .fp-input-wrap,
+.fp-item.fp-disabled .fp-input-wrap .fp-input-btn { border-color: #d7d7d7; }
+.fp-item.fp-disabled .fp-input-incomplete { background-image: none; }
+/* …and its editor-button glyphs (▼, open, …) are #a4a4a4, not the ink colour. */
+.fp-item.fp-disabled .fp-input-wrap .fp-input-btn { color: #a4a4a4; }
 
 /* ToolTipRepresentation */
-.fp-tooltip-text { color: var(--fp-muted); font-size: 11px; }
+/* The reference paints side tooltip text in the normal 12px font and its own olive
+ * colour (darkest ink #807a59). */
+.fp-tooltip-text { color: #807a59; font-size: 12px; white-space: pre-line; }
 .fp-item.fp-tooltip-side-v { display: flex; flex-direction: column; align-items: flex-start; }
+/* Above or below its control the tooltip is ordinary 13px text 6px away from
+ * it (12px text sat flush and wrapped later). */
+.fp-item.fp-tooltip-side-v:not(.fp-table-authored-height) > .fp-tooltip-text { font-size: 13px; line-height: 16px; }
+.fp-item.fp-tooltip-side-v:not(.fp-table-authored-height) > .fp-control-wrap + .fp-tooltip-text { margin-top: 6px; }
+.fp-item.fp-tooltip-side-v:not(.fp-table-authored-height) > .fp-tooltip-text:has(+ .fp-control-wrap) { margin-bottom: 6px; }
 .fp-item.fp-tooltip-side-h { display: flex; flex-direction: row; align-items: center; gap: 6px; }
-.fp-tooltip-btn {
-    flex: 0 0 auto; width: 16px; height: 16px; margin-left: 4px; padding: 0;
-    border: 1px solid var(--fp-btn-border); border-radius: 50%;
-    background: var(--fp-btn-face); color: var(--fp-btn-fg);
-    font: inherit; font-size: 10px; line-height: 1; cursor: default;
+/* ToolTipRepresentation=Button: a plain #0071bc «?», 10px of ink, not an
+ * underlined link. */
+.fp-tooltip-link {
+    flex: 0 0 auto; display: inline-block; min-width: 8px; margin-left: 0;
+    border: 0; padding: 0; background: transparent; color: #0071bc;
+    font: inherit; font-size: 13px; line-height: 16px; text-align: center;
+    text-decoration: none; cursor: help;
 }
-.fp-item.fp-has-tooltip-btn { display: flex; flex-direction: row; align-items: center; }
+/* A top title puts the editor in the lower band of the row. Side tooltip
+ * text and a title-less «?» centre on that editor, not on the whole item. */
+.fp-item.fp-tooltip-side-h:has(> .fp-field-row.fp-title-top) > .fp-tooltip-text {
+    align-self: flex-end; line-height: 25px;
+}
+.fp-children-horizontal:has(> .fp-item > .fp-field-row.fp-title-top)
+    > .fp-item.fp-has-tooltip-link:not(:has(> .fp-field-row.fp-title-top)) {
+    align-items: flex-end;
+}
+.fp-children-horizontal:has(> .fp-item > .fp-field-row.fp-title-top)
+    > .fp-item.fp-has-tooltip-link:not(:has(> .fp-field-row.fp-title-top)) > .fp-tooltip-link {
+    line-height: 25px;
+}
+.fp-item.fp-has-tooltip-link { display: flex; flex-direction: row; align-items: center; column-gap: 7px; }
+.fp-item.fp-has-tooltip-link > .fp-control-wrap {
+    flex: 1 1 auto; min-width: 0; width: auto;
+}
+.fp-item.fp-has-tooltip-link.fp-no-hstretch,
+.fp-children.fp-children-vertical > .fp-item.fp-has-tooltip-link.fp-no-hstretch {
+    /* The serialized Width belongs to the editor, not to the editor plus its
+     * help affordance. Let a fixed row include both intrinsic widths; capping
+     * the row at its parent while the editor itself stayed fixed made the
+     * editor paint underneath the question-mark link. */
+    width: max-content; min-width: max-content; max-width: none;
+}
+.fp-item.fp-has-tooltip-link.fp-no-hstretch > .fp-control-wrap {
+    flex: 0 0 auto; min-width: max-content;
+}
 
 /* InputField extras: SpinButton, PasswordMode, TitleHeight */
+/* Spin buttons as the reference paints them: a 20px white column, split by a
+ * 1px rule at mid-height, each half holding a 3×2 arrow — one pixel #606060
+ * at the tip, #666/#4d4d4d/#666 at the base — centred at x 9, ▲ on rows 5–6
+ * of its half, ▼ on rows 4–5. */
 .fp-spin {
-    display: flex; flex-direction: column; justify-content: center; flex: 0 0 auto;
-    width: 15px; border-left: 1px solid var(--fp-input-border);
-    background: var(--fp-btn-face); color: var(--fp-btn-fg);
-    font-size: 8px; line-height: 1; text-align: center;
+    display: flex; flex-direction: column; flex: 0 0 auto;
+    width: 20px; border-left: 1px solid var(--fp-input-border);
+    background: #fff; font-size: 0; color: transparent;
 }
-.fp-spin-up, .fp-spin-down { flex: 1 1 50%; }
+.fp-spin-up, .fp-spin-down { position: relative; }
+.fp-spin-up { flex: 0 0 11px; }
+.fp-spin-down { flex: 1 1 auto; border-top: 1px solid var(--fp-input-border); }
+.fp-spin-up::before, .fp-spin-down::before {
+    content: ''; position: absolute; left: 9px; width: 1px; height: 1px; background: #606060;
+}
+.fp-spin-up::before { top: 5px; box-shadow: -1px 1px 0 #666, 0 1px 0 #4d4d4d, 1px 1px 0 #666; }
+.fp-spin-down::before { top: 5px; box-shadow: -1px -1px 0 #666, 0 -1px 0 #4d4d4d, 1px -1px 0 #666; }
 .fp-input.fp-input-password { letter-spacing: 2px; }
-.fp-item.fp-title-multiline .fp-field-label { white-space: normal; }
+.fp-item.fp-title-multiline .fp-field-label { white-space: pre-line; }
 
-/* CheckBoxType=Tumbler / RadioButtonType=Tumbler */
-.fp-switch {
-    display: inline-flex; align-items: center; flex: 0 0 auto;
-    width: 28px; height: 14px; padding: 1px; box-sizing: border-box;
-    border: 1px solid var(--fp-input-border); border-radius: 8px; background: #e3e3e3;
-}
-.fp-switch-knob {
-    width: 10px; height: 10px; border-radius: 50%;
-    background: #fff; border: 1px solid var(--fp-input-border);
-}
 .fp-segmented { display: inline-flex; flex: 0 0 auto; }
 .fp-segmented-item {
     padding: 3px 10px; border: 1px solid var(--fp-btn-border); border-right-width: 0;
     background: var(--fp-btn-face); color: var(--fp-btn-fg); font: inherit; cursor: default;
 }
 .fp-segmented-item:last-child { border-right-width: 1px; }
+/* A Tumbler is a native 25 px row (step 25 + 9 between stacked tumblers). */
+.fp-segmented-item { box-sizing: border-box; height: 25px; padding-top: 0; padding-bottom: 0; }
+/* Tumbler captions are 13px, one pixel larger than the form text, with a 9px
+ * side inset and the 3px Taxi corner on the outer segments (12px made the
+ * segments 6px narrower than the reference). */
+.fp-segmented-item { font-size: 13px; padding-left: 9px; padding-right: 9px; }
+.fp-segmented-item:first-child { border-radius: 3px 0 0 3px; }
+.fp-segmented-item:last-child { border-radius: 0 3px 3px 0; }
+.fp-segmented-item:only-child { border-radius: 3px; }
+/* Its native box is the segmented row itself, with no editor band around it. */
+.fp-item.fp-control:has(> .fp-control-wrap > .fp-segmented) {
+    padding-top: 0; padding-bottom: 0;
+    border-top-width: 0; border-bottom-width: 0;
+}
 .fp-segmented-item.active { background: var(--fp-btn-face-active); font-weight: 700; }
+/* A boolean Tumbler paints both captions on equal segments sized by the wider
+ * one (104+104 in the reference, not 94+100). */
+.fp-boolean-segmented { display: inline-grid; grid-auto-flow: column; grid-auto-columns: 1fr; }
+/* A boolean tumbler beside single-line editors is a 25px band on the editors'
+ * top edge, not a 24px band on the row's top. */
+.fp-children-horizontal > .fp-item > .fp-field-row.fp-check-switch > .fp-boolean-segmented {
+    height: 25px; margin-top: 3px;
+}
 
 /* PictureSize on PictureDecoration/PictureField */
-.fp-picture-icon.fp-picture-stretch svg { width: 100%; height: 100%; }
-.fp-picture-icon.fp-picture-proportionally svg { width: 100%; height: 100%; object-fit: contain; }
-.fp-picture-icon.fp-picture-realsize svg { width: auto; height: auto; }
+.fp-picture-icon.fp-picture-stretch svg, .fp-picture-icon.fp-picture-stretch img { width: 100%; height: 100%; }
+.fp-picture-icon.fp-picture-proportionally svg, .fp-picture-icon.fp-picture-proportionally img { width: 100%; height: 100%; object-fit: contain; }
+.fp-picture-icon.fp-picture-realsize svg, .fp-picture-icon.fp-picture-realsize img { width: auto; height: auto; }
 
-/* United=false keeps the group's children apart. */
-.fp-group-split { gap: 8px; }
 .fp-page-title { font-weight: 400; font-size: 14px; color: var(--fp-green); margin-bottom: 4px; }
-.fp-group-title { font-weight: 400; font-size: 14px; margin: 8px 0 4px; color: var(--fp-green); }
+/* The reference group caption is label-sized text. The 8px top margin stays:
+ * section captions drift −6px with 4px. */
+.fp-group-title { font-weight: 400; font-size: 13px; margin: 8px 0 4px; color: var(--fp-green); }
+/* A titled horizontal Representation=None group after a sibling of a compact
+ * stack (vertical ones keep 8/4): the reference starts the 16px caption line
+ * one Single step (9px) under the sibling and the content 4px under the
+ * caption. 3px row gap + 6 + 16 + 1 + the child's 2px band reproduce it. */
+.fp-children-vertical[data-fp-vertical-spacing-mode=""] > .fp-item + .fp-item.fp-container.fp-container-horizontal.fp-bare
+    > .fp-control-wrap > .fp-group-bare > .fp-group-title:not(.fp-group-title-section) {
+    margin-top: 6px; margin-bottom: 1px; line-height: 16px;
+}
+/* A titled group dissolved into a United=false column is a grid row: its
+ * caption is a 16px row plus a 4px step (a group height of
+ * 113 = 16 + 4 + 25·3 + 9·2), not a page-level 8px-offset section caption. */
+.fp-children-vertical[data-fp-united="0"] > .fp-item > .fp-control-wrap > * > .fp-group-title {
+    margin: 6px 0 2px;
+}
+.fp-flattened-page-leading-group > .fp-control-wrap > .fp-group-block > .fp-group-title,
+.fp-flattened-page-leading-group > .fp-control-wrap > .fp-group-bare > .fp-group-title,
+.fp-flattened-page-leading-group > .fp-control-wrap > .fp-collapsible-group > .fp-collapsible-title {
+    margin-top: 0;
+}
 .fp-collapsible-group { min-width: 0; max-width: 100%; }
 .fp-collapsible-title {
     display: inline-flex; align-items: center; gap: 4px; margin: 8px 0 4px; padding: 0;
     border: none; background: transparent; color: var(--fp-green); font: inherit; font-size: 14px;
     font-weight: 400; cursor: pointer; text-align: left;
 }
+.fp-page-following-group-caption > .fp-control-wrap > .fp-group-block > .fp-group-title,
+.fp-page-following-group-caption > .fp-control-wrap > .fp-group-bare > .fp-group-title,
+.fp-page-following-group-caption > .fp-control-wrap > .fp-collapsible-group > .fp-collapsible-title {
+    margin-top: 0;
+}
 .fp-collapse-arrow { width: 11px; color: var(--fp-green); font-size: 14px; line-height: 1; flex: 0 0 11px; }
+/* The reference form designer keeps collapsible group semantics but does not paint the
+ * runtime disclosure glyph. Hiding the flex item also restores the authored
+ * title origin instead of reserving an empty 15 px arrow lane. */
+.fp-body.fp-mockup .fp-collapse-arrow { display: none; }
+/* ControlRepresentation=Picture leaves the caption as plain text, and the reference paints
+ * it larger: ink 70x12, which 14px renders as 63x10. Hyperlink captions go the
+ * other way (125 vs 136 px), so they are not touched here. */
+.fp-body.fp-mockup .fp-collapsible-title.fp-group-title-section:not(.fp-collapsible-link) { font-size: 16px; }
+/* Over a framed (Normal/Strong) group its box is the 18px caption line: the
+ * ink starts 4px under the group top and the first row 20px under the ink
+ * (the 8/4px button margins gave 11/25). */
+.fp-body.fp-mockup .fp-group-block.fp-collapsible-group > .fp-collapsible-title.fp-group-title-section { line-height: 18px; margin: 1px 0 2px; }
+/* The section caption of a group with an omitted Representation (see
+ * form-preview.js sectionTitle). It must not feed the group's width: the
+ * group is as wide as its content; a longer caption wraps between words.
+ * 2px below it, not 4 (the first row sat 2-3px low). */
+.fp-body.fp-mockup .fp-group-title.fp-group-title-section { font-size: 16px; line-height: 18px; margin-top: -1px; margin-bottom: 5px; white-space: normal; width: 0; min-width: 100%; }
+/* The caption itself sits higher than that 2px box suggested: the reference ink starts
+ * 3px higher over a bare group and 5px higher over a framed (Normal/Strong
+ * separation) one, the content below unmoved (control showcase: all three
+ * captions ink 65-78, first rows at 89). */
+.fp-body.fp-mockup .fp-group-block > .fp-group-title.fp-group-title-section { margin-top: -3px; margin-bottom: 7px; }
+/* Inside a coloured card the caption keeps an inset instead: the ink starts
+ * 8px under the card top, the first row 32px under. */
+.fp-body.fp-mockup .fp-item.fp-backcolor > .fp-control-wrap > .fp-group-block > .fp-group-title.fp-group-title-section { margin-top: 4px; margin-bottom: 0; }
+/* The hyperlink caption is the ordinary 13px title (14px made it about 8%
+ * wider than the reference). */
+.fp-body.fp-mockup .fp-collapsible-title.fp-collapsible-link { font-size: 13px; }
 /* Default ControlRepresentation makes the caption the hyperlink that unfolds
  * the group; ControlRepresentation=Picture leaves it as plain green text. */
 .fp-collapsible-title.fp-collapsible-link .fp-collapse-text { text-decoration: underline; }
+.fp-body.fp-mockup .fp-collapsible-title.fp-collapsible-link .fp-collapse-text {
+    text-decoration: none;
+}
 .fp-collapsible-body { min-width: 0; max-width: 100%; }
 .fp-collapsible-group.fp-collapsed > .fp-collapsible-body { display: none !important; }
 .fp-popup-group { position: relative; width: auto; max-width: 100%; }
@@ -688,37 +2872,174 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 .fp-popup-group.fp-popup-open > .fp-popup-group-body { display: block; }
 .fp-popup-group-body > .fp-item[data-tag="Table"],
 .fp-popup-group-body .fp-table-widget { min-height: 80px; }
+/* The reference's form designer expands Behavior=PopUp groups in the WYSIWYG canvas.
+ * Runtime popup chrome is useful for the interactive command preview, but it
+ * must not remove the group's children from designer layout or turn them into
+ * an overlay. This selector intentionally excludes ordinary .fp-popup-menu. */
+.fp-body.fp-mockup .fp-popup-group.fp-popup-designer-inline > .fp-popup-group-body {
+    display: flex;
+    position: static !important;
+    left: auto !important; top: auto !important;
+    min-width: 0 !important;
+    z-index: auto;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+    padding: 0;
+    max-width: none;
+    max-height: none;
+    overflow: visible;
+}
+/* Expanded PopUp groups have two independent vertical contracts in the reference: the
+ * launcher keeps a six-pixel separation from its first editor, while sibling
+ * sections inside the expanded body use the compact row gap. */
+.fp-body.fp-mockup .fp-popup-group.fp-popup-designer-inline > .fp-popup-group-title {
+    margin-bottom: 6px;
+    position: relative;
+    top: 4px;
+}
+.fp-body.fp-mockup .fp-popup-group.fp-popup-designer-inline > .fp-popup-group-body {
+    /* No !important: this is the Auto default only. applyLayout leaves the
+     * inline row-gap empty for VerticalSpacing=Auto and writes the authored
+     * value otherwise, so an authored None (0) or the omitted default (9)
+     * must win over this. With !important every expanded PopUp collapsed to
+     * 3px whatever the form asked for. */
+    row-gap: 3px;
+}
+/* Omitted VerticalSpacing is the Single 9px for plain children, but once the
+ * expanded body stacks titled sections the reference keeps them on the
+ * compact 3px gap. Authored values stay inline. */
+.fp-body.fp-mockup .fp-popup-group.fp-popup-designer-inline
+    > .fp-popup-group-body[data-fp-vertical-spacing-mode=""]:has(
+        > .fp-item.fp-container > .fp-control-wrap > .fp-group-bare > .fp-group-title) {
+    row-gap: 3px !important;
+}
+/* Nested titled sections do not pay the generic page-section 8/4 margins.
+ * A section which itself contains compound rows uses the wider internal
+ * cadence so its last authored row stays on the same baseline as the reference. */
+.fp-body.fp-mockup .fp-popup-group.fp-popup-designer-inline > .fp-popup-group-body
+    > .fp-item.fp-container > .fp-control-wrap > .fp-group-bare > .fp-group-title {
+    margin: 3px 0 1px;
+}
+.fp-body.fp-mockup .fp-popup-group.fp-popup-designer-inline > .fp-popup-group-body
+    > .fp-item.fp-container > .fp-control-wrap > .fp-group-bare
+    > .fp-children-vertical:has(> .fp-item.fp-container) {
+    row-gap: 7px !important;
+}
 .fp-buttons-container { display: flex; flex-wrap: nowrap; gap: 4px; align-items: center; }
 
+/* A painted tab strip starts on the top edge of the box the parent allocates:
+ * in the reference one level of Pages advances 36px from a tab strip to the
+ * strip nested inside it, which is the 27px strip plus the 9px page inset and
+ * no chrome at all. The viewer spent 38px because the item shell adds 1px padding
+ * and a 1px selection border above the strip, so the error repeated at every
+ * level and accumulated downwards.
+ *
+ * Only a strip nested inside another strip drops that chrome. The outermost
+ * strip keeps it: its 2px is currently compensated by the root band cadence,
+ * and removing it there lifts every single-level form by 2px onto content that
+ * already sits too high. Fixing the repetition is what removes the
+ * accumulation; the outermost 2px belongs to the root band question. */
+.fp-item.fp-pages-tabbed .fp-item.fp-pages-tabbed { padding-top: 0; border-top-width: 0; }
+/* A root tabbed Pages below another root row starts one native Spacing row
+ * below it with no band above its strip. */
+.fp-body > .fp-item:not([data-tag="AutoCommandBar"]) ~ .fp-item.fp-pages-tabbed { padding-top: 0; border-top-width: 0; }
 .fp-pages-outer { display: flex; flex-direction: column; width: 100%; min-width: 0; min-height: 0; flex: 1; box-sizing: border-box; }
 .fp-pages-outer.TabsOnBottom .fp-pages-tablist { order: 2; }
 .fp-pages-outer.TabsOnBottom .fp-pages-panel-wrap { order: 1; }
+/* 1C keeps the page tabs on one row. When the captions stop fitting, the strip
+ * shares its width between them equally and cuts every caption with an
+ * ellipsis; it never wraps onto a second row. */
 .fp-pages-tablist {
-    display: flex; flex-wrap: wrap; gap: 0; padding: 0; margin: 0;
-    border-bottom: 1px solid var(--fp-tab-border); background: transparent;
+    display: flex; flex-wrap: nowrap; gap: 0; padding: 0; margin: 0;
+    border-bottom: none; background: transparent;
+    overflow: hidden;
 }
 .fp-pages-outer.TabsOnBottom .fp-pages-tablist { margin: 0; padding: 0; border-bottom: none; border-top: 1px solid var(--fp-border-strong); }
 .fp-pages-tab {
-    margin: 0 0 0 -1px; padding: 4px 12px; min-height: 28px; box-sizing: border-box;
+    margin: 0 0 0 -1px; padding: 3px 10px; height: 27px; min-height: 27px; max-height: 27px;
+    box-sizing: border-box;
     font: inherit; font-size: inherit; font-weight: 400;
     color: #333; background: var(--fp-tab); border: 1px solid var(--fp-tab-border);
     border-bottom: none; border-radius: 2px 2px 0 0; cursor: pointer;
+    flex: 0 0 auto; min-width: 0; text-align: center;
+    display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.fp-page-tab-icon { width: 16px; height: 16px; flex: 0 0 16px; object-fit: contain; }
+.fp-page-tab-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fp-pages-tab:first-child { margin-left: 0; }
 .fp-pages-outer.TabsOnBottom .fp-pages-tab { border-radius: 0 0 2px 2px; border-top: none; border-bottom: 1px solid var(--fp-tab-border); }
 .fp-pages-tab:hover { color: inherit; background: #f4f4f4; }
 .fp-pages-tab[aria-selected='true'] {
-    color: #1a1a1a; font-weight: 400; background: #fff;
+    color: #1a1a1a; font-weight: 400; background: var(--fp-surface);
     border-color: var(--fp-tab-border);
-    border-bottom: 1px solid #fff; margin-bottom: -1px;
+    border-bottom: none;
+    /* The reference runs the strip separator across the whole Pages width and lets only
+     * the active tab break it. The panel owns that line; the selected tab
+     * covers its own segment with the surface colour it is standing on. */
+    box-shadow: 0 1px 0 var(--fp-surface);
+    margin-bottom: -1px;
     position: relative; z-index: 2;
 }
 .fp-pages-outer.TabsOnBottom .fp-pages-tab[aria-selected='true'] {
     border-bottom: 1px solid var(--fp-tab-border);
-    border-top: 1px solid #fff; margin-bottom: 0; margin-top: -1px;
+    border-top: 1px solid var(--fp-surface); margin-bottom: 0; margin-top: -1px;
+    box-shadow: 0 -1px 0 var(--fp-surface);
 }
-.fp-pages-panel-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow: hidden; border: 1px solid var(--fp-tab-border); border-top: none; background: #fff; padding: 8px 10px; }
-.fp-pages-active-panel { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow-x: hidden; overflow-y: auto; width: 100%; }
+.fp-pages-tab.fp-page-hidden,
+.fp-pages-tab.fp-page-hidden:hover,
+.fp-pages-tab.fp-page-hidden[aria-selected='true'] {
+    color: #666;
+    background-color: #e5e5e5;
+    background-image: repeating-linear-gradient(
+        135deg,
+        rgba(255,255,255,0.42) 0,
+        rgba(255,255,255,0.42) 4px,
+        rgba(120,120,120,0.12) 4px,
+        rgba(120,120,120,0.12) 8px
+    );
+}
+/* The page panel is not a white card of its own: the reference lets whatever the Pages
+ * control sits on paint through it. When the Pages sits in a group with
+ * BackColor=#F0F0F0, the Half gaps between the white cards inside each column
+ * are grey only because that ancestor shows through. Forcing #fff here erased
+ * those separators, which is why the cards used to get a fabricated grey
+ * background of their own. */
+/* The strip separator is part of the reference's 9px page inset, not an extra pixel on
+ * top of it: the line sits at the panel's first row and 8px of inset follow.
+ * Spending the full 9px below the border would push every Pages form down by
+ * one pixel. */
+/* The Pages item is deliberately kept at window width (the fp-window-overflow
+ * rule excludes it from the content-width stretch), so a page wider than the
+ * window has to scroll here. Clipping instead left the last columns and
+ * tabs of a wide page unreachable at any window size. */
+.fp-pages-panel-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; overflow-x: auto; overflow-y: hidden; border: 1px solid var(--fp-tab-border); background: transparent; padding: calc(var(--fp-page-padding-y) - 1px) var(--fp-page-padding-x) var(--fp-page-padding-y); }
+.fp-pages-outer.TabsOnBottom .fp-pages-panel-wrap { padding: var(--fp-page-padding-y) var(--fp-page-padding-x) calc(var(--fp-page-padding-y) - 1px); }
+.fp-pages-panel-wrap:has(> .fp-pages-active-panel.fp-recursive-auto-column-tree) {
+    /* The reference keeps the ordinary 9px Taxi page inset here as well.  The nested
+     * right column contributes its own 5px half-spacing; adding that spacing
+     * to the Page padding shifted only the fixed leading card by 5px. */
+    padding-left: var(--fp-page-padding-x);
+    padding-right: var(--fp-page-padding-x);
+}
+.fp-pages-active-panel {
+    flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column;
+    /* Horizontal scrolling is opt-in via fp-window-overflow.  A vertical
+     * scrollbar otherwise narrows clientWidth and Chromium manufactures a
+     * second horizontal thumb for the resulting 12--17 px delta, although
+     * The reference keeps that canvas on the owning Form scrollport. */
+    overflow-x: hidden; overflow-y: auto; width: 100%;
+}
+.fp-pages-active-panel::-webkit-scrollbar-track-piece:vertical {
+    background: linear-gradient(90deg, transparent 5px, #d6d6d6 5px, #d6d6d6 13px, transparent 13px);
+}
+.fp-pages-active-panel.fp-window-overflow::-webkit-scrollbar-track-piece:horizontal {
+    background: linear-gradient(180deg, transparent 5px, #d6d6d6 5px, #d6d6d6 13px, transparent 13px);
+}
+.fp-pages-active-panel:not(.fp-window-overflow)::-webkit-scrollbar:horizontal {
+    height: 0;
+}
 
 .fp-body > .fp-item[data-tag="AutoCommandBar"] { flex: 0 0 auto; width: 100%; }
 .fp-body > .fp-item[data-tag="AutoCommandBar"] .fp-control-wrap { display: block; width: 100%; padding: 0; }
@@ -731,8 +3052,7 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
 /* 1C SpreadsheetDocument (Template.xml) — Designer chrome.
  * The designer's row/column headers are ivory, not grey: each header cell
  * carries its own #fffff0 → #f7f5e6 diagonal gradient with a #b3ac86 rule
- * between cells, and area boundaries are pure red. Sampled from
- * docs/Макеты/Скрин макета.png. */
+ * between cells, and area boundaries are pure red. */
 #form-preview.tp-root, .tp-root {
     --tp-head: linear-gradient(135deg, #fffff0 0%, #f7f5e6 100%);
     --tp-head-border: #b3ac86;
@@ -1000,6 +3320,9 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
     bottom: 0;
     pointer-events: none;
     overflow: visible;
+    /* 1C draws pictures over the cells: above the grid (z-index 1), whose
+     * filled cells would otherwise cover them. */
+    z-index: 2;
 }
 .tp-drawing {
     position: absolute;
@@ -1045,3 +3368,357 @@ html.theme-dark .save-prompt-btns button { background:#3c3c3c; color:#ddd; borde
         height:auto;
     }
 }
+
+#form-preview-actions { display:none; position:absolute; top:4px; right:4px; z-index:4; }
+#form-preview-actions:not([hidden]) { display:flex; gap:4px; }
+#form-preview.fp-fit-width > .fp-body { zoom: var(--fp-fit-zoom, 1); }
+#form-preview-actions .tb-btn { background:rgba(255,255,255,.88); border:1px solid #c8c8c8; }
+#form-preview-actions .tb-btn:hover { background:#fff; }
+#form-preview-actions .tb-btn.active, #form-preview-actions .tb-btn.active:hover { background:#0078d4; border-color:#0078d4; color:#fff; }
+html.screenshot-mode #topbar,
+html.screenshot-mode #outline-panel,
+html.screenshot-mode #statusbar,
+html.screenshot-mode #form-workbench-tabs,
+html.screenshot-mode #form-preview-actions { display:none !important; }
+html.screenshot-mode #main { display:block; position:absolute; inset:0; }
+html.screenshot-mode #workspace { display:block; position:absolute; inset:0; }
+html.screenshot-mode #form-preview { display:flex !important; position:absolute; inset:0; width:100%; height:100%; }
+html.screenshot-mode #form-preview.screenshot-fit {
+    overflow: visible !important;
+    width: var(--screenshot-width); height: var(--screenshot-height);
+    transform-origin: top left; transform: scale(var(--screenshot-scale, 1));
+}
+html.screenshot-mode #form-preview.screenshot-fit > .fp-body { overflow: visible !important; }
+html.screenshot-mode #editor,
+html.screenshot-mode #preview,
+html.screenshot-mode #preview-handle { display:none !important; }
+
+
+
+/* Форма рисуется сразу по своему XML, а команды и картинки конфигурации
+ * подтягиваются следом. Значок говорит, что эскиз ещё не окончательный. */
+#form-context-progress {
+    display: none; position: absolute; left: 50%; top: 50%; z-index: 5;
+    transform: translate(-50%, -50%);
+    align-items: center; gap: 8px; padding: 8px 16px; border-radius: 16px;
+    border: 1px solid #c8c8c8; background: rgba(255, 255, 255, .95);
+    color: #333; font-size: 12px; line-height: 18px; white-space: nowrap;
+    pointer-events: none; box-shadow: 0 2px 10px rgba(0, 0, 0, .18);
+}
+#form-context-progress:not([hidden]) { display: flex; }
+#form-context-progress .fp-ctx-icon {
+    width: 16px; height: 16px; flex: none;
+    fill: none; stroke: currentColor; stroke-width: 2;
+    stroke-linecap: round; stroke-linejoin: round;
+    animation: fp-ctx-spin 1s linear infinite;
+}
+@keyframes fp-ctx-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+    #form-context-progress .fp-ctx-icon { animation-duration: 3s; }
+}
+html.screenshot-mode #form-context-progress { display: none !important; }
+
+/* A tab-less Pages publishes its widest page's preferred width and does not
+ * lend it to siblings: the reference keeps a wide row of page commands whole
+ * and scrolls the form instead of moving the last command into «Еще». */
+.fp-children.fp-children-horizontal > .fp-item.fp-pages-none:has(.fp-item[data-tag="CommandBar"]) {
+    flex-shrink: 0;
+    min-width: max-content !important;
+}
+.fp-item.fp-pages-none .fp-item[data-tag="CommandBar"].fp-hstretch {
+    min-width: max-content !important;
+}
+
+/* In a row made only of command bars the reference gives the rest of the row to the
+ * last bar, so its «Еще» ends on the row edge. */
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right):not(.fp-align-center):last-child {
+    flex: 1 1 auto !important;
+    max-width: none !important;
+}
+.fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right):not(.fp-align-center):last-child
+    > .fp-control-wrap, .fp-children-horizontal:not(:has(> .fp-item:not([data-tag="CommandBar"])))
+    > .fp-item[data-tag="CommandBar"]:not(.fp-bar-item):not(.fp-align-right):not(.fp-align-center):last-child
+    > .fp-control-wrap > .fp-commandbar {
+    width: 100%;
+    max-width: none;
+}
+/* A command bar stretches horizontally by default, so an automatic group
+ * holding only bars takes the whole column. */
+:is(.fp-body, .fp-children-vertical) > .fp-item.fp-container.fp-no-hstretch:has(> .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal > .fp-item[data-tag="CommandBar"]:not(.fp-align-right):not(.fp-align-center):first-child
+    + .fp-item[data-tag="CommandBar"]:not(.fp-align-right):not(.fp-align-center):last-child) {
+    align-self: stretch;
+    width: auto !important;
+    min-width: 100%;
+    max-width: none !important;
+}
+:is(.fp-body, .fp-children-vertical) > .fp-item.fp-container.fp-no-hstretch:has(> .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal > .fp-item[data-tag="CommandBar"]:not(.fp-align-right):not(.fp-align-center):first-child
+    + .fp-item[data-tag="CommandBar"]:not(.fp-align-right):not(.fp-align-center):last-child)
+    > .fp-control-wrap,
+:is(.fp-body, .fp-children-vertical) > .fp-item.fp-container.fp-no-hstretch:has(> .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal > .fp-item[data-tag="CommandBar"]:not(.fp-align-right):not(.fp-align-center):first-child
+    + .fp-item[data-tag="CommandBar"]:not(.fp-align-right):not(.fp-align-center):last-child)
+    > .fp-control-wrap > .fp-group-bare,
+:is(.fp-body, .fp-children-vertical) > .fp-item.fp-container.fp-no-hstretch
+    > .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal:has(> .fp-item[data-tag="CommandBar"]:not(.fp-align-right):not(.fp-align-center):first-child
+    + .fp-item[data-tag="CommandBar"]:not(.fp-align-right):not(.fp-align-center):last-child) {
+    width: 100%;
+    max-width: none;
+}
+/* An untitled, unsized LabelDecoration between two fields of a row takes no
+ * track in the reference: ДоговорыКонтрагентов «Номер» → «от:» and «Действует с» → «по:»
+ * are one ordinary 10px step apart, so the date columns line up. */
+.fp-children-horizontal > .fp-item[data-tag="InputField"]
+    + .fp-item[data-tag="LabelDecoration"]:has(> .fp-control-wrap > .fp-deco-spacer:only-child:not([style])):has(+ .fp-item[data-tag="InputField"]) {
+    display: none;
+}
+
+/* A text area and every stretchable wrapper around it keep their natural
+ * height when the window is short: the reference scrolls the form instead of squeezing
+ * the editor under its neighbours. */
+.fp-multiline-floor,
+.fp-vstretch:has(.fp-multiline-floor),
+.fp-control-wrap:has(.fp-multiline-floor),
+.fp-group-block:has(.fp-multiline-floor),
+.fp-item .fp-children:has(.fp-multiline-floor) {
+    min-height: auto !important;
+}
+
+/* See fp-unbounded-wrap-text in form-preview.js: the caption is a shrinkable
+ * block that wraps at its container width, never a one-line floor. */
+.fp-item.fp-unbounded-wrap-text,
+.fp-item.fp-container:has(> .fp-control-wrap > .fp-group-bare > .fp-children > .fp-unbounded-wrap-text):not(:has(.fp-input-wrap, .fp-button, table)) {
+    flex-shrink: 1 !important;
+    min-width: 0 !important;
+}
+.fp-body .fp-item.fp-unbounded-wrap-text .fp-label-decoration {
+    white-space: pre-line !important;
+}
+
+/* An extended tooltip under/over its control wraps at the authored group
+ * Width instead of widening that group. */
+.fp-item.fp-sized-width .fp-item:not(.fp-tooltip-side-h) > .fp-tooltip-text {
+    max-width: var(--fp-authored-group-width, none);
+}
+
+/* A command bar holding a table search fills the rest of its row: the
+ * search and «Еще» sit at the right edge. */
+.fp-children-horizontal > .fp-item[data-tag="CommandBar"]:has(.fp-search-item) {
+    flex: 1 1 auto !important;
+}
+.fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare > .fp-children > .fp-item[data-tag="CommandBar"] .fp-search-item)
+    > .fp-control-wrap > .fp-group-bare,
+.fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare > .fp-children > .fp-item[data-tag="CommandBar"] .fp-search-item)
+    > .fp-control-wrap > .fp-group-bare > .fp-children {
+    flex: 1 1 auto;
+    width: 100%;
+}
+
+/* Form bar at the bottom: a right-packed dialog button row. */
+.fp-commandbar.fp-form-bar-bottom { justify-content: flex-end; }
+
+/* A side caption beside an AutoMaxWidth=false + MaxWidth editor wraps at its
+ * longest word instead of squeezing the editor. */
+.fp-control-wrap.fp-title-shrinks-for-editor > .fp-field-label { white-space: normal; min-width: min-content; flex: 0 1 auto; }
+.fp-control-wrap.fp-title-shrinks-for-editor > .fp-input-wrap { flex-shrink: 0; }
+
+/* A semantic Form canvas carries the root Pages too: the Form scrolls, the
+ * page has no local scrollport. */
+.fp-body.fp-window-overflow.fp-semantic-canvas > .fp-item[data-tag="Pages"] {
+    width: var(--fp-content-width); min-width: var(--fp-content-width); max-width: none;
+}
+/* Authored CommandBar also carries .fp-children-horizontal, whose overflow-x:
+ * visible outranks the bar rule and, with overflow-y: hidden, computes to auto:
+ * a 2 px overflow painted a scrollbar over the buttons. */
+.fp-commandbar.fp-children-horizontal { overflow-x: hidden; overflow-y: hidden; }
+/* StdPicture.Dialog* is a 48 px dialog picture. */
+.fp-picture-icon.fp-picture-decoration.fp-standard-picture.fp-picture-dialog { width: 48px; height: 48px; }
+.fp-picture-icon.fp-picture-decoration.fp-standard-picture.fp-picture-dialog > .fp-btn-icon { width: 48px; height: 48px; max-width: none; max-height: none; }
+/* A row carrying a coloured totals panel centres its other items on it. */
+.fp-children-horizontal:has(> .fp-color-surface-leaf),
+.fp-children-horizontal:has(> .fp-item > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-color-surface-leaf) { align-items: center !important; }
+/* A message band (coloured surface with a picture) keeps 5px air; its
+ * picture occupies a 16px text line box and overhangs into that air
+ * (a one-line band is 26px, a two-line one 42px). */
+.fp-color-surface-picture > .fp-control-wrap > .fp-group-bare > .fp-children > .fp-item[data-tag="PictureDecoration"] { height: 16px; overflow: visible; }
+.fp-color-surface-picture > .fp-control-wrap > .fp-group-bare > .fp-children > .fp-item[data-tag="PictureDecoration"] > .fp-control-wrap { height: 16px; align-items: center; overflow: visible; }
+/* Its text is the bare 16px line too: the row label's 1px margins made the
+ * band 28px. */
+.fp-color-surface-picture > .fp-control-wrap > .fp-group-bare > .fp-children > .fp-item[data-tag="LabelDecoration"] { margin-top: 0; margin-bottom: 0; }
+/* The compact 3px item gap assumes editor chrome on both neighbours; a
+ * message band has none, so the next editor-band item starts 4px lower. A
+ * following decoration group takes the 6px Single step above instead. */
+.fp-children.fp-children-vertical > .fp-item.fp-color-surface-picture + .fp-item { margin-top: 4px; }
+/* The reference editor frames have an anti-aliased 3px corner (cccccc a9a9a9
+ * along the top-left arc; 3.5px and 4px paint a wider arc). Text areas and
+ * grids use the same corner. The value buttons stay inside it. */
+.fp-input-wrap { border-radius: 3px; overflow: hidden; }
+.fp-table-mock, .fp-document-framed { border-radius: 3px; }
+/* Formatting command groups of a FormattedDocumentField are joined buttons
+ * sharing a 1px edge. */
+.fp-item[data-tag="ButtonGroup"][data-name^="_fmt"] .fp-buttongroup,
+.fp-item.fp-buttongroup-compact .fp-buttongroup { gap: 0; }
+.fp-item[data-tag="ButtonGroup"][data-name^="_fmt"] .fp-buttongroup > .fp-item + .fp-item,
+.fp-item.fp-buttongroup-compact .fp-buttongroup > .fp-item + .fp-item { margin-left: -1px; }
+.fp-item[data-tag="ButtonGroup"][data-name^="_fmt"] .fp-buttongroup > .fp-item:not(:last-child) .fp-button,
+.fp-item.fp-buttongroup-compact .fp-buttongroup > .fp-item:not(:last-child) .fp-button { border-top-right-radius: 0; border-bottom-right-radius: 0; margin-right: 0; }
+.fp-item[data-tag="ButtonGroup"][data-name^="_fmt"] .fp-buttongroup > .fp-item:not(:first-child) .fp-button,
+.fp-item.fp-buttongroup-compact .fp-buttongroup > .fp-item:not(:first-child) .fp-button { border-top-left-radius: 0; border-bottom-left-radius: 0; margin-left: 0; }
+/* 20px between the formatting groups (139 → 159, 455 → 475, 664 → 684). */
+.fp-item[data-name^="_fmt"] + .fp-item[data-name^="_fmt"] { margin-left: 10px; }
+/* The reference paints the font-size commands as a serif «A» with a small blue arrow. */
+.fp-item[data-name="_fmtIncreaseFontSize"] .fp-button > *,
+.fp-item[data-name="_fmtDecreaseFontSize"] .fp-button > * { display: none; }
+.fp-item[data-name="_fmtIncreaseFontSize"] .fp-button::before,
+.fp-item[data-name="_fmtDecreaseFontSize"] .fp-button::before {
+    content: 'A'; font: bold 18px/1 'Times New Roman', Georgia, serif; color: #1a1a1a;
+}
+.fp-item[data-name="_fmtDecreaseFontSize"] .fp-button::before { font-size: 11px; }
+.fp-item[data-name="_fmtIncreaseFontSize"] .fp-button::after,
+.fp-item[data-name="_fmtDecreaseFontSize"] .fp-button::after {
+    content: ''; align-self: flex-start; margin: 5px 0 0 1px;
+    border-left: 3px solid transparent; border-right: 3px solid transparent;
+    border-bottom: 3px solid #2a7fc9;
+}
+.fp-item[data-name="_fmtDecreaseFontSize"] .fp-button::after { border-bottom: 0; border-top: 3px solid #2a7fc9; }
+/* The form's own bar has no extra spacer floor: the reference puts the search
+ * 9px after the last command. Body CommandBars keep 12px: their lane decides
+ * what overflows. */
+.fp-body > .fp-item[data-tag="AutoCommandBar"] > .fp-control-wrap > .fp-commandbar > .fp-bar-spacer { min-width: 0; }
+/* The table below its body source bar takes the toolbar spacing: 10px from
+ * the button bottom to the first chip, not the 9px item gap plus bar margins. */
+.fp-item.fp-table-source-bar + .fp-item { margin-top: -8px; }
+/* Filter chips keep 8px of air above the grid with or without a toolbar
+ * (the reference: chip top + 31 = grid top). */
+.fp-table-widget > .fp-chips + .fp-table-mock { margin-top: 8px; }
+/* Filter chips that open a table right after a row of input fields stand
+ * 10px below the field frame, not the 9px item gap plus both item paddings
+ * and the chip centring. A radio row and a 16px group title above the chips
+ * already match the reference. */
+.fp-item:is([data-tag="InputField"], .fp-container-horizontal:has(.fp-item[data-tag="InputField"]))
+    + .fp-item:is(
+        :has(> .fp-table-widget > .fp-chips:first-child),
+        [data-tag="UsualGroup"]:has(> .fp-control-wrap > .fp-group-bare > .fp-children > .fp-item:first-child > .fp-table-widget > .fp-chips:first-child)) {
+    margin-top: -4px;
+}
+
+/* ------------------------------------------------ metadata object window */
+/* The Designer's object window: header fields, the forms box and the tree of
+ * attributes, tabular sections, forms and templates. Always light, like the
+ * Designer itself. */
+#form-preview.md-root, .md-root {
+    /* The Designer's palette: pale gray dialog, white fields with light gray
+     * borders, a gold-framed forms box, label-only blue selection. */
+    --md-dialog: #f0f0f0; --md-border: #b4b4b4; --md-frame: #a0a0a0;
+    --md-label: #404040; --md-gold: #e2c77d; --md-gold-text: #b06a10;
+    --md-select: #cde0f7; --md-select-border: #7da2ce;
+    background:var(--md-dialog); color:#000; padding:0; box-sizing:border-box;
+    font-family:Arial,'Segoe UI',Tahoma,sans-serif; font-size:12px;
+    overflow:auto; align-items:stretch; justify-content:flex-start;
+}
+.md-empty { padding:16px; color:#666; }
+.md-window {
+    /* The whole pane is the Designer's dialog, as its window fills the screen. */
+    display:flex; flex-direction:column; flex:1; min-width:360px; min-height:320px;
+    background:var(--md-dialog);
+}
+.md-caption {
+    display:flex; align-items:center; gap:6px;
+    padding:5px 10px; background:linear-gradient(#ffffff,#f0f0f0); border-bottom:1px solid #d4d4d4;
+    font-weight:bold; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.md-body { display:flex; flex-direction:column; flex:1; min-height:0; padding:8px 10px 10px; gap:5px; }
+.md-field { display:flex; align-items:center; gap:8px; min-width:0; }
+.md-field-label { flex:0 0 112px; color:var(--md-label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.md-input {
+    flex:1; min-width:0; min-height:21px; line-height:19px; padding:0 5px; box-sizing:border-box;
+    border:1px solid var(--md-border); background:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.md-forms {
+    margin:4px 0 2px; padding:4px 8px 7px; border:1px solid var(--md-gold); border-radius:3px;
+    display:grid; grid-template-columns:max-content minmax(0, 1fr); gap:4px 8px; align-items:center;
+}
+/* Labels of the forms box take their full width, as in the Designer. */
+.md-forms .md-field { display:contents; }
+.md-forms .md-field-label { flex:none; overflow:visible; }
+.md-forms legend { padding:0 3px; color:var(--md-gold-text); }
+.md-link { color:#000; text-decoration:none; cursor:pointer; }
+.md-link:hover { text-decoration:underline; }
+.md-tree {
+    flex:1; min-height:120px; margin-top:6px; overflow:auto; border:1px solid var(--md-border); background:#fff;
+    padding:3px 0; outline:none; user-select:none;
+}
+.md-row {
+    display:flex; align-items:center; gap:5px; height:19px; padding-right:8px; white-space:nowrap; cursor:default;
+}
+/* The Designer highlights the label only, in pale blue with a darker frame. */
+.md-row.md-selected .md-name {
+    background:var(--md-select); outline:1px solid var(--md-select-border); outline-offset:0; padding:0 2px; margin:0 -2px;
+}
+.md-row[data-open] { cursor:pointer; }
+.md-twisty {
+    flex:0 0 12px; width:12px; font-size:12px; line-height:12px; color:#777; text-align:center; cursor:pointer;
+}
+.md-icon { flex:0 0 16px; width:16px; height:16px; object-fit:contain; }
+svg.md-icon { fill:none; stroke:#4a6c98; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+/* Type pictures shared with the form viewer's attribute list. */
+.md-type-ch {
+    display:inline-block; line-height:16px; text-align:center; font-size:8px; font-weight:bold;
+    letter-spacing:-1px; border-radius:3px; color:#fff;
+}
+.md-type-ch.icon-form-number { background:#b45309; }
+svg.md-type-svg { stroke:currentColor; }
+svg.md-type-svg.icon-form-in { color:#0ea5e9; }
+svg.md-type-svg.icon-form-chk { color:#059669; }
+svg.md-type-svg.icon-form-tbl { color:#7c3aed; }
+svg.md-type-svg.icon-form-pg { color:#d97706; }
+svg.md-type-svg.icon-form-attr { color:#db2777; }
+svg.md-type-svg.icon-form-etc { color:#94a3b8; }
+.md-name { overflow:hidden; text-overflow:ellipsis; }
+.md-type { color:#808080; margin-left:10px; overflow:hidden; text-overflow:ellipsis; }
+.md-input:has(.md-field-button) { display:flex; align-items:center; padding-right:0; }
+.md-input .md-link { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+/* The Designer's magnifier sits inside the field, at its right edge. */
+.md-field-button {
+    flex:0 0 19px; width:19px; height:19px; padding:0; margin:0; border:none; border-left:1px solid #e3e3e3;
+    background:url("std-pictures/%D0%9D%D0%B0%D0%B9%D1%82%D0%B8.png") center no-repeat; cursor:pointer;
+}
+.md-field-button:hover { background-color:var(--md-select); }
+.md-caption.md-selected span:last-child { background:var(--md-select); outline:1px solid var(--md-select-border); }
+.md-sprite { display:inline-block; width:16px; height:16px; flex:0 0 16px; background-repeat:no-repeat; }
+.proc-item .outline-sprite { vertical-align:middle; margin-right:5px; }
+.md-footer { display:flex; justify-content:flex-end; gap:6px; padding-top:6px; }
+.md-button {
+    font:inherit; min-width:92px; padding:3px 12px; border:1px solid #adadad; border-radius:3px;
+    background:linear-gradient(#ffffff,#e6e6e6); color:#000; cursor:pointer;
+}
+.md-button:hover { border-color:#7da2ce; background:linear-gradient(#fbfdff,#dde9f7); }
+/* Help pages of an object or a form, over the right part of the workspace. */
+#help-panel {
+    position:absolute; top:0; right:0; bottom:0; width:min(560px, 60%); z-index:20;
+    display:flex; flex-direction:column; background:#fff; color:#000;
+    border-left:1px solid #b4b4b4; box-shadow:-2px 0 8px rgba(0,0,0,.18);
+}
+#help-panel[hidden] { display:none; }
+#help-panel .help-head {
+    display:flex; align-items:center; justify-content:space-between; gap:8px; padding:5px 8px 5px 12px;
+    background:linear-gradient(#ffffff,#f0f0f0); border-bottom:1px solid #d4d4d4;
+    font:bold 12px Arial,'Segoe UI',sans-serif;
+}
+#help-close { border:none; background:none; font-size:18px; line-height:18px; cursor:pointer; color:#555; padding:0 4px; }
+#help-close:hover { color:#000; }
+#help-frame { flex:1; border:none; width:100%; background:#fff; }
+.inspector-open-link { display:block; padding:2px 10px 4px; color:#0066cc; text-decoration:none; }
+.inspector-open-link:hover { text-decoration:underline; }
+#outline-panel.dark .inspector-open-link { color:#4fa3ff; }
+/* An object's outline row carries the type after the name; a long type is cut
+ * rather than pushing the line number onto a row of its own. */
+.proc-item.form-el[data-kind="metadata"] { display:flex; align-items:center; }
+.proc-item.form-el[data-kind="metadata"] > * { flex-shrink:0; }
+.proc-item.form-el[data-kind="metadata"] .name { flex:0 1 auto; min-width:40px; overflow:hidden; text-overflow:ellipsis; }
+.proc-item.form-el[data-kind="metadata"] .name-sub { flex:0 1000 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; }
+.proc-item.form-el[data-kind="metadata"] .line-num { float:none; flex:0 0 auto; margin-left:auto; padding-left:8px; }

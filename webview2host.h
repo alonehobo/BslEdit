@@ -3,12 +3,15 @@
 
 #include <windows.h>
 #include <string>
+#include <vector>
+#include <functional>
 
 #include "bslcommon.h"
 
 struct ICoreWebView2;
 struct ICoreWebView2Controller;
 struct ICoreWebView2Environment;
+struct ICoreWebView2WebResourceRequestedEventArgs;
 
 // Posted to the host window when WebView2 could not be started, so the caller
 // can put up the legacy IE control instead. Delivered asynchronously because
@@ -25,20 +28,27 @@ struct ICoreWebView2Environment;
 // V8 code caches across openings, and keeps the Monaco workers same-origin.
 #define BSLVIEW_VIRTUAL_HOST L"bslview.invalid"
 
+// Read-only endpoint through which the page's shared form-context.js reads the
+// configuration files around the opened form (object metadata, common
+// commands, pictures, style items). Served by WebResourceRequested and limited
+// to FormContextRoots() of the current file.
+#define BSLVIEW_CONFIG_HOST L"bslcfg.invalid"
+
 struct BslLoadRequest {
     std::wstring content;
-    std::wstring objectMeta;
     const char*  language;
     bool         dark;
     int          fontSize;
     bool         readOnly;
+    bool         openFormModule;   // a form opened from its Module.bsl starts on the module tab
 
-    BslLoadRequest() : language("plaintext"), dark(false), fontSize(14), readOnly(true) {}
+    BslLoadRequest() : language("plaintext"), dark(false), fontSize(14), readOnly(true),
+                       openFormModule(false) {}
 };
 
 class CWebView2Host {
 public:
-    // Cheap registry probe; does not start the browser.
+    // Cheap registry check; does not start the browser.
     static bool IsRuntimeAvailable();
 
     // Begins creating the process-wide environment and, when `keepWarm` is set,
@@ -46,6 +56,8 @@ public:
     // immediately. Chromium only stays resident while some controller exists,
     // so the parked instance is what makes the next open cheap.
     static void WarmUp(const std::wstring& webRoot, bool keepWarm);
+    // Standalone BSLEdit owns one HWND for its lifetime: no surface refresh.
+    static void SetStandalone(bool standalone);
 
     static void Shutdown();
 
@@ -88,6 +100,15 @@ public:
     HWND         mParentWin;
     std::wstring mFilePath;
     TextEncoding mEncoding;
+    FileRevision mFileRevision;
+    // Called after the page opened another file in place (the object window's
+    // forms, templates and modules, and the way back), so the owner can show
+    // the current file in its window title.
+    std::function<void(const std::wstring&)> mOnFileOpened;
+    // Ext/Form/Module.bsl of a Form.xml, edited and saved alongside the layout.
+    std::wstring mFormModulePath;
+    TextEncoding mFormModuleEncoding;
+    FileRevision mFormModuleRevision;
 
 private:
     CWebView2Host();
@@ -96,8 +117,10 @@ private:
     void OnControllerCreated(HRESULT hr, ICoreWebView2Controller* ctrl);
     void OnProcessFailed();
     void OnWebMessage(const std::wstring& msg);
+    void OnWebResourceRequested(ICoreWebView2WebResourceRequestedEventArgs* args);
     void OnPageReady();
     void ExportPdf();
+    void CaptureScreenshot();
     void PostJson(const std::wstring& json);
     void ConfigureSettings();
     void Reparent(HWND parent, bool visible);
@@ -105,10 +128,12 @@ private:
     friend class EnvCompletedHandler;
     friend class CtrlCompletedHandler;
     friend class WebMessageHandler;
+    friend class WebResourceHandler;
     friend class NavigationStartingHandler;
     friend class NewWindowHandler;
     friend class ProcessFailedHandler;
     friend class PdfCompletedHandler;
+    friend class ScreenshotCompletedHandler;
 
     long                      mRefCount;
     ICoreWebView2*            mWebView;
@@ -120,7 +145,18 @@ private:
     bool                      mPageReady;
     bool                      mHasPending;
     bool                      mDark;
+    // The display mode of the last load, reused when the page opens a related
+    // file (a form of the object window) in place.
+    int                       mFontSize;
+    bool                      mReadOnly;
+    // Context roots of every file reached by in-place navigation since the
+    // host last loaded a file of its own: a template's roots do not cover the
+    // object it was opened from, and the way back must stay open.
+    std::vector<std::wstring> mNavRoots;
+    bool                      mNavigating;
     std::wstring              mPendingJson;
+    std::vector<std::wstring> mAllowedRoots;
+    std::vector<std::wstring> mContextRoots;
 };
 
 #endif // WEBVIEW2HOST_H

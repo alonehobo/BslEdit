@@ -42,6 +42,42 @@ var PROVIDERS = [
         emptyMsg: 'Это не форма 1С (нет корневого Form / logform).'
     },
     {
+        /* The root XML of an object — an external data processor or report, a
+         * catalog, a document — drawn as the Designer's object window. Its
+         * forms and templates are separate files the host may open from it. */
+        id: 'metadata',
+        parser: 'MetadataPreview',
+        viewer: 'MetadataPreview',
+        label: 'Объект метаданных 1С',
+        requiresLanguage: 'xml',
+        lightChrome: true,
+        tree: true,
+        outlineTitle: 'Структура объекта',
+        sourceTitle: 'Показать объект',
+        rootCls: 'md-root',
+        emptyCls: 'md-empty',
+        emptyMsg: 'Это не объект метаданных 1С.',
+        /* MetadataPreview.parse takes what the configuration scan found
+         * about the object (metadata-relations.js) as context.relations. */
+        usesRelations: true,
+        selectHighlightsPreview: true
+    },
+    {
+        id: 'sarif',
+        parser: 'SarifPreview',
+        viewer: 'SarifPreview',
+        label: 'SARIF',
+        requiresLanguage: 'json',
+        keepsEditor: true,
+        previewFirst: true,
+        tree: true,
+        outlineTitle: 'Структура модуля',
+        sourceTitle: 'Показать исходник отчёта',
+        rootCls: 'sf-root',
+        emptyCls: 'sf-empty',
+        emptyMsg: 'Это не отчёт SARIF 2.1.0.'
+    },
+    {
         id: 'mxl',
         parser: 'MxlPreview',
         viewer: 'TemplatePreview',
@@ -100,8 +136,29 @@ function detect(content, context) {
 function parse(entry, content, context) {
     var parser = root[entry.parser];
     return entry.usesObjectMeta
-        ? parser.parse(content, (context && context.objectMeta) || '')
+        ? parser.parse(content, (context && context.objectMeta) || '',
+            (context && context.styleItems) || {}, (context && context.baseForm) || '',
+            (context && context.commonCommands) || {}, (context && context.commonPictures) || {},
+            (context && context.refMeta) || {})
+        : entry.usesRelations ? parser.parse(content, { relations: (context && context.relations) || null })
         : parser.parse(content);
+}
+
+/* Clears whatever per-document UI state the renderers keep — folded groups,
+ * the selected tab. A host calls this when it opens a different file and never
+ * when it re-renders the same one: element ids repeat across unrelated forms,
+ * but a form being edited is re-parsed on every keystroke and must keep the
+ * view where the user left it. */
+function resetViewState() {
+    var done = [];
+    for (var i = 0; i < PROVIDERS.length; i++) {
+        var viewer = root[PROVIDERS[i].viewer];
+        if (!viewer || typeof viewer.resetViewState !== 'function') continue;
+        /* Two providers can share one viewer module. */
+        if (done.indexOf(viewer) >= 0) continue;
+        done.push(viewer);
+        viewer.resetViewState();
+    }
 }
 
 /* The module that renders, highlights and outlines for a provider. */
@@ -115,6 +172,7 @@ root.PreviewProviders = {
     byId: byId,
     detect: detect,
     parse: parse,
+    resetViewState: resetViewState,
     view: view,
     /* Every host reports an unrecognised file the same way. */
     unsupportedMessage: 'Файл не распознан как форма 1С, Template.xml или MXL.'

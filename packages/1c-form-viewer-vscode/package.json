@@ -1,8 +1,9 @@
 {
   "name": "1c-form-viewer-vscode",
-  "displayName": "1C Form Viewer",
-  "description": "Visual preview of 1C managed forms, spreadsheet templates and MXL files in VS Code",
-  "version": "0.2.1",
+  "displayName": "1C Form Viewer (BSLEdit)",
+  "description": "Part of the BSLEdit project (github.com/alonehobo/bsl-viewer). Visual preview of 1C managed forms, templates and MXL files, with bundled MCP tools for VS Code agents",
+  "version": "0.2.3",
+  "icon": "images/icon.png",
   "publisher": "alonehobo",
   "author": {
     "name": "Sergey Martemyanov",
@@ -26,6 +27,8 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
+    "onUri",
     "onCommand:1cFormViewer.openPreview"
   ],
   "main": "extension.js",
@@ -44,6 +47,16 @@
           "default": true,
           "description": "Register the bundled 1C Form Viewer MCP server in VS Code Chat."
         },
+        "1cFormViewer.mcp.templateEditTools": {
+          "type": "boolean",
+          "default": true,
+          "description": "Give agents edit_template, the tool that edits spreadsheet templates (areas, parameters, formats, rows and columns, merges, sizes, printing). Turn off when you edit templates through other skills and want to keep the agent's tool list short; preview, xlsx conversion and template validation stay available."
+        },
+        "1cFormViewer.mcp.formEditTools": {
+          "type": "boolean",
+          "default": true,
+          "description": "Give agents edit_form, the tool that edits managed forms (item and form properties, moving and removing items). Turn off when you edit forms through other skills; list_form_elements and validate_form stay available."
+        },
         "1cFormViewer.mcp.allowAnyPath": {
           "type": "boolean",
           "default": false,
@@ -56,6 +69,18 @@
             "type": "string"
           },
           "description": "Additional absolute directories that the MCP server may read when allowAnyPath is disabled."
+        },
+        "1cFormViewer.mcp.http.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Serve the bundled MCP server over Streamable HTTP at http://127.0.0.1:<port>/mcp for agents that do not read VS Code's MCP catalog (Claude Code, Codex, Cursor). The URL stays the same across extension updates. The endpoint is loopback-only, has no token and may read any supported file (allowAnyPath)."
+        },
+        "1cFormViewer.mcp.http.port": {
+          "type": "integer",
+          "default": 47391,
+          "minimum": 1024,
+          "maximum": 65535,
+          "description": "Loopback port of the HTTP MCP endpoint. The first VS Code window takes it."
         }
       }
     },

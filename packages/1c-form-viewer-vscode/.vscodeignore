@@ -1,5 +1,6 @@
 **/*
 !extension.js
+!mcp-http.cjs
 !package.json
 !README.md
 !CHANGELOG.md

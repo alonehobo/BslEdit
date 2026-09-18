@@ -1,7 +1,8 @@
 {
   "name": "1c-form-viewer",
-  "version": "0.2.0",
-  "description": "Read-only MCP server for visually inspecting 1C managed forms and spreadsheet templates",
+  "private": true,
+  "version": "0.2.3",
+  "description": "Native Windows MCP server for visually inspecting 1C managed forms and spreadsheet templates",
   "author": {
     "name": "Sergey Martemyanov",
     "email": "sergey.martemyanov@gmail.com",
@@ -15,47 +16,27 @@
   "homepage": "https://github.com/alonehobo/bsl-viewer/tree/main/packages/1c-form-viewer",
   "type": "module",
   "license": "MIT",
-  "publishConfig": {
-    "access": "public"
-  },
   "os": [
     "win32"
   ],
   "engines": {
     "node": ">=20"
   },
-  "bin": {
-    "1c-form-viewer": "dist/cli.js"
-  },
-  "files": [
-    "dist/",
-    "CHANGELOG.md",
-    "README.md",
-    "LICENSE"
-  ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "npm run sync && tsc -p tsconfig.json && node scripts/copy-assets.mjs",
-    "build:portable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-portable.ps1",
-    "build:compact": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-compact.ps1",
+    "build": "npm run build:native",
+    "build:assets": "npm run clean && npm run sync && node scripts/copy-assets.mjs && npm run verify:assets",
     "build:native": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1",
-    "pretest": "npm run build",
-    "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "tsx --test tests/config.test.ts tests/files.test.ts tests/mcp-contract.test.ts tests/native-contract.test.ts tests/static-server.test.ts",
-    "test:e2e": "tsx --test tests/browser.e2e.test.ts",
+    "test": "npm run build:assets && npm run test:unit && npm run test:e2e",
+    "test:unit": "tsx --test tests/files.test.ts tests/native-contract.test.ts tests/native-only.test.ts tests/static-server.test.ts",
+    "test:e2e": "tsx --test tests/*.e2e.test.ts",
     "verify:assets": "node ../1c-preview-core/scripts/verify.mjs && node scripts/verify-assets.mjs",
-    "prepack": "npm run clean && npm run build && npm run verify:assets",
     "sync": "node ../1c-preview-core/scripts/sync.mjs"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/server": "^2.0.0",
-    "playwright-core": "^1.55.0",
-    "zod": "^4.1.0"
   },
   "devDependencies": {
     "1c-preview-core": "*",
-    "@modelcontextprotocol/client": "^2.0.0",
     "@types/node": "^24.0.0",
+    "playwright-core": "^1.55.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }

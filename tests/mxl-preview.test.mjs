@@ -101,6 +101,9 @@ test('mxl-capabilities.mxl: colors, title, vertical text', () => {
   const model = parsed.model;
   assert.equal(model.formats[title.cells[0].format - 1].textColor, '#ffffff');
   assert.equal(model.formats[title.cells[0].format - 1].backColor, '#1f4e79');
+  const labels = model.rows[30].cells.filter((cell) => cell.col === 3 || cell.col === 5);
+  assert.deepEqual([...labels.map((cell) => cell.text)], ['Двойная', 'Точечная']);
+  assert.deepEqual([...labels.map((cell) => cell.parameter)], ['', '']);
 });
 
 test('mxl-borders-merges.mxl: merges and line table', () => {

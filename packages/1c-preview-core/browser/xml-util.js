@@ -1,6 +1,6 @@
 /* DOM helpers shared by the XML-backed previews (form-preview, template-preview).
  *
- * 1C dumps use namespace prefixes inconsistently between Designer and EDT, so
+ * 1C dumps use namespace prefixes inconsistently between Designer and project-format exports, so
  * every lookup goes through localName() rather than tagName. Load this before
  * the preview modules. */
 (function (root) {

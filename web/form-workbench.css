@@ -1,0 +1,13 @@
+#form-workbench-tabs { flex:0 0 29px; height:29px; padding-left:10px; box-sizing:border-box; align-items:flex-start; gap:2px; background:#ececec; border-top:1px solid #c8c8c8; }
+#form-workbench-tabs:not([hidden]) { display:flex; }
+#form-workbench-tabs button { height:25px; min-width:82px; padding:2px 16px; border:1px solid transparent; border-top:0; background:transparent; color:#333; font:12px 'Segoe UI',Arial,sans-serif; cursor:pointer; }
+#form-workbench-tabs button:hover { background:#f7f7f7; }
+#form-workbench-tabs button.active { position:relative; top:-1px; background:#fff; border-color:#b8b8b8; color:#111; }
+html.theme-dark #form-workbench-tabs { background:#252526; border-top-color:#444; }
+html.theme-dark #form-workbench-tabs button { color:#ccc; }
+html.theme-dark #form-workbench-tabs button:hover { background:#333; }
+html.theme-dark #form-workbench-tabs button.active { background:#1e1e1e; border-color:#555; color:#fff; }
+
+@media print {
+  #form-workbench-tabs { display:none !important; }
+}

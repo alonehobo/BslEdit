@@ -35,7 +35,7 @@ test('asset server exposes only the current preview to the tokenized internal UR
   const url = await server.start();
   const before = await fetch(new URL('state.json', url));
   assert.equal(before.status, 404);
-  server.setDocument({ resolvedPath: 'C:\\root\\Form.xml', content: '<Form/>', objectMeta: '' });
+  server.setDocument({ resolvedPath: 'C:\\root\\Form.xml', content: '<Form/>', baseForm: '', objectMeta: '' });
   const internalUrl = server.internalUrl();
   const internal = await fetch(internalUrl);
   assert.match(internal.url, /[?&]internal=1/);
@@ -45,7 +45,12 @@ test('asset server exposes only the current preview to the tokenized internal UR
     revision: 1,
     path: 'C:\\root\\Form.xml',
     content: '<Form/>',
+    baseForm: '',
     objectMeta: '',
+    refMeta: {},
+    commonCommands: {},
+    commonPictures: {},
+    styleItems: {},
   });
   const meta = await fetch(new URL('state-meta.json', internalUrl));
   assert.deepEqual(await meta.json(), { revision: 1, available: true });

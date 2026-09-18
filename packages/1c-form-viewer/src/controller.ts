@@ -1,9 +1,10 @@
 import { BrowserSession, type CaptureScope } from './browser-session.js';
 import { FileLoader } from './files.js';
-import type { BrowserPreviewState, LoadedDocument } from './types.js';
+import type { BrowserPreviewState, LoadedDocument, PreviewScrollArea } from './types.js';
+import type { CaptureViewport } from './browser-session.js';
 
 export interface PreviewResponse {
-  document: Omit<LoadedDocument, 'content' | 'objectMeta'>;
+  document: Omit<LoadedDocument, 'content' | 'baseForm' | 'objectMeta' | 'refMeta' | 'commonCommands' | 'commonPictures'>;
   state: BrowserPreviewState;
 }
 
@@ -36,12 +37,14 @@ export class ViewerController {
   private visual<T>(operation: () => Promise<T>): Promise<Visual<T>> {
     return this.exclusive(async () => {
       const payload = await operation();
-      return { payload, image: await this.browser.capture('viewport') };
+      const { image } = await this.browser.capture('viewport');
+      return { payload, image };
     });
   }
 
   private summary(document: LoadedDocument, state: BrowserPreviewState): PreviewResponse {
-    const { content: _content, objectMeta: _objectMeta, ...safeDocument } = document;
+    const { content: _content, baseForm: _baseForm, objectMeta: _objectMeta,
+      refMeta: _refMeta, commonCommands: _commonCommands, commonPictures: _commonPictures, ...safeDocument } = document;
     return { document: safeDocument, state };
   }
 
@@ -50,6 +53,7 @@ export class ViewerController {
       const document = await this.loader.load(inputPath);
       const state = await this.browser.open(document);
       this.activePath = inputPath;
+      this.browser.setReloader(() => this.loader.load(inputPath));
       return this.summary(document, state);
     });
   }
@@ -68,8 +72,35 @@ export class ViewerController {
           // The document changed and this page no longer exists; keep the renderer default.
         }
       }
+      /* Tabs alone do not put the view back: a reloaded document opens at the
+       * top of every scrollable area, so an agent watching one region of a wide
+       * table lost it on every reload. Offsets that the new document cannot
+       * take are simply dropped. */
+      state = await this.restoreScrolls(previous.scrolls, state);
       return this.summary(document, state);
     });
+  }
+
+  private async restoreScrolls(
+    areas: PreviewScrollArea[] | undefined,
+    fallback: BrowserPreviewState,
+  ): Promise<BrowserPreviewState> {
+    let restored = false;
+    for (const area of areas || []) {
+      if (!area || (!area.x && !area.y)) continue;
+      try {
+        await this.browser.scroll({
+          target: area.target,
+          elementId: area.elementId || '',
+          x: area.x,
+          y: area.y,
+        });
+        restored = true;
+      } catch {
+        // That scrollable area is gone from the reloaded document.
+      }
+    }
+    return restored ? this.browser.state() : fallback;
   }
 
   inspect(query?: string, visibleOnly = false, limit = DEFAULT_INSPECT_LIMIT) {
@@ -100,11 +131,13 @@ export class ViewerController {
     return this.visual(() => this.browser.scroll(options));
   }
 
-  capture(scope: CaptureScope, elementId?: string) {
-    return this.exclusive(async () => ({
-      payload: { scope, elementId: elementId || '', state: await this.browser.state() },
-      image: await this.browser.capture(scope, elementId),
-    }));
+  capture(scope: CaptureScope, elementId?: string, viewport?: CaptureViewport) {
+    return this.exclusive(async () => {
+      /* The session hands back the picture and the state of that picture in
+       * one step; sampling the state separately is what let the two drift. */
+      const { image, state } = await this.browser.capture(scope, elementId, viewport);
+      return { payload: { scope, elementId: elementId || '', state }, image };
+    });
   }
 
   previewUrl() {

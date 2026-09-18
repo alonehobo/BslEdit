@@ -1,4 +1,5 @@
-/* Fills dist/web from the shared core plus this package's own agent shell.
+/* Fills build/web for the native executable from the shared core plus this
+ * package's own agent shell.
  *
  * The asset list is not repeated here: it comes from
  * packages/1c-preview-core/assets.manifest.json, which is the only place a
@@ -10,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 import {
   browserAssets,
   browserPath,
-  nodeFiles,
-  nodePath,
+  platformIcons,
+  stdPictures,
   readSprite,
   scriptTags,
   styleTags,
@@ -19,18 +20,17 @@ import {
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourceUi = path.join(packageDir, 'ui');
-const targetWeb = path.join(packageDir, 'dist', 'web');
-const targetCore = path.join(packageDir, 'dist', 'core');
-
-/* tsc does not emit .cjs, so the shared Node helper the compiled code imports
- * has to be placed next to it by hand. */
-await mkdir(targetCore, { recursive: true });
-for (const name of nodeFiles) {
-  await copyFile(nodePath(name), path.join(targetCore, name));
-}
+const targetWeb = path.join(packageDir, 'build', 'web');
 
 await mkdir(targetWeb, { recursive: true });
 for (const name of browserAssets) {
+  await copyFile(browserPath(name), path.join(targetWeb, name));
+}
+for (const name of platformIcons) {
+  await copyFile(browserPath(name), path.join(targetWeb, name));
+}
+await mkdir(path.join(targetWeb, 'std-pictures'), { recursive: true });
+for (const name of stdPictures) {
   await copyFile(browserPath(name), path.join(targetWeb, name));
 }
 await copyFile(path.join(sourceUi, 'agent-viewer.js'), path.join(targetWeb, 'agent-viewer.js'));

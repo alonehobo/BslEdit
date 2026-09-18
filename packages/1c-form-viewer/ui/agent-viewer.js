@@ -5,7 +5,13 @@ var host = document.getElementById('preview');
 var empty = document.getElementById('agent-empty');
 var pathLabel = document.getElementById('agent-path');
 var formatLabel = document.getElementById('agent-format');
+var outline = document.getElementById('outline');
+var outlineToggle = document.getElementById('outline-toggle');
 var current = null;
+var internalMode = new URLSearchParams(window.location.search).get('internal') === '1';
+/* The native server's hidden renderer: nobody looks at this page, so the form
+ * gets the whole window without the header and the element outline. */
+var bareMode = internalMode && new URLSearchParams(window.location.search).get('bare') === '1';
 
 function fail(message) { throw new Error(message); }
 function itemId(item) { return item && (item.id || item.name) ? String(item.id || item.name) : ''; }
@@ -22,33 +28,126 @@ function providerFor(format) {
     return entry;
 }
 
+function titleOf(item) {
+    return item.title || item.caption || item.name || item.tag || item.id || 'Без имени';
+}
+
+function selectOutlineRow(id) {
+    if (!outline) return;
+    var rows = outline.querySelectorAll('.outline-item');
+    for (var i = 0; i < rows.length; i++) {
+        rows[i].classList.toggle('selected', rows[i].getAttribute('data-id') === String(id));
+    }
+}
+
+function renderOutline() {
+    /* The automation page intentionally has no duplicate data-id nodes: its
+     * selectors and element captures address the rendered form directly. */
+    if (!internalMode || !outline || !current) return;
+    outline.innerHTML = '';
+    current.outline.forEach(function (item) {
+        var row = document.createElement('div');
+        row.className = 'outline-item';
+        row.setAttribute('data-id', itemId(item));
+        row.style.paddingLeft = (7 + Number(item.depth || 0) * 14) + 'px';
+        var label = document.createElement('span');
+        label.className = 'outline-label';
+        label.textContent = titleOf(item);
+        label.title = titleOf(item);
+        var line = document.createElement('span');
+        line.className = 'outline-line';
+        line.textContent = item.line ? String(item.line) : '';
+        row.appendChild(label);
+        row.appendChild(line);
+        row.addEventListener('click', function () {
+            if (!itemId(item)) return;
+            selectElement(itemId(item));
+        });
+        outline.appendChild(row);
+    });
+}
+
 function renderCurrent() {
     var entry = providerFor(current.format);
     host.hidden = false;
     empty.hidden = true;
     Providers.view(entry).render(current.model, host, {
-        onSelect: function (item) { current.selectedId = itemId(item); }
+        onSelect: function (item) {
+            current.selectedId = itemId(item);
+            selectOutlineRow(current.selectedId);
+        }
     });
     formatLabel.textContent = entry.label;
     pathLabel.textContent = current.path;
     pathLabel.title = current.path;
+    renderOutline();
+    selectOutlineRow(current.selectedId);
 }
 
+/* The native MCP server sends only the file and asks the page to resolve its
+ * context with the shared form-context.js, reading through context-file under
+ * the session's roots. The Node server passes a resolved context directly. */
+var CONTEXT_MAX_BYTES = 64 * 1024 * 1024;
+var contextCache = {};
+var contextToken = 0;
+
+/* Lookups go out in batches to context-batch; see FormContext.createHttpIo. */
+var contextIo = root.FormContext ? root.FormContext.createHttpIo('context-file', 'context-batch') : null;
+
 function load(input) {
+    if (!input || !input.resolveContext || !root.FormContext) return loadResolved(input);
+    var token = ++contextToken;
+    return root.FormContext.createResolver(contextIo, { maxBytes: CONTEXT_MAX_BYTES, cache: contextCache })
+        .resolve(input.path, input.content || '')
+        .then(function (context) {
+            if (token !== contextToken) return state();
+            var resolved = {};
+            Object.keys(input).forEach(function (key) { resolved[key] = input[key]; });
+            Object.keys(context).forEach(function (key) { resolved[key] = context[key]; });
+            return loadResolved(resolved);
+        });
+}
+
+function loadResolved(input) {
     var entry = Providers.detect(input.content, {});
     if (!entry) fail(Providers.unsupportedMessage);
-    var parsed = Providers.parse(entry, input.content, { objectMeta: input.objectMeta });
+    var sameDocument = !!(current && current.path === input.path);
+    var savedScrolls = sameDocument ? scrolls() : [];
+    /* reload_preview re-loads the file that is already open and has to keep the
+     * view the agent navigated to; a different file starts clean. */
+    if (!current || current.path !== input.path) Providers.resetViewState();
+    var parsed = Providers.parse(entry, input.content, {
+        baseForm: input.baseForm || '',
+        objectMeta: input.objectMeta,
+        commonCommands: input.commonCommands || {},
+        commonPictures: input.commonPictures || {},
+        styleItems: input.styleItems || {},
+        refMeta: input.refMeta || {}
+    });
     if (!parsed || parsed.error || !parsed.model) fail((parsed && parsed.error) || 'The renderer did not produce a model.');
     current = {
         format: entry.id,
         path: input.path,
         content: input.content,
+        baseForm: input.baseForm || '',
         objectMeta: input.objectMeta || '',
+        refMeta: input.refMeta || {},
+        commonCommands: input.commonCommands || {},
+        commonPictures: input.commonPictures || {},
+        styleItems: input.styleItems || {},
         model: parsed.model,
         outline: Providers.view(entry).outline(parsed.model, input.content) || [],
         selectedId: ''
     };
     renderCurrent();
+    savedScrolls.forEach(function (saved) {
+        var node;
+        try { node = findScrollTarget(saved.target, saved.elementId || ''); } catch (error) { node = null; }
+        if (!node) return;
+        node.scrollLeft = saved.x;
+        node.scrollTop = saved.y;
+        node.dispatchEvent(new Event('scroll', { bubbles: true }));
+    });
     return state();
 }
 
@@ -214,6 +313,7 @@ function selectElement(id) {
     if (!view.highlight) fail('The active renderer does not support selection.');
     var hit = view.highlight(host, String(id));
     current.selectedId = String(id);
+    selectOutlineRow(id);
     return { found: !!hit, element: item, state: state() };
 }
 
@@ -273,11 +373,109 @@ function elementSelector(id) {
     return '[data-id="' + String(id).replace(/["\\]/g, '\\$&') + '"]';
 }
 
-function captureNode(node) {
+function addFrozenScrollbar(node, horizontal, offset, scrollSize, clientSize, crossScrollable) {
+    var thickness = 12;
+    var inset = crossScrollable ? thickness : 0;
+    var trackLength = Math.max(1, clientSize - inset - 2);
+    var thumbLength = Math.max(20, Math.round(trackLength * clientSize / scrollSize));
+    thumbLength = Math.min(trackLength, thumbLength);
+    var maxOffset = Math.max(1, scrollSize - clientSize);
+    var thumbOffset = Math.round((trackLength - thumbLength) * offset / maxOffset);
+    var track = document.createElement('div');
+    var thumb = document.createElement('div');
+    track.style.cssText = 'position:absolute;z-index:2147483647;pointer-events:none;box-sizing:border-box;background:#f1f1f1;';
+    thumb.style.cssText = 'position:absolute;box-sizing:border-box;background:#c1c1c1;border:2px solid #f1f1f1;border-radius:6px;';
+    if (horizontal) {
+        track.style.left = '1px';
+        track.style.right = (inset + 1) + 'px';
+        track.style.bottom = '1px';
+        track.style.height = thickness + 'px';
+        thumb.style.left = thumbOffset + 'px';
+        thumb.style.top = '0';
+        thumb.style.width = thumbLength + 'px';
+        thumb.style.height = thickness + 'px';
+    } else {
+        track.style.top = '1px';
+        track.style.bottom = (inset + 1) + 'px';
+        track.style.right = '1px';
+        track.style.width = thickness + 'px';
+        thumb.style.left = '0';
+        thumb.style.top = thumbOffset + 'px';
+        thumb.style.width = thickness + 'px';
+        thumb.style.height = thumbLength + 'px';
+    }
+    track.appendChild(thumb);
+    node.appendChild(track);
+}
+
+/* cloneNode copies markup, not the live scrollLeft/scrollTop properties. The
+ * screenshot is serialized immediately afterwards, so represent each current
+ * scroll position as a static translation that survives XMLSerializer. */
+function freezeScrollPosition(original, clone) {
+    var x = original.scrollLeft;
+    var y = original.scrollTop;
+    if (!x && !y) return;
+    var maxX = Math.max(0, original.scrollWidth - original.clientWidth);
+    var maxY = Math.max(0, original.scrollHeight - original.clientHeight);
+    var children = Array.prototype.slice.call(clone.children);
+    for (var i = 0; i < children.length; i++) {
+        var transform = children[i].style.getPropertyValue('transform');
+        if (transform === 'none') transform = '';
+        children[i].style.setProperty('transform',
+            'translate(' + (-x) + 'px,' + (-y) + 'px)' + (transform ? ' ' + transform : ''), 'important');
+        children[i].style.setProperty('transform-origin', '0 0', 'important');
+    }
+    clone.style.setProperty('overflow', 'hidden', 'important');
+    if (getComputedStyle(original).position === 'static')
+        clone.style.setProperty('position', 'relative', 'important');
+    if (maxX) addFrozenScrollbar(clone, true, x, original.scrollWidth, original.clientWidth, !!maxY);
+    if (maxY) addFrozenScrollbar(clone, false, y, original.scrollHeight, original.clientHeight, !!maxX);
+}
+
+/* The screenshot is an SVG image of a cloned subtree, a separate document: a
+ * `<use href="#i-...">` there cannot reach the page's icon sprite and painted
+ * as a black blot. Carry the referenced symbols along with the clone. */
+function appendSpriteSymbols(clone, wrapper) {
+    var ids = [];
+    var uses = clone.querySelectorAll('use');
+    for (var i = 0; i < uses.length; i++) {
+        var reference = uses[i].getAttribute('href') || uses[i].getAttribute('xlink:href') || '';
+        if (reference.charAt(0) === '#' && ids.indexOf(reference.substring(1)) < 0) ids.push(reference.substring(1));
+    }
+    if (!ids.length) return;
+    var sprite = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    sprite.setAttribute('style', 'display:none');
+    sprite.setAttribute('aria-hidden', 'true');
+    ids.forEach(function (id) {
+        var symbol = document.getElementById(id);
+        if (symbol) sprite.appendChild(symbol.cloneNode(true));
+    });
+    wrapper.insertBefore(sprite, wrapper.firstChild);
+}
+
+function captureNode(node, fullDocument) {
     if (!node) fail('Capture target is not available.');
+    var page = node === document.documentElement || node === document.body;
+    /* Viewport and document captures of the internal page frame the form host
+     * only: the header and the element outline are viewer chrome. */
+    var frame = !page && node === host;
     var rect = node.getBoundingClientRect();
-    var width = Math.max(1, Math.ceil(node === document.documentElement || node === document.body ? document.documentElement.clientWidth : rect.width));
-    var height = Math.max(1, Math.ceil(node === document.documentElement || node === document.body ? document.documentElement.clientHeight : rect.height));
+    var width = Math.max(1, Math.ceil(page ? document.documentElement.clientWidth : rect.width));
+    var height = Math.max(1, Math.ceil(page ? document.documentElement.clientHeight : rect.height));
+    if (fullDocument) {
+        var documentScroll = current && (current.format === 'form' ? host.querySelector('.fp-body') : host.querySelector('.tp-scroll'));
+        var originX = page ? 0 : rect.left;
+        var originY = page ? 0 : rect.top;
+        if (documentScroll) {
+            var scrollRect = documentScroll.getBoundingClientRect();
+            width = Math.max(width, Math.ceil(scrollRect.left - originX + documentScroll.scrollWidth));
+            height = Math.max(height, Math.ceil(scrollRect.top - originY + documentScroll.scrollHeight));
+        }
+        if (page) {
+            width = Math.max(width, document.body.scrollWidth, document.documentElement.scrollWidth);
+            height = Math.max(height, document.body.scrollHeight, document.documentElement.scrollHeight);
+        }
+    }
     var clone = node.cloneNode(true);
     var allOriginal = [node].concat(Array.prototype.slice.call(node.querySelectorAll('*')));
     var allClone = [clone].concat(Array.prototype.slice.call(clone.querySelectorAll('*')));
@@ -288,14 +486,32 @@ function captureNode(node) {
             allClone[i].style.setProperty(property, computed.getPropertyValue(property), computed.getPropertyPriority(property));
         }
     }
+    for (var k = 0; k < allOriginal.length && k < allClone.length; k++) {
+        if (fullDocument &&(allOriginal[k].scrollWidth > allOriginal[k].clientWidth || allOriginal[k].scrollHeight > allOriginal[k].clientHeight)) {
+            allClone[k].style.setProperty('width', allOriginal[k].scrollWidth + 'px', 'important');
+            allClone[k].style.setProperty('height', allOriginal[k].scrollHeight + 'px', 'important');
+            allClone[k].style.setProperty('max-width', 'none', 'important');
+            allClone[k].style.setProperty('max-height', 'none', 'important');
+            allClone[k].style.setProperty('overflow', 'visible', 'important');
+        } else {
+            freezeScrollPosition(allOriginal[k], allClone[k]);
+        }
+    }
     var wrapper = document.createElement('div');
     wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
     wrapper.style.cssText = 'width:' + width + 'px;height:' + height + 'px;overflow:hidden;background:' + getComputedStyle(document.body).backgroundColor + ';';
-    if (node === document.documentElement || node === document.body) {
+    if (page) {
         while (clone.firstChild) wrapper.appendChild(clone.firstChild);
     } else {
+        if (frame) {
+            clone.style.setProperty('position', 'relative', 'important');
+            clone.style.setProperty('inset', 'auto', 'important');
+            clone.style.setProperty('width', width + 'px', 'important');
+            clone.style.setProperty('height', height + 'px', 'important');
+        }
         wrapper.appendChild(clone);
     }
+    appendSpriteSymbols(clone, wrapper);
     var markup = new XMLSerializer().serializeToString(wrapper);
     var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '"><foreignObject width="100%" height="100%">' + markup + '</foreignObject></svg>';
     return new Promise(function (resolve, reject) {
@@ -314,12 +530,160 @@ function captureNode(node) {
     });
 }
 
-function capture(scope, elementId) {
-    if (scope === 'element') {
-        if (!elementId) fail('element_id is required when scope is element.');
-        return captureNode(findDom(elementId));
+/* The whole spreadsheet as one PNG. Cloning the full sheet at its scroll size
+ * lays the table out again at another width: rows grow and drawings leave
+ * their rows. Instead the page is cloned once at its real viewport size, and
+ * each tile only shifts the clone's content, as the viewport capture does for
+ * a scrolled view; tiles are cut and stitched on a canvas. Column letters and
+ * row numbers are taken from the first row and column of tiles. A huge
+ * template is scaled down to stay within canvas limits. */
+var STITCH_MAX_SIDE = 16000;
+var STITCH_MAX_AREA = 120000000;
+
+function renderMarkup(markup, width, height) {
+    var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + width + '" height="' + height + '"><foreignObject width="100%" height="100%">' + markup + '</foreignObject></svg>';
+    return new Promise(function (resolve, reject) {
+        var image = new Image();
+        image.onload = function () { resolve(image); };
+        image.onerror = function () { reject(new Error('The browser could not render the preview as PNG.')); };
+        image.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    });
+}
+
+function captureTemplateDocument(scroll) {
+    var hostRect = host.getBoundingClientRect();
+    var scrollRect = scroll.getBoundingClientRect();
+    var offsetX = scrollRect.left - hostRect.left;
+    var offsetY = scrollRect.top - hostRect.top;
+    var left = scroll.querySelector('.tp-left');
+    var chrome = scroll.querySelector('.tp-col-chrome');
+    var headW = left ? Math.round(left.getBoundingClientRect().width) : 0;
+    var headH = chrome ? Math.round(chrome.getBoundingClientRect().height) : 0;
+    var viewW = scroll.clientWidth;
+    var viewH = scroll.clientHeight;
+    var totalW = Math.max(viewW, scroll.scrollWidth);
+    var totalH = Math.max(viewH, scroll.scrollHeight);
+    var maxX = totalW - viewW;
+    var maxY = totalH - viewH;
+    var stepX = Math.max(1, viewW - headW);
+    var stepY = Math.max(1, viewH - headH);
+    var scale = Math.min(1, STITCH_MAX_SIDE / totalW, STITCH_MAX_SIDE / totalH, Math.sqrt(STITCH_MAX_AREA / (totalW * totalH)));
+    var width = Math.max(1, Math.ceil(hostRect.width));
+    var height = Math.max(1, Math.ceil(hostRect.height));
+
+    /* One clone with computed styles, at scroll 0,0 of the real layout. */
+    var savedX = scroll.scrollLeft;
+    var savedY = scroll.scrollTop;
+    scroll.scrollLeft = 0;
+    scroll.scrollTop = 0;
+    var clone = host.cloneNode(true);
+    var allOriginal = [host].concat(Array.prototype.slice.call(host.querySelectorAll('*')));
+    var allClone = [clone].concat(Array.prototype.slice.call(clone.querySelectorAll('*')));
+    var scrollClone = null;
+    for (var i = 0; i < allOriginal.length && i < allClone.length; i++) {
+        var computed = getComputedStyle(allOriginal[i]);
+        for (var j = 0; j < computed.length; j++) {
+            var property = computed[j];
+            allClone[i].style.setProperty(property, computed.getPropertyValue(property), computed.getPropertyPriority(property));
+        }
+        if (allOriginal[i] === scroll) scrollClone = allClone[i];
     }
-    return captureNode(scope === 'document' ? document.body : document.documentElement);
+    scroll.scrollLeft = savedX;
+    scroll.scrollTop = savedY;
+    if (!scrollClone) fail('The spreadsheet scroll area is not available.');
+    scrollClone.style.setProperty('overflow', 'hidden', 'important');
+    if (getComputedStyle(scroll).position === 'static') scrollClone.style.setProperty('position', 'relative', 'important');
+    clone.style.setProperty('position', 'relative', 'important');
+    clone.style.setProperty('inset', 'auto', 'important');
+    clone.style.setProperty('width', width + 'px', 'important');
+    clone.style.setProperty('height', height + 'px', 'important');
+    var content = Array.prototype.slice.call(scrollClone.children);
+    var baseTransforms = content.map(function (child) {
+        var t = child.style.getPropertyValue('transform');
+        return t === 'none' ? '' : t;
+    });
+    var wrapper = document.createElement('div');
+    wrapper.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+    wrapper.style.cssText = 'width:' + width + 'px;height:' + height + 'px;overflow:hidden;background:' + getComputedStyle(document.body).backgroundColor + ';';
+    wrapper.appendChild(clone);
+    appendSpriteSymbols(clone, wrapper);
+
+    var canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.floor(totalW * scale));
+    canvas.height = Math.max(1, Math.floor(totalH * scale));
+    var context = canvas.getContext('2d');
+    context.fillStyle = getComputedStyle(document.body).backgroundColor || '#fff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+
+    var positions = [];
+    for (var y = 0; ; y = Math.min(maxY, y + stepY)) {
+        for (var x = 0; ; x = Math.min(maxX, x + stepX)) {
+            positions.push([x, y]);
+            if (x >= maxX) break;
+        }
+        if (y >= maxY) break;
+    }
+
+    function draw(image, sx, sy, sw, sh, dx, dy) {
+        if (sw <= 0 || sh <= 0) return;
+        context.drawImage(image, offsetX + sx, offsetY + sy, sw, sh, dx * scale, dy * scale, sw * scale, sh * scale);
+    }
+
+    function tile(index) {
+        if (index >= positions.length) return Promise.resolve();
+        var px = positions[index][0];
+        var py = positions[index][1];
+        content.forEach(function (child, k) {
+            child.style.setProperty('transform', 'translate(' + (-px) + 'px,' + (-py) + 'px)' + (baseTransforms[k] ? ' ' + baseTransforms[k] : ''), 'important');
+            child.style.setProperty('transform-origin', '0 0', 'important');
+        });
+        return renderMarkup(new XMLSerializer().serializeToString(wrapper), width, height).then(function (image) {
+            /* Sticky chrome moves with the shifted content in the clone, so it
+             * is only taken where the tile is not shifted along that axis. */
+            draw(image, headW, headH, viewW - headW, viewH - headH, headW + px, headH + py);
+            if (py === 0) draw(image, headW, 0, viewW - headW, headH, headW + px, 0);
+            if (px === 0) draw(image, 0, headH, headW, viewH - headH, 0, headH + py);
+            if (px === 0 && py === 0) draw(image, 0, 0, headW, headH, 0, 0);
+            return tile(index + 1);
+        });
+    }
+
+    return tile(0).then(function () {
+        var result = canvas.toDataURL('image/png');
+        return { data: result.substring(result.indexOf(',') + 1), mimeType: 'image/png', width: canvas.width, height: canvas.height, scale: scale };
+    });
+}
+
+/* Picture.zip resources decode asynchronously and show a placeholder glyph
+ * meanwhile. A capture straight after open_preview must not freeze those
+ * placeholders into the PNG, so wait (bounded) until they are replaced. */
+function whenPicturesDecoded(timeoutMs) {
+    var deadline = Date.now() + timeoutMs;
+    return new Promise(function (resolve) {
+        (function poll() {
+            if (!host.querySelector('.fp-picture-loading') || Date.now() >= deadline) {
+                requestAnimationFrame(function () { resolve(); });
+                return;
+            }
+            setTimeout(poll, 25);
+        })();
+    });
+}
+
+function capture(scope, elementId) {
+    if (scope === 'element' && !elementId) fail('element_id is required when scope is element.');
+    return whenPicturesDecoded(3000).then(function () {
+        /* A template's drawings follow the laid-out rows; settle them first. */
+        if (root.TemplatePreview && root.TemplatePreview.sync) {
+            var sheet = host.querySelector('.tp-root') || host;
+            root.TemplatePreview.sync(sheet._tpModel ? sheet : host);
+        }
+        if (scope === 'element') return captureNode(findDom(elementId), false);
+        var sheetScroll = current && current.format !== 'form' ? host.querySelector('.tp-scroll') : null;
+        if (internalMode && scope === 'document' && sheetScroll) return captureTemplateDocument(sheetScroll);
+        if (internalMode) return captureNode(host, scope === 'document');
+        return captureNode(scope === 'document' ? document.body : document.documentElement, scope === 'document');
+    });
 }
 
 root.AgentViewer = {
@@ -334,6 +698,24 @@ root.AgentViewer = {
     capture: capture
 };
 
+if (bareMode) document.body.classList.add('bare');
+if (internalMode && !bareMode) {
+    document.body.classList.add('browser-ui');
+    var collapsed = true;
+    try { collapsed = sessionStorage.getItem('1cFormViewer.outlineCollapsed') !== '0'; } catch (error) {}
+    function updateOutline() {
+        document.body.classList.toggle('outline-collapsed', collapsed);
+        outlineToggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+        outlineToggle.title = collapsed ? 'Показать панель элементов' : 'Скрыть панель элементов';
+    }
+    outlineToggle.addEventListener('click', function () {
+        collapsed = !collapsed;
+        try { sessionStorage.setItem('1cFormViewer.outlineCollapsed', collapsed ? '1' : '0'); } catch (error) {}
+        updateOutline();
+    });
+    updateOutline();
+}
+
 /* Internal mode: the page pulls the document and its commands over HTTP instead
  * of being driven from outside.
  *
@@ -341,7 +723,7 @@ root.AgentViewer = {
  * drives this same page through the browser automation API and serves no
  * `command` endpoint. So the poll stops itself the first time the endpoint is
  * absent rather than issuing a 404 five times a second forever. */
-if (new URLSearchParams(window.location.search).get('internal') === '1') {
+if (internalMode) {
     var lastRevision = -1;
     var commandBusy = false;
     var commandTimer = 0;
@@ -362,8 +744,55 @@ if (new URLSearchParams(window.location.search).get('internal') === '1') {
         });
     }
 
+    /* File transforms for the authoring tools. They need no open document: the
+     * server reads and writes the files, the page only runs the shared code. */
+    var TRANSFORMS = { xlsxToTemplate: true, markup: true, form: true };
+
+    function runTransform(command) {
+        var args = command.args || {};
+        if (command.op === 'xlsxToTemplate') {
+            if (!root.XlsxTemplate) fail('The xlsx converter is not loaded.');
+            return root.XlsxTemplate.convert(args.data, { sheet: args.sheet });
+        }
+        if (command.op === 'form') {
+            if (!root.FormEdit) fail('The form editing module is not loaded.');
+            if (args.action === 'list') return { xml: args.content, result: root.FormEdit.listElements(args.content) };
+            if (args.action === 'validate') {
+                if (!root.FormValidate) fail('The form validator is not loaded.');
+                return { xml: args.content, result: root.FormValidate.validateForm(args.content, args.params || {}) };
+            }
+            if (args.action === 'setProperties' || args.action === 'moveElement' || args.action === 'removeElement'
+                || args.action === 'addElement' || args.action === 'setAttribute' || args.action === 'setCommand') {
+                return root.FormEdit[args.action](args.content, args.params || {});
+            }
+            fail('Unknown form action: ' + args.action);
+        }
+        if (!root.TemplateMarkup) fail('The template markup module is not loaded.');
+        var markup = root.TemplateMarkup;
+        if (args.action === 'list') return { xml: args.content, result: markup.listMarkup(args.content) };
+        if (args.action === 'validate') return { xml: args.content, result: markup.validateTemplate(args.content) };
+        /* Every other action edits: (xml, params) → { xml, result }. */
+        if (args.action !== 'listMarkup' && args.action !== 'validateTemplate' && typeof markup[args.action] === 'function') {
+            var params = args.params || {};
+            /* Nested objects (print_area) keep the tool's snake_case keys. */
+            if (params.printArea) {
+                var area = {};
+                Object.keys(params.printArea).forEach(function (key) {
+                    area[key.replace(/_([a-z])/g, function (m, ch) { return ch.toUpperCase(); })] = params.printArea[key];
+                });
+                params.printArea = area;
+            }
+            return markup[args.action](args.content, params);
+        }
+        fail('Unknown markup action: ' + args.action);
+    }
+
     function executeCommand(command) {
         var args = command.args || {};
+        if (TRANSFORMS[command.op]) {
+            return Promise.resolve().then(function () { return runTransform(command); })
+                .then(function (value) { return postResult(command, value); }, function (error) { return postError(command, error); });
+        }
         try {
             var value;
             if (command.op === 'inspect') value = { elements: root.AgentViewer.inspect(args), state: root.AgentViewer.state() };
@@ -379,6 +808,40 @@ if (new URLSearchParams(window.location.search).get('internal') === '1') {
         }
     }
 
+    /* Resolving a native document's context is asynchronous. State polling and
+     * command delivery both ask for the same revision meanwhile; they must share
+     * one load instead of restarting (and discarding) it on every poll. */
+    var loadingRevision = -1;
+    var loadingPromise = null;
+
+    function loadRevision(input) {
+        if (input.revision === loadingRevision && loadingPromise) return loadingPromise;
+        loadingRevision = input.revision;
+        loadingPromise = Promise.resolve(root.AgentViewer.load(input)).then(function () {
+            lastRevision = input.revision;
+        }, function (error) {
+            loadingRevision = -1;
+            loadingPromise = null;
+            throw error;
+        });
+        return loadingPromise;
+    }
+
+    function ensureRevision(revision) {
+        if (typeof revision !== 'number' || lastRevision >= revision) return Promise.resolve();
+        return fetch('state.json', { cache: 'no-store' })
+            .then(function (response) {
+                if (!response.ok) throw new Error('The requested preview revision is unavailable.');
+                return response.json();
+            })
+            .then(function (input) {
+                if (!input || input.revision < revision) throw new Error('The requested preview revision is not loaded yet.');
+                /* A native document resolves its context asynchronously; the
+                 * command must run against the fully loaded revision. */
+                return loadRevision(input);
+            });
+    }
+
     function pollCommand() {
         if (commandBusy) return;
         commandBusy = true;
@@ -390,7 +853,12 @@ if (new URLSearchParams(window.location.search).get('internal') === '1') {
                 }
                 return response.status === 204 ? null : response.json();
             })
-            .then(function (command) { return command ? executeCommand(command) : null; })
+            .then(function (command) {
+                if (command && TRANSFORMS[command.op]) return executeCommand(command);
+                return command ? ensureRevision(command.revision)
+                    .then(function () { return executeCommand(command); })
+                    .catch(function (error) { return postError(command, error); }) : null;
+            })
             .catch(function () {})
             .finally(function () { commandBusy = false; });
     }
@@ -403,14 +871,30 @@ if (new URLSearchParams(window.location.search).get('internal') === '1') {
                 return fetch('state.json', { cache: 'no-store' })
                     .then(function (response) { return response.ok ? response.json() : null; })
                     .then(function (input) {
-                        if (input) {
-                            root.AgentViewer.load(input);
-                            lastRevision = meta.revision;
-                        }
+                        if (input) return loadRevision(input);
                     });
             })
             .catch(function () {});
     }
+
+    /* Re-read the open file (and drop cached metadata) so an agent's edit on
+     * disk shows without reopening the preview. Only the native server serves
+     * `reload`; elsewhere the button reports that and stays usable. */
+    var reloadButton = document.getElementById('reload-preview');
+    if (reloadButton) reloadButton.addEventListener('click', function () {
+        reloadButton.disabled = true;
+        fetch('reload', { method: 'POST', cache: 'no-store' })
+            .then(function (response) {
+                if (!response.ok) return response.text().then(function (text) { throw new Error(text || ('HTTP ' + response.status)); });
+                Object.keys(contextCache).forEach(function (key) { delete contextCache[key]; });
+                lastRevision = -1;
+                loadingRevision = -1;
+                loadingPromise = null;
+                refreshState();
+            })
+            .catch(function (error) { window.alert('Не удалось обновить: ' + (error && error.message || error)); })
+            .finally(function () { reloadButton.disabled = false; });
+    });
 
     refreshState();
     window.setInterval(refreshState, 300);

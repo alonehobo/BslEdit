@@ -30,12 +30,19 @@ test('the extension contributes and registers its bundled MCP server', async () 
   }]);
   assert.equal(manifest.contributes.configuration.properties['1cFormViewer.mcp.enabled'].default, true);
   assert.equal(manifest.contributes.configuration.properties['1cFormViewer.mcp.allowAnyPath'].default, false);
+  assert.equal(manifest.contributes.configuration.properties['1cFormViewer.mcp.templateEditTools'].default, true, 'template editing tools are on by default');
+  assert.ok(manifest.activationEvents.includes('onStartupFinished'));
+  assert.ok(manifest.activationEvents.includes('onUri'));
+  assert.ok(manifest.activationEvents.includes('onCommand:1cFormViewer.openPreview'));
 
   const extension = await read('extension.js');
   assert.match(extension, /registerMcpServerDefinitionProvider\(MCP_PROVIDER_ID/);
   assert.match(extension, /new vscode\.McpStdioServerDefinition\(/);
   assert.match(extension, /args\.push\('--root', root\)/);
   assert.match(extension, /args\.push\('--allow-any-path'\)/);
+  assert.match(extension, /if \(!configuration\.get\('templateEditTools', true\)\) args\.push\('--no-template-edit-tools'\)/);
+  assert.match(extension, /--open-vscode-browser/);
+  assert.match(extension, /--vscode-uri-scheme', vscode\.env\.uriScheme/);
 });
 
 test('the bundled native MCP completes the initialize and tools/list handshake', {
@@ -72,10 +79,16 @@ test('the bundled native MCP completes the initialize and tools/list handshake',
     child.once('exit', (code) => code === 0 ? resolve() : reject(new Error(`MCP exited with ${code}`)));
   });
   assert.equal(responses[0].result.serverInfo.name, '1c-form-viewer-native');
+  assert.match(responses[0].result.instructions, /instead of opening XML source or launching 1C/);
+  assert.match(responses[0].result.instructions, /визуального просмотра макетов форм 1С/);
   assert.ok(responses[1].result.tools.some((tool) => tool.name === 'open_preview'));
-  assert.ok(responses[1].result.tools.some((tool) => tool.name === 'capture_preview'));
+  assert.match(
+    responses[1].result.tools.find((tool) => tool.name === 'capture_preview').description,
+    /1C preview/,
+  );
   assert.equal(responses[2].result.isError, true);
   assert.match(responses[2].result.content[0].text, /outside the allowed roots/);
+  assert.match(responses[2].result.content[0].text, /additionalRoots/);
 });
 
 /* vsce runs vscode:prepublish, not prepack. Without it a package can be cut
@@ -96,44 +109,57 @@ test('the Marketplace README includes the preview-button screenshot', async () =
   assert.match(ignore, /!images\/\*\*/);
 });
 
-test('the webview loads exactly the shared assets, in the core load order', async () => {
+test('the Marketplace README has current MCP setup examples for major agents', async () => {
+  const readme = await read('README.md');
+  for (const heading of [
+    'VS Code Agent mode / GitHub Copilot',
+    'Codex IDE extension для VS Code',
+    'Cursor Agent',
+    'Claude Code extension для VS Code',
+  ]) assert.match(readme, new RegExp(heading));
+  assert.match(readme, /Почему VSIX недостаточно для каждого агента/);
+  assert.match(readme, /MCP servers.*Add server/s);
+  assert.match(readme, /Restart extension/);
+  assert.match(readme, /"servers": \{/);
+  assert.match(readme, /\[mcp_servers\.one_c_form_viewer\]/);
+  assert.match(readme, /"mcpServers": \{/);
+  assert.match(readme, /claude mcp add --transport stdio --scope local/);
+  assert.match(readme, /C:\\\\Tools\\\\1c-form-viewer-native\\\\1c-form-viewer\.exe/);
+  assert.doesNotMatch(readme, /1c-form-viewer@(?:latest|\d)/);
+  assert.doesNotMatch(readme, /Node\.js-вариант/);
+});
+
+test('the bundled native page loads exactly the shared assets, in the core load order', async () => {
   const assets = JSON.parse(await read('media', 'assets.json'));
   assert.deepEqual(assets.scripts, scripts);
   assert.deepEqual(assets.styles, styles);
-
-  const extension = await read('extension.js');
-  assert.match(extension, /assets\.scripts\s*$/m, 'script tags are generated from the manifest');
-  assert.match(extension, /assets\.styles\s*$/m, 'style tags are generated from the manifest');
-  for (const name of [...scripts, ...styles]) {
-    assert.doesNotMatch(extension, new RegExp(`['"\`]${name.replace('.', '\.')}['"\`]`),
-      `${name} must not be hardcoded in extension.js`);
+  const html = await read('mcp', 'app', 'web', 'index.html');
+  let position = -1;
+  for (const name of [...styles, ...scripts]) {
+    const next = html.indexOf(name);
+    assert.ok(next > position, `${name} must be present in generated load order`);
+    position = next;
   }
 });
 
-/* The renderers are shared, so the rules for claiming a file have to be too —
- * otherwise the same export opens in VS Code and refuses to open over MCP. */
-test('the webview claims files through the shared provider registry', async () => {
-  const webview = await read('ui', 'webview.js');
-  assert.match(webview, /PreviewProviders\.detect\(/);
-  assert.match(webview, /PreviewProviders\.parse\(/);
-  assert.match(webview, /PreviewProviders\.view\(/);
-  for (const global of ['FormPreview.detect', 'MxlPreview.detect', 'TemplatePreview.detect']) {
-    assert.doesNotMatch(webview, new RegExp(global.replace('.', '\.')),
-      `${global} must go through the shared registry`);
-  }
+test('agent and manual commands open the native URL in VS Code Simple Browser', async () => {
+  const extension = await read('extension.js');
+  assert.match(extension, /registerUriHandler\(/);
+  assert.match(extension, /executeCommand\('simpleBrowser\.show', url\)/);
+  assert.match(extension, /--open-vscode-browser/);
+  assert.match(extension, /--vscode-uri-scheme', vscode\.env\.uriScheme/);
+  assert.match(extension, /new NativeRpcClient\(/);
+  assert.match(extension, /client\.callTool\('open_preview'/);
+  assert.match(extension, /'--no-open-browser'/);
+  assert.doesNotMatch(extension, /createWebviewPanel\(/);
 });
 
-/* Encodings, form descriptors and object metadata are 1C rules, not VS Code
- * rules; a second copy here is what let the extension drift from the MCP
- * server in the first place. */
-test('file rules come from the shared core, not a second copy', async () => {
+test('the URI handler rejects non-loopback and credentialed preview URLs', async () => {
   const extension = await read('extension.js');
-  assert.match(extension, /require\('\.\/core\/document\.cjs'\)/);
-  assert.match(extension, /core\.decodeText\(/);
-  assert.match(extension, /core\.objectMetaCandidates\(/);
-  assert.match(extension, /core\.formLayoutFor\(/);
-  assert.doesNotMatch(extension, /0xef|windows-1251|MetaDataObject/,
-    'decoding and metadata rules must not be reimplemented here');
+  assert.match(extension, /url\.protocol !== 'http:'/);
+  assert.match(extension, /host !== '127\.0\.0\.1'/);
+  assert.match(extension, /host !== 'localhost'/);
+  assert.match(extension, /url\.username \|\| url\.password/);
 });
 
 test('opening a form descriptor resolves to the layout the renderers want', async () => {
@@ -143,17 +169,21 @@ test('opening a form descriptor resolves to the layout the renderers want', asyn
   assert.equal(formLayoutFor(path.join('C:', 'cfg', 'Catalogs', 'Товары.xml')), '');
 
   const extension = await read('extension.js');
+  assert.match(extension, /require\('\.\/core\/document\.cjs'\)/);
+  assert.match(extension, /core\.isSupportedExtension\(/);
   assert.match(extension, /resolveDocumentUri/);
+  assert.match(extension, /core\.formLayoutFor\(/);
 });
 
-test('source content never reaches the webview as markup', async () => {
-  const extension = await read('extension.js');
-  const webview = await read('ui', 'webview.js');
-  assert.match(extension, /postMessage\(\{\s*type: 'load'/);
-  assert.doesNotMatch(extension, /innerHTML\s*=\s*.*content/);
-  assert.match(webview, /textContent =/);
-  assert.match(extension, /id="preview-root"/);
-  assert.match(webview, /getElementById\('preview-root'\)/);
-  assert.match(webview, /type: 'ready'/);
-  assert.match(extension, /message\?\.type === 'ready'/);
+test('the browser outline can be collapsed and selects through the shared highlight API', async () => {
+  const html = await read('mcp', 'app', 'web', 'index.html');
+  const viewer = await read('mcp', 'app', 'web', 'agent-viewer.js');
+  const css = await read('mcp', 'app', 'web', 'agent-viewer.css');
+  assert.match(html, /id="outline-toggle"/);
+  assert.match(html, /id="outline-pane"/);
+  assert.match(viewer, /classList\.toggle\('outline-collapsed'/);
+  assert.match(viewer, /sessionStorage\.setItem\('1cFormViewer\.outlineCollapsed'/);
+  assert.match(viewer, /selectElement\(itemId\(item\)\)/);
+  assert.match(viewer, /view\.highlight\(host, String\(id\)\)/);
+  assert.match(css, /body\.browser-ui\.outline-collapsed #outline-pane/);
 });

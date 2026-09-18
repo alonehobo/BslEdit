@@ -18,14 +18,14 @@ New-Item -ItemType Directory -Path (Join-Path $app 'web') -Force | Out-Null
 
 Push-Location $packageRoot
 try {
-  npm run prepack
-  if ($LASTEXITCODE -ne 0) { throw 'Package build failed.' }
+  npm run build:assets
+  if ($LASTEXITCODE -ne 0) { throw 'Native web asset build failed.' }
 }
 finally {
   Pop-Location
 }
 
-Copy-Item -Path (Join-Path $packageRoot 'dist\web\*') -Destination (Join-Path $app 'web') -Recurse -Force
+Copy-Item -Path (Join-Path $packageRoot 'build\web\*') -Destination (Join-Path $app 'web') -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $packageRoot 'README.md') -Destination $app
 Copy-Item -LiteralPath (Join-Path $packageRoot 'LICENSE') -Destination $app
 Copy-Item -LiteralPath (Join-Path $packageRoot 'native\NATIVE-README.md') -Destination (Join-Path $Output 'README.md')
@@ -33,8 +33,8 @@ Copy-Item -LiteralPath (Join-Path $packageRoot 'native\NATIVE-README.md') -Desti
 . "$PSScriptRoot/msvc-env.ps1"
 $cl = Initialize-MsvcEnvironment
 
-# The native server's version comes from package.json, same as the Node one.
-# It is force-included below so a release bumps a single file.
+# The native server's version comes from package.json and is force-included
+# below so a release bumps a single file.
 $version = (Get-Content -LiteralPath (Join-Path $packageRoot 'package.json') -Raw | ConvertFrom-Json).version
 if ([string]::IsNullOrWhiteSpace($version)) { throw 'package.json has no version.' }
 $versionHeader = Join-Path $Output 'native-version.h'
@@ -43,7 +43,7 @@ Set-Content -LiteralPath $versionHeader -Encoding ASCII -Value "#define ONE_C_FO
 $source = Join-Path $packageRoot 'native\mcp-server.cpp'
 Push-Location $Output
 try {
-  & $cl /nologo /O2 /MT /std:c++17 /EHsc /W3 /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS /FI"$versionHeader" $source /Fe:1c-form-viewer.exe /link /SUBSYSTEM:CONSOLE shell32.lib ws2_32.lib
+  & $cl /nologo /O2 /MT /std:c++17 /utf-8 /EHsc /W3 /DUNICODE /D_UNICODE /D_CRT_SECURE_NO_WARNINGS /FI"$versionHeader" $source /Fe:1c-form-viewer.exe /link /SUBSYSTEM:CONSOLE shell32.lib ws2_32.lib
   if ($LASTEXITCODE -ne 0) { throw 'Native MCP server build failed.' }
 }
 finally {

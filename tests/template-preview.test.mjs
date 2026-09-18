@@ -170,6 +170,24 @@ test('row area rail has top and bottom edges, and grid has matching red lines', 
   assert.equal(hasAncestorClass(lines[0], 'tp-grid-wrap'), true);
 });
 
+test('render keeps automatic row height flexible and gives cells coordinate ids', () => {
+  const xml = mini
+    .replace('<row>', '<row><formatIndex>3</formatIndex>')
+    .replace('<horizontalAlignment>Left</horizontalAlignment>',
+      '<horizontalAlignment>Left</horizontalAlignment><height>-45</height><textPlacement>Wrap</textPlacement>');
+  const container = fakeNode('div');
+  const sandbox = loadRenderSandbox();
+  const parsed = sandbox.window.TemplatePreview.parse(xml);
+  sandbox.window.TemplatePreview.render(parsed.model, container, {});
+  const cell = walkMatch(container, 'td[data-id="r0c0"]')[0];
+  assert.ok(cell, 'coordinate data-id is present');
+  const inner = cell.children.find((child) => child.className.includes('tp-cell'));
+  assert.equal(inner.style.height, undefined);
+  assert.match(inner.style.minHeight, /px$/);
+  assert.equal(inner.style.maxHeight, '15px', 'a negative height caps the row');
+  assert.equal(cell.style.overflow, 'hidden');
+});
+
 test('outline icons differ for row vs column areas', () => {
   const row = TP.outlineIcon({ areaType: 'Rows' });
   const col = TP.outlineIcon({ areaType: 'Columns' });
@@ -556,7 +574,6 @@ test('render draws a top rail for vertical areas and Auto overflow', () => {
   assert.ok(hasText.length >= 1);
 });
 
-const ndflPath = 'e:\\Bases\\ERP_DESIGNER\\src\\cf\\CommonTemplates\\Форма2НДФЛс2024\\Ext\\Template.xml';
 
 const borderMini = `<?xml version="1.0" encoding="UTF-8"?>
 <document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:v8="http://v8.1c.ru/8.1/data/core"
@@ -688,50 +705,6 @@ test('column widths stay distinct after a merge (not equalized to default)', () 
   assert.match(td.style.borderRight, /solid/);
 });
 
-const invoicePath = 'e:\\Bases\\ERP_DESIGNER\\src\\cf\\DataProcessors\\ПечатьСчетовНаОплату\\Templates\\ПФ_MXL_СчетНаОплату\\Ext\\Template.xml';
-
-test('invoice template column widths follow format palette, not the 72-unit default', () => {
-  if (!fs.existsSync(invoicePath)) return;
-  const xml = fs.readFileSync(invoicePath, 'utf8');
-  const parsed = TP.parse(xml);
-  assert.ok(parsed.model, parsed.error);
-  const set = T.columnSetOf(parsed.model, '');
-  assert.equal(set.size, 41);
-  assert.ok(Math.abs(set.widths[0] - T.widthToPx(8)) < 0.01);
-  assert.ok(Math.abs(set.widths[1] - T.widthToPx(24)) < 0.01);
-  const uniq = new Set(set.widths.map((w) => Math.round(w * 10) / 10));
-  assert.ok(uniq.size >= 4, 'expected varied column widths, got ' + [...uniq].join(','));
-  const def = T.widthToPx(T.DEFAULT_WIDTH_U);
-  assert.ok([...uniq].some((w) => Math.abs(w - def) > 1), 'widths look like the default 72');
-  const colAreas = T.columnAreaItems(parsed.model, '');
-  assert.equal(colAreas.length, 0);
-  const tableId = '95fc5831-7776-4061-a145-d1f1235b4efe';
-  const tableAreas = T.columnAreaItems(parsed.model, tableId);
-  assert.ok(tableAreas.some((x) => x.name === 'КолонкаКодов'));
-  assert.ok(tableAreas.some((x) => x.name === 'ПерваяКолонкаТовара'));
-});
-
-test('2-NDFL template has nested vertical areas ЛеваяЧасть/Вычеты', () => {
-  if (!fs.existsSync(ndflPath)) {
-    return;
-  }
-  const xml = fs.readFileSync(ndflPath, 'utf8');
-  const parsed = TP.parse(xml);
-  assert.ok(parsed.model, parsed.error);
-  const cols = T.columnAreaItems(parsed.model);
-  const names = cols.map((x) => x.name).sort();
-  assert.equal(names.join(','), 'Вычеты1,Вычеты2,Вычеты3,Вычеты4,ЛеваяЧасть,ПраваяЧасть');
-  const packed = T.columnAreaLevels(cols);
-  const byName = Object.fromEntries(packed.items.map((x) => [x.item.name, x.level]));
-  assert.equal(byName['ЛеваяЧасть'], 0);
-  assert.equal(byName['ПраваяЧасть'], 0);
-  assert.equal(byName['Вычеты1'], 1);
-  assert.equal(byName['Вычеты4'], 1);
-  const left = cols.find((x) => x.name === 'ЛеваяЧасть');
-  assert.equal(left.beginColumn, 0);
-  assert.equal(left.endColumn, 25);
-});
-
 test('a cell inherits the format of its row but never its width, height or fillType', () => {
   const model = {
     formats: [
@@ -783,22 +756,83 @@ test('vertical alignment falls back to the default the model declares', () => {
   assert.equal(T.alignCss('Center', 'v', 'bottom'), 'middle');
 });
 
-test('Block placement repeats the value until it covers the cell', () => {
+test('Block placement keeps a value that fits and hashes one that does not', () => {
   assert.equal(T.placementOf({ textPlacement: 'Block' }), 'block');
   assert.equal(T.placementOf({ textPlacement: 'Cut' }), 'cut');
-  const filled = T.blockRepeat('ab', 200, 8);
-  assert.ok(filled.length > 2 && filled.startsWith('abab'));
-  assert.equal(filled.replace(/ab/g, ''), '');
-  assert.equal(T.blockRepeat('', 200, 8), '');
-  // a line that already overruns the cell has nothing left to fill
-  const long = 'очень длинная строка, которая и так не помещается в ячейку';
-  assert.equal(T.blockRepeat(long, 20, 8), long);
-  // every line is filled on its own
-  const two = T.blockRepeat('ab\ncd', 200, 8).split('\n');
-  assert.equal(two.length, 2);
-  assert.ok(two[0].startsWith('abab') && two[1].startsWith('cdcd'));
-  const wide = T.blockRepeat('x', 100000, 8);
-  assert.ok(wide.length <= 200, 'the repeat count stays bounded');
+  assert.equal(T.placementOf({ horizontalAlignment: 'Justify' }), 'wrap', 'justified text wraps');
+  assert.equal(T.blockFit('ab', 200, 8), 'ab');
+  assert.equal(T.blockFit('', 200, 8), '');
+  assert.equal(T.blockFit('12345678901234567890', 20, 8), '####################');
+});
+
+test('spreadsheet units: widths in eighths of a character, heights in 1/288 inch', () => {
+  assert.equal(T.widthToPx(72), 63);
+  assert.equal(T.heightToPx(45), 15);
+  assert.equal(T.fontLinePx({ height: 8 }), 15, 'an Arial 8 line is 15 px');
+  assert.equal(T.fontLinePx({ height: 10 }), 17);
+});
+
+test('column width falls back column → column set → sheet default → 72; hidden is 0', () => {
+  assert.equal(T.columnWidthPx({ width: '16' }, { width: '40' }, null), 14);
+  assert.equal(T.columnWidthPx({}, { width: '40' }, { width: '8' }), 35);
+  assert.equal(T.columnWidthPx(null, null, { width: '8' }), 7);
+  assert.equal(T.columnWidthPx(null, null, null), 63);
+  assert.equal(T.columnWidthPx({ width: '16', hidden: 'true' }, null, null), 0);
+});
+
+test('auto-width columns share the free width by weight, never below their own width', () => {
+  const set = { size: 3, widths: [100, 10, 10], auto: { 1: { weight: 1 }, 2: { weight: 3 } } };
+  assert.deepEqual([...T.distributeAutoWidths(set, 500).widths], [100, 100, 300]);
+  assert.deepEqual([...T.distributeAutoWidths(set, 50).widths], [100, 10, 10]);
+  assert.deepEqual(set.widths, [100, 10, 10], 'the parsed set is not mutated');
+});
+
+test('cell format layers: sheet default, column, row, cell', () => {
+  const model = {
+    formats: [{ font: '1', backColor: '#111' }, { backColor: '#222', width: '20' }, { textColor: '#333' }, { backColor: '#444' }],
+    defaultFormatIndex: 1,
+    columnSetById: { '': { size: 2, widths: [1, 1], formatIndex: { 1: 2 } } }
+  };
+  const row = { columnsID: '', formatIndex: 3 };
+  const f0 = T.effectiveFormat(model, row, null, 0);
+  assert.equal(f0.backColor, '#111');
+  assert.equal(f0.textColor, '#333');
+  const f1 = T.effectiveFormat(model, row, null, 1);
+  assert.equal(f1.backColor, '#222');
+  assert.equal(f1.width, undefined, 'a column width is not a cell property');
+  assert.equal(T.effectiveFormat(model, row, { col: 1, formatIndex: 4 }).backColor, '#444');
+});
+
+test('row height: fixed when positive, content-sized otherwise, capped when negative', () => {
+  const fonts = [{ faceName: 'Arial', height: 8 }, { faceName: 'Arial', height: 14 }];
+  const model = {
+    formats: [{ height: '90' }, { height: '-30' }, { font: '1' }],
+    fonts,
+    columnSetById: { '': { size: 1, widths: [63], formatIndex: {} } },
+    merges: []
+  };
+  const fixed = T.rowHeight(model, { formatIndex: 1, cells: [] }, 0);
+  assert.equal(fixed.px, 30);
+  assert.equal(fixed.auto, false);
+  const empty = T.rowHeight(model, { formatIndex: 0, cells: [] }, 0);
+  assert.equal(empty.px, 15);
+  assert.equal(empty.auto, true);
+  const big = T.rowHeight(model, { formatIndex: 0, cells: [{ col: 0, formatIndex: 3, text: 'x' }] }, 0);
+  assert.equal(big.px, 25);
+  const capped = T.rowHeight(model, { formatIndex: 2, cells: [{ col: 0, formatIndex: 3, text: 'x' }] }, 0);
+  assert.equal(capped.px, 10);
+  assert.equal(capped.max, 10);
+  model.merges = [{ r: 0, c: 0, h: 1, w: 0 }];
+  assert.equal(T.rowHeight(model, { formatIndex: 0, cells: [{ col: 0, formatIndex: 3, text: 'x' }] }, 0).px, 15,
+    'a vertically merged cell does not size the row');
+});
+
+test('text padding: margins, indent on the aligned side, three pixels of air as in the configurator', () => {
+  assert.deepEqual({ ...T.textPadding({}, 'left') }, { left: 3, right: 3, top: 0, bottom: 0 });
+  const p = T.textPadding({ indent: '2', leftMargin: '8', topMargin: '6' }, 'left');
+  assert.equal(p.left, 3 + 7 + 14);
+  assert.equal(p.top, 2);
+  assert.equal(T.textPadding({ indent: '1' }, 'right').right, 10);
 });
 
 test('Auto spill stops at a filled neighbour and follows the alignment', () => {
@@ -858,4 +892,74 @@ test('drawings render their caption, keep their frame and skip unsupported kinds
   assert.equal(caps.length, 1);
   assert.equal(caps[0].textContent, 'Подпись');
   assert.equal(caps[0].style.color, '#00ff00');
+});
+
+test('a shared grid edge is painted once, with the stronger of the two sides', () => {
+  const xml = `<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <columns><size>2</size></columns>
+  <rowsItem><index>0</index><row><c><c><f>1</f></c></c><c><c><f>2</f></c></c></row></rowsItem>
+  <rowsItem><index>1</index><row><c><c><f>2</f></c></c><c><c><f>2</f></c></c></row></rowsItem>
+  <line width="2" gap="false"><v8ui:style xsi:type="v8ui:SpreadsheetDocumentCellLineType">Solid</v8ui:style></line>
+  <line width="1" gap="false"><v8ui:style xsi:type="v8ui:SpreadsheetDocumentCellLineType">Solid</v8ui:style></line>
+  <format><leftBorder>1</leftBorder><topBorder>1</topBorder><rightBorder>1</rightBorder><bottomBorder>1</bottomBorder></format>
+  <format><leftBorder>0</leftBorder><topBorder>0</topBorder><rightBorder>0</rightBorder><bottomBorder>0</bottomBorder></format>
+</document>`;
+  const m = TP.parse(xml).model;
+  const set = T.columnSetOf ? T.columnSetOf(m, '') : m.columnSetById[''];
+  const group = { start: 0, end: 2, columnsID: '' };
+  const at = (y, c) => T.collapseBorders(m, group, set, y, c, 1, 1, T.spanBorders(m, y, c, 1, 1));
+  const first = at(0, 0);
+  assert.equal(first.left, '1px solid #000', 'the group edge keeps its own side');
+  assert.equal(first.right, '2px solid #000', 'the neighbour’s stronger left side wins the shared edge');
+  assert.equal(first.bottom, '2px solid #000');
+  const second = at(0, 1);
+  assert.equal(second.left, '', 'the left neighbour already painted this edge');
+  assert.equal(at(1, 0).top, '', 'the row above already painted this edge');
+});
+
+test('a merged neighbour lends only its origin border to a shared edge', () => {
+  /* Row 2 merges columns 1..3; its hidden cells carry a medium top from Excel,
+   * the origin has none, so the row above must not get a thick bottom line. */
+  const xml = `<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <columns><size>3</size></columns>
+  <rowsItem><index>0</index><row><c><c><f>1</f></c></c><c><c><f>1</f></c></c><c><c><f>1</f></c></c></row></rowsItem>
+  <rowsItem><index>1</index><row><c><c><f>1</f></c></c><c><c><f>2</f></c></c><c><c><f>2</f></c></c></row></rowsItem>
+  <merge><r>1</r><c>0</c><w>2</w></merge>
+  <line width="2" gap="false"><v8ui:style xsi:type="v8ui:SpreadsheetDocumentCellLineType">Solid</v8ui:style></line>
+  <format><font>0</font></format>
+  <format><topBorder>0</topBorder><leftBorder>0</leftBorder></format>
+</document>`;
+  const m = TP.parse(xml).model;
+  const set = m.columnSetById[''];
+  const group = { start: 0, end: 2, columnsID: '' };
+  for (let c = 0; c < 3; c++) {
+    const b = T.collapseBorders(m, group, set, 0, c, 1, 1, T.spanBorders(m, 0, c, 1, 1));
+    assert.equal(b.bottom, '', `column ${c + 1}: no line from a hidden cell of the merge`);
+  }
+  const left = T.collapseBorders(m, group, set, 1, 0, 1, 1, T.spanBorders(m, 1, 0, 1, 1));
+  assert.equal(left.right, '', 'an interior hidden cell does not draw the area edge either');
+});
+
+test('a line under part of a wide merged row stays over that part only', () => {
+  /* Row 1 merges all three columns; below it a framed block covers column 3
+   * only. The merged row cannot paint a partial bottom, so the block paints
+   * its own top and the rest of the edge stays clear. */
+  const xml = `<document xmlns="http://v8.1c.ru/8.2/data/spreadsheet" xmlns:v8ui="http://v8.1c.ru/8.1/data/ui" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <columns><size>3</size></columns>
+  <rowsItem><index>0</index><row><c><c><f>1</f></c></c></row></rowsItem>
+  <rowsItem><index>1</index><row><c><c><f>1</f></c></c><c><c><f>1</f></c></c><c><c><f>2</f></c></c></row></rowsItem>
+  <merge><r>0</r><c>0</c><w>2</w></merge>
+  <line width="2" gap="false"><v8ui:style xsi:type="v8ui:SpreadsheetDocumentCellLineType">Solid</v8ui:style></line>
+  <format><font>0</font></format>
+  <format><topBorder>0</topBorder><leftBorder>0</leftBorder></format>
+</document>`;
+  const m = TP.parse(xml).model;
+  const set = m.columnSetById[''];
+  const group = { start: 0, end: 2, columnsID: '' };
+  const at = (y, c, h, w) => T.collapseBorders(m, group, set, y, c, h, w, T.spanBorders(m, y, c, h, w));
+  assert.equal(at(0, 0, 1, 3).bottom, '', 'the merged row does not stretch the block line');
+  assert.equal(at(1, 2, 1, 1).top, '2px solid #000', 'the block paints its own top');
+  assert.equal(at(1, 1, 1, 1).right, '2px solid #000', 'its left side is uniform for the neighbour, which takes it');
+  assert.equal(at(1, 2, 1, 1).left, '');
+  assert.equal(at(1, 0, 1, 1).top, '');
 });

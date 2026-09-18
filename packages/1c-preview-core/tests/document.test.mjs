@@ -3,9 +3,18 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
   decodeText,
+  baseFormCandidate,
+  commonCommandCandidates,
+  commonPictureDescriptorCandidates,
   formLayoutFor,
   isSupportedExtension,
   objectMetaCandidates,
+  referencedCommonCommands,
+  referencedCommonPictures,
+  pictureResourceName,
+  referencedStyleItems,
+  styleItemCandidates,
+  styleItemValue,
   SUPPORTED_EXTENSIONS,
 } from '../node/document.cjs';
 
@@ -50,10 +59,69 @@ test('object metadata is looked for in the two places 1C writes it', () => {
   ]);
 });
 
+test('an extension form resolves to the corresponding base configuration form', () => {
+  const extension = path.join('C:', 'src', 'cfe', 'MyExtension', 'Documents', 'Order',
+    'Forms', 'DocumentForm', 'Ext', 'Form.xml');
+  assert.equal(baseFormCandidate(extension), path.join('C:', 'src', 'cf', 'Documents', 'Order',
+    'Forms', 'DocumentForm', 'Ext', 'Form.xml'));
+  assert.equal(baseFormCandidate(path.join('C:', 'src', 'cf', 'Documents', 'Order', 'Form.xml')), '');
+});
+
+test('common command references resolve to configuration descriptors', () => {
+  const form = path.join(cfg, 'Forms', 'Ф', 'Ext', 'Form.xml');
+  assert.deepEqual(referencedCommonCommands(`
+    <Command>CommonCommand.ПротоколОбмена</Command>
+    <CommandName>CommonCommand.ПротоколОбмена</CommandName>
+    <Command>CommonCommand.ДополнительныеСведения</Command>`),
+  ['ПротоколОбмена', 'ДополнительныеСведения']);
+  assert.ok(commonCommandCandidates(form, 'ПротоколОбмена')
+    .some((candidate) => candidate.endsWith(path.join('CommonCommands', 'ПротоколОбмена.xml'))));
+  const extension = path.join('C:', 'src', 'cfe', 'Extension', 'Documents', 'Order',
+    'Forms', 'Card', 'Ext', 'Form.xml');
+  assert.ok(commonCommandCandidates(extension, 'ПротоколОбмена')
+    .includes(path.join('C:', 'src', 'cf', 'CommonCommands', 'ПротоколОбмена.xml')));
+  assert.deepEqual(commonCommandCandidates(form, '../escape'), []);
+});
+
+test('common picture references resolve to safe external resources', () => {
+  const form = path.join(cfg, 'Forms', 'Ф', 'Ext', 'Form.xml');
+  assert.deepEqual(referencedCommonPictures(`
+    <Picture><xr:Ref>CommonPicture.НавигацияОбновить</xr:Ref></Picture>
+    <Picture>CommonPicture.НавигацияОбновить</Picture>
+    <Picture>StdPicture.Refresh</Picture>`), ['НавигацияОбновить']);
+  assert.ok(commonPictureDescriptorCandidates(form, 'НавигацияОбновить')
+    .some((candidate) => candidate.endsWith(path.join('CommonPictures', 'НавигацияОбновить', 'Ext', 'Picture.xml'))));
+  assert.equal(pictureResourceName('<Picture><xr:Abs>Picture.zip</xr:Abs></Picture>'), 'Picture.zip');
+  assert.equal(pictureResourceName('<Picture><xr:Abs>Picture.png</xr:Abs></Picture>'), 'Picture.png');
+  assert.equal(pictureResourceName('<Picture><xr:Abs>Picture.svg</xr:Abs></Picture>'), 'Picture.svg');
+  assert.equal(pictureResourceName('<Picture><xr:Abs>Picture.txt</xr:Abs></Picture>'), '');
+  assert.equal(pictureResourceName('<Picture><xr:Abs>../escape.png</xr:Abs></Picture>'), '');
+  assert.deepEqual(commonPictureDescriptorCandidates(form, '../escape'), []);
+});
+
 test('only a real form layout has object metadata', () => {
   assert.deepEqual(objectMetaCandidates(path.join(cfg, 'Forms', 'ФормаСписка.xml')), []);
   assert.deepEqual(objectMetaCandidates(path.join(cfg, 'Ext', 'Form.xml')), []);
   assert.deepEqual(objectMetaCandidates(path.join(cfg, 'Товары.xml')), []);
+});
+
+test('configuration style references resolve to StyleItems metadata', () => {
+  assert.deepEqual(referencedStyleItems('<BackColor>style:Accent</BackColor><TextColor>style:Accent</TextColor>'), ['Accent']);
+  assert.ok(styleItemCandidates(path.join(cfg, 'Forms', 'Ф', 'Ext', 'Form.xml'), 'Accent')
+    .some((candidate) => candidate.endsWith(path.join('StyleItems', 'Accent.xml'))));
+  assert.equal(styleItemValue('<Value xsi:type="v8ui:Color">#AABBCC</Value>'), '#AABBCC');
+  assert.deepEqual(styleItemCandidates('x', '../escape'), []);
+});
+
+test('style references are collected whatever case the prefix is written in', () => {
+  /* The renderer resolves `style:` case-insensitively. Collecting only the
+   * lowercase spelling left `Style:Имя` without its StyleItems file, and the
+   * colour went missing with no error anywhere. */
+  assert.deepEqual(referencedStyleItems('<BackColor>Style:Акцент</BackColor>'), ['Акцент']);
+  assert.deepEqual(referencedStyleItems('<BackColor>STYLE:Акцент</BackColor>'), ['Акцент']);
+  assert.deepEqual(referencedStyleItems('<A>style:Accent</A><B>Style:accent</B>'), ['Accent']);
+  /* `style:` has to start a name, not end one. */
+  assert.deepEqual(referencedStyleItems('<A>somestyle:Accent</A>'), []);
 });
 
 test('the supported extensions are the ones every host offers', () => {

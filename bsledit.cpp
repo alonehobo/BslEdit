@@ -19,6 +19,92 @@ static const wchar_t* WNDCLASS_NAME = L"BSLEditMainWnd";
 static const wchar_t* APP_TITLE = L"BSL Editor";
 static const DWORD MAX_FILE_BYTES = 256u * 1024u * 1024u;
 
+static int HexValue(wchar_t ch)
+{
+    if (ch >= L'0' && ch <= L'9') return ch - L'0';
+    if (ch >= L'a' && ch <= L'f') return ch - L'a' + 10;
+    if (ch >= L'A' && ch <= L'F') return ch - L'A' + 10;
+    return -1;
+}
+
+static std::wstring DecodePercentUtf8(const std::wstring& value)
+{
+    std::wstring result;
+    for (size_t i = 0; i < value.size();) {
+        if (value[i] != L'%' || i + 2 >= value.size() ||
+            HexValue(value[i + 1]) < 0 || HexValue(value[i + 2]) < 0) {
+            result.push_back(value[i++]);
+            continue;
+        }
+
+        std::string bytes;
+        while (i + 2 < value.size() && value[i] == L'%' &&
+               HexValue(value[i + 1]) >= 0 && HexValue(value[i + 2]) >= 0) {
+            bytes.push_back((char)((HexValue(value[i + 1]) << 4) | HexValue(value[i + 2])));
+            i += 3;
+        }
+        int chars = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                        bytes.data(), (int)bytes.size(), NULL, 0);
+        if (chars > 0) {
+            size_t start = result.size();
+            result.resize(start + chars);
+            MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
+                                bytes.data(), (int)bytes.size(), &result[start], chars);
+        } else {
+            for (size_t b = 0; b < bytes.size(); b++)
+                result.push_back((unsigned char)bytes[b]);
+        }
+    }
+    return result;
+}
+
+static std::wstring FilePathFromBsleditUrl(const std::wstring& argument)
+{
+    if (argument.size() < 8 || _wcsnicmp(argument.c_str(), L"bsledit:", 8) != 0)
+        return argument;
+
+    std::wstring path = DecodePercentUtf8(argument.substr(8));
+    while (path.size() >= 2 && path[0] == L'/' && path[1] == L'/')
+        path.erase(path.begin());
+    if (path.size() >= 3 && path[0] == L'/' &&
+        ((path[1] >= L'A' && path[1] <= L'Z') || (path[1] >= L'a' && path[1] <= L'z')) &&
+        path[2] == L':')
+        path.erase(path.begin());
+    for (size_t i = 0; i < path.size(); i++)
+        if (path[i] == L'/') path[i] = L'\\';
+    return path;
+}
+
+/* The window's size, position and maximized state from the last session,
+ * kept per user. A placement that no longer fits any monitor (a detached
+ * display) is ignored and the window opens at the default place. */
+static const wchar_t* SETTINGS_KEY = L"Software\\BSLEdit";
+static const wchar_t* PLACEMENT_VALUE = L"WindowPlacement";
+
+static void SaveWindowPlacement(HWND hwnd)
+{
+    WINDOWPLACEMENT wp = {};
+    wp.length = sizeof(wp);
+    if (!GetWindowPlacement(hwnd, &wp)) return;
+    HKEY hKey = NULL;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, SETTINGS_KEY, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS)
+        return;
+    RegSetValueExW(hKey, PLACEMENT_VALUE, 0, REG_BINARY, (const BYTE*)&wp, sizeof(wp));
+    RegCloseKey(hKey);
+}
+
+static bool LoadWindowPlacement(WINDOWPLACEMENT& wp)
+{
+    DWORD size = sizeof(wp);
+    DWORD type = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, SETTINGS_KEY, PLACEMENT_VALUE, RRF_RT_REG_BINARY, &type, &wp, &size)
+            != ERROR_SUCCESS || size != sizeof(wp) || wp.length != sizeof(wp))
+        return false;
+    const RECT& r = wp.rcNormalPosition;
+    if (r.right - r.left < 200 || r.bottom - r.top < 150) return false;
+    return MonitorFromRect(&r, MONITOR_DEFAULTTONULL) != NULL;
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
@@ -57,6 +143,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         return 0;
 
     case WM_DESTROY:
+        SaveWindowPlacement(hwnd);
         if (g_webView) {
             g_webView->Close();
             g_webView->Release();
@@ -79,7 +166,7 @@ static std::wstring GetFileFromCmdLine()
     // a name that does not exist and the Open-with dialog looks like a loop.
     if (result.size() >= 2 && result.front() == L'"' && result.back() == L'"')
         result = result.substr(1, result.size() - 2);
-    return result;
+    return FilePathFromBsleditUrl(result);
 }
 
 static std::wstring GetHkcuDefaultSz(const wchar_t* subkey)
@@ -110,6 +197,34 @@ static void SetHkcuDefaultSz(const wchar_t* subkey, const wchar_t* value)
     RegSetValueExW(hKey, NULL, 0, REG_SZ, (const BYTE*)value,
                    (DWORD)((wcslen(value) + 1) * sizeof(wchar_t)));
     RegCloseKey(hKey);
+}
+
+static void SetHkcuNamedSz(const wchar_t* subkey, const wchar_t* name, const wchar_t* value)
+{
+    HKEY hKey = NULL;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, subkey, 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) != ERROR_SUCCESS)
+        return;
+    RegSetValueExW(hKey, name, 0, REG_SZ, (const BYTE*)value,
+                   (DWORD)((wcslen(value) + 1) * sizeof(wchar_t)));
+    RegCloseKey(hKey);
+}
+
+static void RegisterUrlProtocol()
+{
+    wchar_t exePath[MAX_PATH];
+    if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) return;
+
+    std::wstring cmdVal = std::wstring(L"\"") + exePath + L"\" \"%1\"";
+    std::wstring iconVal = std::wstring(exePath) + L",0";
+    const wchar_t* rootKey = L"Software\\Classes\\bsledit";
+
+    if (GetHkcuDefaultSz(L"Software\\Classes\\bsledit\\shell\\open\\command") == cmdVal)
+        return;
+    SetHkcuDefaultSz(rootKey, L"URL:BSLEdit Protocol");
+    SetHkcuNamedSz(rootKey, L"URL Protocol", L"");
+    SetHkcuDefaultSz(L"Software\\Classes\\bsledit\\DefaultIcon", iconVal.c_str());
+    SetHkcuDefaultSz(L"Software\\Classes\\bsledit\\shell\\open\\command", cmdVal.c_str());
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, NULL, NULL);
 }
 
 static void RegisterFileAssociation()
@@ -170,10 +285,10 @@ static std::wstring OpenFileDialog(HWND hParent)
     ofn.lStructSize = sizeof(ofn);
     ofn.hwndOwner = hParent;
     ofn.lpstrFilter =
-        L"Supported files\0*.bsl;*.os;*.sdbl;*.query;*.md;*.markdown;*.json;*.xml;*.mxl;*.ps1;*.psm1;*.psd1;*.html;*.htm\0"
+        L"Supported files\0*.bsl;*.os;*.sdbl;*.query;*.md;*.markdown;*.json;*.sarif;*.xml;*.mxl;*.ps1;*.psm1;*.psd1;*.html;*.htm\0"
         L"BSL files (*.bsl;*.os)\0*.bsl;*.os\0"
         L"Markdown (*.md)\0*.md;*.markdown\0"
-        L"JSON (*.json)\0*.json\0"
+        L"JSON / SARIF (*.json;*.sarif)\0*.json;*.sarif\0"
         L"XML (*.xml)\0*.xml\0"
         L"MXL (*.mxl)\0*.mxl\0"
         L"PowerShell (*.ps1)\0*.ps1;*.psm1;*.psd1\0"
@@ -202,18 +317,34 @@ static bool SystemUsesDarkTheme()
     return dark;
 }
 
+// "BSL Editor - <full path>": the window names the file on disk, as Total
+// Commander's Lister does. Every form is an Ext/Form.xml, so the bare file
+// name alone would not tell them apart.
+static std::wstring WindowTitleFor(const std::wstring& filePath)
+{
+    return std::wstring(APP_TITLE) + L" - " + filePath;
+}
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow)
 {
     OleInitialize(NULL);
 
+    std::wstring filePath = GetFileFromCmdLine();
+    if (filePath == L"--register-protocol") {
+        RegisterUrlProtocol();
+        OleUninitialize();
+        return 0;
+    }
+
     // Getting Chromium up is the slowest part of startup, so start it before
     // touching the registry, the file dialog or the disk. Nothing is parked:
     // a single-window app has no second open to speed up.
+    CWebView2Host::SetStandalone(true);
     CWebView2Host::WarmUp(ModuleDirectory(GetModuleHandleW(NULL)) + L"web", false);
 
     RegisterFileAssociation();
+    RegisterUrlProtocol();
 
-    std::wstring filePath = GetFileFromCmdLine();
     if (filePath.empty()) {
         filePath = OpenFileDialog(NULL);
         if (filePath.empty()) return 0;
@@ -223,6 +354,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow)
     // one would otherwise have to dig for lives at Forms/<FormName>/Ext/Form.xml.
     std::wstring formLayout = FindFormLayoutForMeta(filePath.c_str());
     if (!formLayout.empty()) filePath = formLayout;
+    // Ext/Form/Module.bsl opens the whole form too, on its module tab.
+    std::wstring moduleForm = FindFormLayoutForModule(filePath.c_str());
+    bool openFormModule = !moduleForm.empty();
+    if (openFormModule) filePath = moduleForm;
 
     TextFile file = ReadTextFile(filePath.c_str(), MAX_FILE_BYTES);
     if (!file.ok) {
@@ -252,9 +387,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow)
                                     IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR);
     RegisterClassExW(&wc);
 
-    size_t slash = filePath.find_last_of(L"\\/");
-    std::wstring title = std::wstring(APP_TITLE) + L" - "
-                       + (slash == std::wstring::npos ? filePath : filePath.substr(slash + 1));
+    std::wstring title = WindowTitleFor(filePath);
 
     HWND hwnd = CreateWindowExW(0, WNDCLASS_NAME, title.c_str(),
                                 WS_OVERLAPPEDWINDOW,
@@ -265,12 +398,28 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow)
         return 1;
     }
 
-    ShowWindow(hwnd, nCmdShow);
+    WINDOWPLACEMENT placement = {};
+    if (LoadWindowPlacement(placement)) {
+        /* A shortcut or caller asking for a minimized start still gets it;
+         * otherwise the window comes back as it was left, maximized or not. */
+        if (nCmdShow == SW_SHOWMINIMIZED || nCmdShow == SW_MINIMIZE || nCmdShow == SW_SHOWMINNOACTIVE)
+            placement.showCmd = nCmdShow;
+        else if (placement.showCmd != SW_SHOWMAXIMIZED)
+            placement.showCmd = SW_SHOWNORMAL;
+        placement.flags = 0;
+        SetWindowPlacement(hwnd, &placement);
+    } else {
+        ShowWindow(hwnd, nCmdShow);
+    }
     UpdateWindow(hwnd);
 
     g_webView = CWebView2Host::Acquire(hwnd, webRoot);
     g_webView->mFilePath = filePath;
+    g_webView->mOnFileOpened = [hwnd](const std::wstring& path) {
+        SetWindowTextW(hwnd, WindowTitleFor(path).c_str());
+    };
     g_webView->mEncoding = file.encoding;
+    g_webView->mFileRevision = file.revision;
 
     BslLoadRequest req;
     req.content  = file.text;
@@ -278,8 +427,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow)
     req.dark     = SystemUsesDarkTheme();
     req.fontSize = 14;
     req.readOnly = false;   // standalone editor opens ready to edit
-    if (req.language && strcmp(req.language, "xml") == 0)
-        req.objectMeta = LoadObjectMetaForForm(filePath.c_str(), MAX_FILE_BYTES);
+    req.openFormModule = openFormModule;
     g_webView->Load(req);
 
     MSG msg;

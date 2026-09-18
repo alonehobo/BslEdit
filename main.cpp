@@ -60,7 +60,7 @@ static void LoadSettings(bool force)
 
     g_settings.bslExts   = IniStr(L"Extensions", L"BSLExtensions", L"bsl;os");
     g_settings.queryExts = IniStr(L"Extensions", L"QueryExtensions", L"sdbl;query");
-    g_settings.textExts  = IniStr(L"Extensions", L"TextExtensions", L"md;markdown;json;xml;ps1;psm1;psd1;html;htm;mxl");
+    g_settings.textExts  = IniStr(L"Extensions", L"TextExtensions", L"md;markdown;json;xml;ps1;psm1;psd1;html;htm;mxl;sarif");
     g_settings.loaded = true;
 }
 
@@ -74,9 +74,16 @@ struct WindowState {
     TextEncoding   encoding;
     const char*    language;
     bool           dark;
+    bool           pendingClose;
+    bool           pendingLoad;
+    std::wstring   pendingFilePath;
+    int            pendingShowFlags;
 
-    WindowState() : wv(NULL), ie(NULL), encoding(ENC_UTF8_BOM), language("plaintext"), dark(false) {}
+    WindowState() : wv(NULL), ie(NULL), encoding(ENC_UTF8_BOM), language("plaintext"), dark(false),
+                    pendingClose(false), pendingLoad(false), pendingShowFlags(0) {}
 };
+
+static int LoadNextNow(HWND pluginWin, const wchar_t* fileToLoadIn, int showFlags);
 
 // --- Extension matching ----------------------------------------------------
 
@@ -151,6 +158,17 @@ static bool ShowInIE(WindowState* st, HWND hwnd)
     return true;
 }
 
+static void FinalizeListClose(HWND hwnd, WindowState* st)
+{
+    // Hand the browser back to the pool while the Lister child still exists.
+    if (st && st->wv) {
+        CWebView2Host* wv = st->wv;
+        st->wv = NULL;
+        wv->Park();
+    }
+    DestroyWindow(hwnd);
+}
+
 // --- Window procedure ------------------------------------------------------
 
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -169,6 +187,30 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
         if (st) {
             if (st->wv) { st->wv->Close(); st->wv->Release(); st->wv = NULL; }
             if (!ShowInIE(st, hwnd)) InvalidateRect(hwnd, NULL, TRUE);
+        }
+        return 0;
+
+    case WM_BSLVIEW_CLOSE_ACK:
+        if (!st) return 0;
+        if (!wParam) {
+            st->pendingClose = false;
+            st->pendingLoad = false;
+            st->pendingFilePath.clear();
+            return 0;
+        }
+        if (st->pendingClose) {
+            st->pendingClose = false;
+            st->pendingLoad = false;
+            st->pendingFilePath.clear();
+            FinalizeListClose(hwnd, st);
+            return 0;
+        }
+        if (st->pendingLoad) {
+            std::wstring path = st->pendingFilePath;
+            int flags = st->pendingShowFlags;
+            st->pendingLoad = false;
+            st->pendingFilePath.clear();
+            LoadNextNow(hwnd, path.c_str(), flags);
         }
         return 0;
 
@@ -254,16 +296,35 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
 
 // --- Shared load path ------------------------------------------------------
 
+// Forms/<Name>.xml and Templates/<Name>.xml are descriptors; jump straight to
+// the actual layout at Forms/<FormName>/Ext/Form.xml instead of making the
+// user dig for it. Ext/Form/Module.bsl opens its whole form on the module tab,
+// but only in the WebView2 viewer: the IE fallback has no form preview and
+// would show the layout XML instead of the module.
+static std::wstring ResolveListFile(const wchar_t* fileToLoadIn, bool webView, bool* openFormModule)
+{
+    *openFormModule = false;
+    std::wstring layout = FindFormLayoutForMeta(fileToLoadIn);
+    if (!layout.empty()) return layout;
+    if (webView) {
+        layout = FindFormLayoutForModule(fileToLoadIn);
+        if (!layout.empty()) {
+            *openFormModule = true;
+            return layout;
+        }
+    }
+    return fileToLoadIn;
+}
+
 static HWND DoListLoad(HWND parentWin, const wchar_t* fileToLoadIn, int showFlags)
 {
     LoadSettings(false);
     if (!IsSupported(fileToLoadIn)) return NULL;
 
-    // Forms/<FormName>.xml is just the form's descriptor; jump straight to
-    // the actual layout at Forms/<FormName>/Ext/Form.xml instead of making
-    // the user dig for it.
-    std::wstring formLayout = FindFormLayoutForMeta(fileToLoadIn);
-    const wchar_t* fileToLoad = formLayout.empty() ? fileToLoadIn : formLayout.c_str();
+    bool wantMonaco = g_settings.useMonaco && g_webRootUsable && CWebView2Host::IsRuntimeAvailable();
+    bool openFormModule = false;
+    std::wstring resolved = ResolveListFile(fileToLoadIn, wantMonaco, &openFormModule);
+    const wchar_t* fileToLoad = resolved.c_str();
 
     TextFile file = ReadTextFile(fileToLoad, g_settings.maxBytes);
     if (!file.ok) return NULL;   // unreadable or over the size limit
@@ -285,12 +346,19 @@ static HWND DoListLoad(HWND parentWin, const wchar_t* fileToLoadIn, int showFlag
     st->dark     = ResolveDarkMode(showFlags);
     SetPropW(hwnd, PROP_STATE, (HANDLE)st);
 
-    bool wantMonaco = g_settings.useMonaco && g_webRootUsable && CWebView2Host::IsRuntimeAvailable();
-
     if (wantMonaco) {
         st->wv = CWebView2Host::Acquire(hwnd, g_webRoot);
         st->wv->mFilePath = st->filePath;
+        /* A form or template opened from an object window becomes the file
+         * this Lister shows: its path goes into the title, as TC writes it. */
+        st->wv->mOnFileOpened = [hwnd, parentWin](const std::wstring& path) {
+            WindowState* state = (WindowState*)GetPropW(hwnd, PROP_STATE);
+            if (state) state->filePath = path;
+            std::wstring title = L"Lister - [" + path + L"]";
+            SetWindowTextW(parentWin, title.c_str());
+        };
         st->wv->mEncoding = st->encoding;
+        st->wv->mFileRevision = file.revision;
 
         BslLoadRequest req;
         req.content  = st->content;
@@ -298,8 +366,7 @@ static HWND DoListLoad(HWND parentWin, const wchar_t* fileToLoadIn, int showFlag
         req.dark     = st->dark;
         req.fontSize = g_settings.fontSize;
         req.readOnly = true;
-        if (st->language && strcmp(st->language, "xml") == 0)
-            req.objectMeta = LoadObjectMetaForForm(st->filePath.c_str(), g_settings.maxBytes);
+        req.openFormModule = openFormModule;
         st->wv->Load(req);
 
         // The browser attaches asynchronously; the window is already valid, so
@@ -313,19 +380,14 @@ static HWND DoListLoad(HWND parentWin, const wchar_t* fileToLoadIn, int showFlag
     return NULL;
 }
 
-static int DoListLoadNext(HWND pluginWin, const wchar_t* fileToLoadIn, int showFlags)
+static int LoadNextNow(HWND pluginWin, const wchar_t* fileToLoadIn, int showFlags)
 {
-    LoadSettings(false);
-    if (!IsSupported(fileToLoadIn)) return LISTPLUGIN_ERROR;
-
     WindowState* st = (WindowState*)GetPropW(pluginWin, PROP_STATE);
     if (!st) return LISTPLUGIN_ERROR;
 
-    // Forms/<FormName>.xml is just the form's descriptor; jump straight to
-    // the actual layout at Forms/<FormName>/Ext/Form.xml instead of making
-    // the user dig for it.
-    std::wstring formLayout = FindFormLayoutForMeta(fileToLoadIn);
-    const wchar_t* fileToLoad = formLayout.empty() ? fileToLoadIn : formLayout.c_str();
+    bool openFormModule = false;
+    std::wstring resolved = ResolveListFile(fileToLoadIn, st->wv != NULL, &openFormModule);
+    const wchar_t* fileToLoad = resolved.c_str();
 
     TextFile file = ReadTextFile(fileToLoad, g_settings.maxBytes);
     if (!file.ok) return LISTPLUGIN_ERROR;
@@ -341,6 +403,7 @@ static int DoListLoadNext(HWND pluginWin, const wchar_t* fileToLoadIn, int showF
         // compared with tearing the page down and navigating again.
         st->wv->mFilePath = st->filePath;
         st->wv->mEncoding = st->encoding;
+        st->wv->mFileRevision = file.revision;
 
         BslLoadRequest req;
         req.content  = st->content;
@@ -348,13 +411,30 @@ static int DoListLoadNext(HWND pluginWin, const wchar_t* fileToLoadIn, int showF
         req.dark     = st->dark;
         req.fontSize = g_settings.fontSize;
         req.readOnly = true;
-        if (st->language && strcmp(st->language, "xml") == 0)
-            req.objectMeta = LoadObjectMetaForForm(st->filePath.c_str(), g_settings.maxBytes);
+        req.openFormModule = openFormModule;
         st->wv->Load(req);
         return LISTPLUGIN_OK;
     }
 
     return ShowInIE(st, pluginWin) ? LISTPLUGIN_OK : LISTPLUGIN_ERROR;
+}
+
+static int DoListLoadNext(HWND pluginWin, const wchar_t* fileToLoadIn, int showFlags)
+{
+    LoadSettings(false);
+    if (!IsSupported(fileToLoadIn)) return LISTPLUGIN_ERROR;
+
+    WindowState* st = (WindowState*)GetPropW(pluginWin, PROP_STATE);
+    if (!st) return LISTPLUGIN_ERROR;
+
+    if (st->wv && st->wv->RequestClose()) {
+        st->pendingClose = false;
+        st->pendingLoad = true;
+        st->pendingFilePath = fileToLoadIn;
+        st->pendingShowFlags = showFlags;
+        return LISTPLUGIN_OK;
+    }
+    return LoadNextNow(pluginWin, fileToLoadIn, showFlags);
 }
 
 // --- WLX Exports -----------------------------------------------------------
@@ -427,15 +507,14 @@ int __stdcall ListLoadNext(HWND ParentWin, HWND PluginWin, char* FileToLoad, int
 __declspec(dllexport)
 void __stdcall ListCloseWindow(HWND ListWin)
 {
-    // Hand the browser back to the pool while the window is still intact, so
-    // the next F3 can reuse it instead of starting Chromium again.
     WindowState* st = (WindowState*)GetPropW(ListWin, PROP_STATE);
-    if (st && st->wv) {
-        CWebView2Host* wv = st->wv;
-        st->wv = NULL;
-        wv->Park();
+    if (st && st->wv && st->wv->RequestClose()) {
+        st->pendingClose = true;
+        st->pendingLoad = false;
+        st->pendingFilePath.clear();
+        return;
     }
-    DestroyWindow(ListWin);
+    FinalizeListClose(ListWin, st);
 }
 
 __declspec(dllexport)

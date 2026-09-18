@@ -5,11 +5,19 @@
 (function (root) {
 'use strict';
 
-/* Width: XML stores eighths of the default font character (~7px). Height: 0.1 mm. */
-var WIDTH_PX = 7 / 8;
-var HEIGHT_PX = 96 / 254;
+/* Two unit systems live side by side in a spreadsheet:
+ * - column widths, indents and side margins count eighths of the width of «X»
+ *   in the standard font (Arial 8: 7 px at 96 dpi);
+ * - row heights, top/bottom margins and drawing offsets count 1/288 of an
+ *   inch (4 per typographic point): a third of a pixel at 96 dpi. */
+var CHAR_PX = 7;
+var WIDTH_PX = CHAR_PX / 8;
+var HEIGHT_PX = 96 / 288;
 var DEFAULT_WIDTH_U = 72;
 var DEFAULT_HEIGHT_U = 45;
+/* Gap between a cell edge and its text, measured in the configurator on a
+ * template at 100 %. */
+var TEXT_MARGIN_PX = 3;
 var DEFAULT_FONT = { faceName: 'Arial', height: 8, bold: false, italic: false, underline: false, strikeout: false };
 
 /* Shared XML helpers live in xml-util.js; aliased locally for brevity. */
@@ -66,29 +74,46 @@ function formatByIndex(formats, idx) {
 /* Properties a cell must never inherit: width belongs to the column, height to
  * the row, and being a parameter is a trait of the cell itself — a row whose
  * format says `Parameter` would otherwise turn every cell in it into one. */
-var ROW_ONLY_PROPS = { width: true, height: true, fillType: true };
+var ROW_ONLY_PROPS = { width: true, height: true, fillType: true, hidden: true };
 
-/* A cell format sits on top of its row format: 1C resolves the two, and MXL
- * leans on it — a row can carry the font and colours of cells that have no
- * format of their own. */
-function effectiveFormat(model, row, cell) {
+function hasValue(v) {
+    return v != null && v !== '';
+}
+
+function mergeLayer(out, fmt, own) {
+    if (!fmt) return;
+    for (var k in fmt) {
+        if (!Object.prototype.hasOwnProperty.call(fmt, k)) continue;
+        if (!own && ROW_ONLY_PROPS[k]) continue;
+        if (!hasValue(fmt[k])) continue;
+        out[k] = fmt[k];
+    }
+}
+
+function defaultFormatOf(model) {
+    return formatByIndex(model.formats, model.defaultFormatIndex);
+}
+
+function columnFormatOf(model, row, col) {
+    if (col == null || col < 0) return null;
+    var set = model.columnSetById ? columnSetOf(model, row && row.columnsID) : null;
+    var idx = set && set.formatIndex ? set.formatIndex[col] : null;
+    return formatByIndex(model.formats, idx);
+}
+
+/* A cell's look is resolved in layers, each one overriding the previous: the
+ * sheet's default format, the format of the cell's column, the row, and the
+ * cell itself. A column can therefore paint or set the font of every cell in
+ * it without any of them carrying a format of its own. */
+function effectiveFormat(model, row, cell, col) {
+    if (col == null && cell) col = cell.col;
     var cellFmt = formatByIndex(model.formats, cell && cell.formatIndex);
-    var rowFmt = formatByIndex(model.formats, row && row.formatIndex);
-    if (!rowFmt) return cellFmt;
+    var layers = [defaultFormatOf(model), columnFormatOf(model, row, col),
+        formatByIndex(model.formats, row && row.formatIndex)];
+    if (!layers[0] && !layers[1] && !layers[2]) return cellFmt;
     var out = {};
-    var k;
-    for (k in rowFmt) {
-        if (!Object.prototype.hasOwnProperty.call(rowFmt, k)) continue;
-        if (ROW_ONLY_PROPS[k]) continue;
-        if (rowFmt[k] == null || rowFmt[k] === '') continue;
-        out[k] = rowFmt[k];
-    }
-    if (!cellFmt) return out;
-    for (k in cellFmt) {
-        if (!Object.prototype.hasOwnProperty.call(cellFmt, k)) continue;
-        if (cellFmt[k] == null || cellFmt[k] === '') continue;
-        out[k] = cellFmt[k];
-    }
+    for (var i = 0; i < layers.length; i++) mergeLayer(out, layers[i], false);
+    mergeLayer(out, cellFmt, true);
     return out;
 }
 
@@ -99,14 +124,85 @@ function widthOfFormat(fmt) {
     return Math.max(1, widthToPx(n));
 }
 
+function isTrue(v) {
+    return v === true || v === 'true';
+}
+
+/* A column's width comes from the first format that states one: the column's,
+ * then the whole column set's, then the sheet default; failing all of them it
+ * is 72 eighths. A hidden column takes no room at all. */
+function columnWidthPx(colFmt, setFmt, sheetFmt) {
+    if (colFmt && isTrue(colFmt.hidden)) return 0;
+    var chain = [colFmt, setFmt, sheetFmt];
+    for (var i = 0; i < chain.length; i++) {
+        var f = chain[i];
+        if (!f || !hasValue(f.width)) continue;
+        var n = Number(f.width);
+        if (isFinite(n) && n > 0) return Math.max(1, widthToPx(n));
+    }
+    return widthToPx(DEFAULT_WIDTH_U);
+}
+
+/* Columns flagged `autoWidthCalculation` share whatever width the fixed
+ * columns leave free, in proportion to `widthWeightFactor`; none of them gets
+ * narrower than its own stated width. */
+function distributeAutoWidths(set, availablePx) {
+    if (!set || !set.auto || !(availablePx > 0)) return set;
+    var fixed = 0;
+    var dyn = [];
+    var c;
+    for (c = 0; c < set.size; c++) {
+        if (set.auto[c]) dyn.push(c);
+        else fixed += set.widths[c] || 0;
+    }
+    if (!dyn.length) return set;
+    var widths = set.widths.slice();
+    var grabbed = fixed;
+    for (var i = 0; i < dyn.length; i++) {
+        var idx = dyn[i];
+        var free = availablePx - grabbed;
+        var min = set.widths[idx] || 0;
+        if (free <= 0) {
+            widths[idx] = min;
+            continue;
+        }
+        var rest = 0;
+        for (var k = i; k < dyn.length; k++) rest += set.auto[dyn[k]].weight;
+        var w = rest > 0 ? free * set.auto[idx].weight / rest : 0;
+        widths[idx] = Math.max(Math.round(w), min);
+        grabbed += widths[idx];
+    }
+    var out = {};
+    for (var key in set) {
+        if (Object.prototype.hasOwnProperty.call(set, key)) out[key] = set[key];
+    }
+    out.widths = widths;
+    return out;
+}
+
+/* Height of one line of text in a font, rounded the way a screen font is: the
+ * point size becomes whole pixels, and the line gets a third on top for the
+ * ascent and descent. Arial 8 gives 15 px — the height of an empty row. */
+function fontLinePx(font) {
+    var pt = (font && font.height) || 8;
+    var scale = font && font.scale ? font.scale / 100 : 1;
+    var em = Math.round(pt * scale * 4 / 3);
+    return Math.round(em * 4 / 3);
+}
+
 function heightOfFormat(fmt) {
     if (!fmt || fmt.height == null || fmt.height === '') {
-        return { px: heightToPx(DEFAULT_HEIGHT_U), auto: false };
+        return { px: heightToPx(DEFAULT_HEIGHT_U), auto: true };
     }
     var n = Number(fmt.height);
-    if (!isFinite(n) || n === 0) return { px: heightToPx(DEFAULT_HEIGHT_U), auto: false };
-    if (n < 0) return { px: Math.max(heightToPx(DEFAULT_HEIGHT_U), heightToPx(Math.abs(n))), auto: true };
-    return { px: Math.max(4, heightToPx(n)), auto: false };
+    if (!isFinite(n) || n === 0) return { px: heightToPx(DEFAULT_HEIGHT_U), auto: true };
+    /* A negative height is not a size but a ceiling: the row still fits its
+     * content, only never grows past |height|. */
+    if (n < 0) {
+        var max = heightToPx(-n);
+        return { px: Math.min(max, heightToPx(DEFAULT_HEIGHT_U)), auto: true, max: max };
+    }
+    return { px: Math.max(1, heightToPx(n)), auto: false };
 }
 
 function parseLine(el) {
@@ -140,6 +236,8 @@ function parseFormat(el) {
         var tag = localName(c);
         if (!tag) continue;
         if (tag === 'format') fmt.numberFormat = localizedFrom(c);
+        /* The XML tag is borderColor; the model shares bordersColor with mxl-preview. */
+        else if (tag === 'borderColor') fmt.bordersColor = textOf(c);
         else if (tag === 'width' || tag === 'height') fmt[tag] = textOf(c);
         else if (tag === 'font' || tag === 'border' || tag === 'leftBorder' || tag === 'rightBorder'
             || tag === 'topBorder' || tag === 'bottomBorder' || tag === 'drawingBorder')
@@ -198,9 +296,12 @@ function parseRow(rowEl) {
     return row;
 }
 
-function parseColumnSet(el, formats) {
+function parseColumnSet(el, formats, defaultFormatIndex) {
     var id = textOf(firstChild(el, 'id'));
     var size = intOf(firstChild(el, 'size'), 0);
+    var setFormatIndex = intOf(firstChild(el, 'formatIndex'), 0);
+    var setFmt = formatByIndex(formats, setFormatIndex);
+    var sheetFmt = formatByIndex(formats, defaultFormatIndex);
     var byIndex = {};
     var items = namedChildren(el, 'columnsItem');
     for (var i = 0; i < items.length; i++) {
@@ -210,6 +311,7 @@ function parseColumnSet(el, formats) {
         byIndex[idx] = col ? intOf(firstChild(col, 'formatIndex'), 0) : 0;
     }
     var widths = [];
+    var auto = null;
     var maxIdx = size;
     for (var k in byIndex) {
         var ki = parseInt(k, 10);
@@ -217,9 +319,15 @@ function parseColumnSet(el, formats) {
     }
     if (!size) size = maxIdx;
     for (var c = 0; c < size; c++) {
-        widths.push(widthOfFormat(formatByIndex(formats, byIndex[c] != null ? byIndex[c] : 0)));
+        var colFmt = formatByIndex(formats, byIndex[c] != null ? byIndex[c] : 0);
+        widths.push(columnWidthPx(colFmt, setFmt, sheetFmt));
+        if (colFmt && isTrue(colFmt.autoWidthCalculation)) {
+            if (!auto) auto = {};
+            var weight = parseInt(colFmt.widthWeightFactor, 10);
+            auto[c] = { weight: isFinite(weight) && weight > 0 ? weight : 1 };
+        }
     }
-    return { id: id, size: size, widths: widths, formatIndex: byIndex };
+    return { id: id, size: size, widths: widths, formatIndex: byIndex, setFormatIndex: setFormatIndex, auto: auto };
 }
 
 function parseMerge(el) {
@@ -305,11 +413,12 @@ function parse(xml) {
     var formats = namedChildren(root, 'format').map(parseFormat);
     var pictures = namedChildren(root, 'picture').map(parsePicture);
 
+    var defaultFormatIndex = intOf(firstChild(root, 'defaultFormatIndex'), 0);
     var columnSets = [];
     var columnSetById = {};
     var colNodes = namedChildren(root, 'columns');
     for (var i = 0; i < colNodes.length; i++) {
-        var set = parseColumnSet(colNodes[i], formats);
+        var set = parseColumnSet(colNodes[i], formats, defaultFormatIndex);
         columnSets.push(set);
         columnSetById[set.id || ''] = set;
     }
@@ -352,6 +461,7 @@ function parse(xml) {
             columnSets: columnSets,
             columnSetById: columnSetById,
             formats: formats,
+            defaultFormatIndex: defaultFormatIndex,
             fonts: fonts,
             lines: lines,
             pictures: pictures,
@@ -365,7 +475,8 @@ function parse(xml) {
 }
 
 function columnSetOf(model, columnsID) {
-    return model.columnSetById[columnsID || ''] || model.columnSetById[''] || { size: 1, widths: [widthToPx(DEFAULT_WIDTH_U)] };
+    var set = model.columnSetById[columnsID || ''] || model.columnSetById[''] || { size: 1, widths: [widthToPx(DEFAULT_WIDTH_U)] };
+    return set.auto ? distributeAutoWidths(set, model._availableWidthPx) : set;
 }
 
 function cellAt(row, col) {
@@ -461,6 +572,90 @@ function spanBorders(model, rowIdx, colIdx, rowspan, colspan) {
     return out;
 }
 
+/* 1C draws a shared grid edge once, whichever of the two cells defines it. The
+ * table keeps `border-collapse: separate` (sticky headers and spills depend on
+ * it), so two neighbours each painting their side doubled every line: a medium
+ * 2 px frame came out 4 px.
+ *
+ * A cell takes over its right (bottom) edge when the neighbours' left (top)
+ * sides are the same along the whole span; it has one CSS border for the span,
+ * so it cannot paint a line over only part of it. Otherwise each neighbour
+ * paints its own piece, and a cell keeps its left (top) side only where the
+ * neighbour before it did not take the edge over and its own line is stronger. */
+function collapseBorders(model, group, set, y, c, spanRows, spanCols, borders) {
+    var out = { left: borders.left, right: borders.right, top: borders.top, bottom: borders.bottom };
+
+    /* The merged area (or the single cell) that covers a position. */
+    function areaAt(rowIdx, col) {
+        var merges = model.merges || [];
+        for (var k = 0; k < merges.length; k++) {
+            var mg = merges[k];
+            if (mg.r < 0) continue;
+            if (mg.columnsID && mg.columnsID !== (group.columnsID || '')) continue;
+            if (rowIdx >= mg.r && rowIdx <= mg.r + mg.h && col >= mg.c && col <= mg.c + mg.w) {
+                return { r: mg.r, c: mg.c, h: mg.h + 1, w: mg.w + 1 };
+            }
+        }
+        return { r: rowIdx, c: col, h: 1, w: 1 };
+    }
+    /* The side a neighbour lends to a shared edge. Cells hidden under a merge
+     * keep the borders Excel gave them, but 1C draws a merged area from its
+     * origin only, and only on the area's own edge. */
+    function lent(rowIdx, col, side) {
+        if (rowIdx < group.start || rowIdx >= group.end || col < 0 || col >= set.size) return null;
+        var a = areaAt(rowIdx, col);
+        if ((side === 'left' && col !== a.c) || (side === 'top' && rowIdx !== a.r)) return '';
+        var row = model.rows[a.r];
+        return row ? sideBorder(model, effectiveFormat(model, row, cellAt(row, a.c), a.c), side) : '';
+    }
+    function ownOf(a) {
+        return spanBorders(model, a.r, a.c, a.h, a.w);
+    }
+    /* Neighbour sides along the far edge of an area, or null at the group edge. */
+    function alongRight(a) {
+        if (a.c + a.w >= set.size) return null;
+        var sides = [];
+        for (var i = 0; i < a.h; i++) sides.push(lent(a.r + i, a.c + a.w, 'left'));
+        return sides;
+    }
+    function alongBottom(a) {
+        if (a.r + a.h >= group.end) return null;
+        var sides = [];
+        for (var i = 0; i < a.w; i++) sides.push(lent(a.r + a.h, a.c + i, 'top'));
+        return sides;
+    }
+    function uniform(sides) {
+        return !!sides && sides.every(function (s) { return s === sides[0]; });
+    }
+
+    var self = { r: y, c: c, h: spanRows, w: spanCols };
+    var right = alongRight(self);
+    if (uniform(right)) out.right = strongerBorder(out.right, right[0]);
+    var below = alongBottom(self);
+    if (uniform(below)) out.bottom = strongerBorder(out.bottom, below[0]);
+
+    var i, before, keep;
+    if (c > 0) {
+        keep = '';
+        for (i = 0; i < spanRows; i++) {
+            before = areaAt(y + i, c - 1);
+            if (uniform(alongRight(before))) continue;
+            if (borderRank(out.left) > borderRank(ownOf(before).right)) keep = out.left;
+        }
+        out.left = keep;
+    }
+    if (y > group.start) {
+        keep = '';
+        for (i = 0; i < spanCols; i++) {
+            before = areaAt(y - 1, c + i);
+            if (uniform(alongBottom(before))) continue;
+            if (borderRank(out.top) > borderRank(ownOf(before).bottom)) keep = out.top;
+        }
+        out.top = keep;
+    }
+    return out;
+}
+
 function colSpanWidth(set, col, colspan) {
     var w = 0;
     var n = colspan || 1;
@@ -543,8 +738,47 @@ function defaultVAlign(model) {
     return alignCss(d && d.verticalAlignment, 'v', 'top');
 }
 
-function rowHeight(model, row) {
-    return heightOfFormat(formatByIndex(model.formats, row && row.formatIndex));
+function inVerticalMerge(model, rowIdx, col) {
+    var merges = model.merges || [];
+    for (var i = 0; i < merges.length; i++) {
+        var m = merges[i];
+        if (!(m.h > 0) || m.r < 0) continue;
+        if (rowIdx >= m.r && rowIdx <= m.r + m.h && col >= m.c && col <= m.c + (m.w || 0)) return true;
+    }
+    return false;
+}
+
+/* A row with a stated positive height keeps it. Any other row fits its
+ * content: at least one line of the tallest font among the row's own format,
+ * the formats of its columns and its cells. Cells that belong to a vertical
+ * merge do not count — their text spreads over several rows. A hidden row is
+ * collapsed. Wrapped text may grow the row further when it is laid out. */
+function rowHeight(model, row, rowIdx) {
+    var rowFmt = formatByIndex(model.formats, row && row.formatIndex);
+    if (rowFmt && isTrue(rowFmt.hidden)) return { px: 0, auto: false };
+    var layered = {};
+    var set = model.columnSetById ? columnSetOf(model, row && row.columnsID) : null;
+    mergeLayer(layered, defaultFormatOf(model), true);
+    if (set) mergeLayer(layered, formatByIndex(model.formats, set.setFormatIndex), true);
+    mergeLayer(layered, rowFmt, true);
+    var h = heightOfFormat(hasValue(layered.height) ? layered : null);
+    if (!h.auto) return h;
+    var px = fontLinePx(fontOf(model, layered));
+    var c;
+    if (set && set.formatIndex) {
+        for (c in set.formatIndex) {
+            var colFmt = formatByIndex(model.formats, set.formatIndex[c]);
+            if (colFmt && hasValue(colFmt.font)) px = Math.max(px, fontLinePx(fontOf(model, colFmt)));
+        }
+    }
+    var cells = (row && row.cells) || [];
+    for (var i = 0; i < cells.length; i++) {
+        if (rowIdx != null && inVerticalMerge(model, rowIdx, cells[i].col)) continue;
+        var fmt = effectiveFormat(model, row, cells[i]);
+        px = Math.max(px, fontLinePx(fontOf(model, fmt)));
+    }
+    if (h.max != null) px = Math.min(px, h.max);
+    return { px: px, auto: true, max: h.max };
 }
 
 function unmergeHits(unmerges, row, col, w) {
@@ -679,6 +913,9 @@ function colAreaBounds(it, size) {
 }
 
 function placementOf(fmt) {
+    /* Justified text has to break into lines to be justified at all, so it
+     * wraps whatever the placement says. */
+    if (alignCss(fmt && fmt.horizontalAlignment, 'h') === 'justify') return 'wrap';
     var p = String((fmt && fmt.textPlacement) || 'Auto').toLowerCase();
     if (p === 'wrap' || p === 'перенос' || p.indexOf('wrap') >= 0) return 'wrap';
     if (p === 'block' || p.indexOf('забив') >= 0) return 'block';
@@ -868,33 +1105,55 @@ function applyOrientation(node, fmt) {
     return true;
 }
 
-/* «Забивать»: 1C repeats the value until it covers the cell. CSS cannot do it,
- * so the line is multiplied in the DOM and the overflow is clipped. The
- * reference measures the glyphs; an estimate from the font size with a margin
- * is enough, because everything past the edge is cut off anyway. */
-var BLOCK_MAX_REPEATS = 200;
+/* «Забивать» (Block): a value that fits is shown as is; one that does not fit
+ * is not cut but replaced by a row of '#' of the same length, the way a
+ * spreadsheet flags a number too wide for its column. The width is estimated
+ * from the font size — close enough to decide fit or no fit. */
 var BLOCK_MAX_CHARS = 32768;
 
-function blockRepeat(text, widthPx, fontPt) {
+function blockFit(text, widthPx, fontPt) {
     if (!text) return String(text || '');
+    var s = String(text);
     var charPx = Math.max(3, (Number(fontPt) || 8) * (96 / 72) * 0.55);
-    var lines = String(text).split(/\r?\n/);
-    for (var i = 0; i < lines.length; i++) {
-        var line = lines[i];
-        var lineW = line.length * charPx;
-        /* A line that already overruns the cell is simply clipped: there is
-         * nothing left to fill. */
-        if (!line.length || lineW >= widthPx) continue;
-        var reps = Math.ceil((widthPx * 1.2) / lineW) + 1;
-        if (reps > BLOCK_MAX_REPEATS) reps = BLOCK_MAX_REPEATS;
-        if (reps * line.length > BLOCK_MAX_CHARS) {
-            reps = Math.max(1, Math.floor(BLOCK_MAX_CHARS / line.length));
-        }
-        var out = line;
-        for (var k = 1; k < reps; k++) out += line;
-        lines[i] = out;
+    var lines = s.split(/\r?\n/);
+    var widest = 0;
+    for (var i = 0; i < lines.length; i++) widest = Math.max(widest, lines[i].length);
+    if (widest * charPx <= widthPx) return s;
+    var n = Math.min(BLOCK_MAX_CHARS, s.replace(/[\r\n]/g, '').length) || 1;
+    return new Array(n + 1).join('#');
+}
+
+/* Inner padding of a cell's text: side margins count eighths of a character,
+ * top and bottom margins 1/288 inch, and an indent whole characters on the
+ * side the text is aligned to. Text never touches the grid line: a pixel of
+ * air is always kept. */
+function textPadding(fmt, align) {
+    var num = function (v) { var n = Number(v); return isFinite(n) && n > 0 ? n : 0; };
+    var pad = {
+        left: TEXT_MARGIN_PX + widthToPx(num(fmt && fmt.leftMargin)),
+        right: TEXT_MARGIN_PX + widthToPx(num(fmt && fmt.rightMargin)),
+        top: heightToPx(num(fmt && fmt.topMargin)),
+        bottom: heightToPx(num(fmt && fmt.bottomMargin))
+    };
+    var indent = num(fmt && fmt.indent) * CHAR_PX;
+    if (align === 'right') pad.right += indent;
+    else if (align !== 'center') pad.left += indent;
+    return pad;
+}
+
+/* «По выделенным колонкам»: a value is centred (or aligned) across its own
+ * cell and the empty cells to the right that carry the same flag. */
+function acrossBox(model, row, set, spans, ly, col) {
+    var width = set.widths[col] || 0;
+    for (var c = col + 1; c < set.size; c++) {
+        if (spans.covered[ly][c] || spans.origin[ly][c]) break;
+        var neighbour = cellAt(row, c);
+        var nf = effectiveFormat(model, row, neighbour, c);
+        if (!nf || !isTrue(nf.bySelectedColumns)) break;
+        if (neighbour && displayText(neighbour, nf)) break;
+        width += set.widths[c] || 0;
     }
-    return lines.join('\n');
+    return { left: 0, width: width };
 }
 
 function el(tag, cls, text) {
@@ -954,9 +1213,11 @@ function applyCellStyle(td, model, cell, fmt, hPx, auto, place, borders) {
         if (borders.bottom) td.style.borderBottom = borders.bottom;
     }
     td.style.height = hPx + 'px';
-    if (place !== 'auto') {
+    if (!auto && place !== 'auto') {
         td.style.maxHeight = hPx + 'px';
-        if (!auto) td.style.overflow = 'hidden';
+        td.style.overflow = 'hidden';
+    } else if (auto) {
+        td.style.overflow = 'visible';
     }
 }
 
@@ -994,30 +1255,54 @@ function renderGroupTable(model, group, ctx, rowHeights) {
             var td = el('td');
             td.setAttribute('data-row', String(y));
             td.setAttribute('data-col', String(c));
+            td.setAttribute('data-id', 'r' + y + 'c' + c);
             var spanRows = sp && sp.rowspan > 1 ? sp.rowspan : 1;
             var spanCols = sp && sp.colspan > 1 ? sp.colspan : 1;
             var cellH = 0;
+            var autoHeight = false;
+            var ownRow = rowHeight(model, row, y);
             var i;
-            for (i = 0; i < spanRows; i++) cellH += rowHeights[y + i] || rh;
+            for (i = 0; i < spanRows; i++) {
+                cellH += rowHeights[y + i] || rh;
+                autoHeight = autoHeight || rowHeight(model, model.rows[y + i], y + i).auto;
+            }
             if (sp) {
                 if (sp.rowspan > 1) td.rowSpan = sp.rowspan;
                 if (sp.colspan > 1) td.colSpan = sp.colspan;
             }
             lockWidth(td, colSpanWidth(set, c, spanCols));
             var cell = cellAt(row, c);
-            var fmt = effectiveFormat(model, row, cell);
+            var fmt = effectiveFormat(model, row, cell, c);
             var place = placementOf(fmt);
             var text = displayText(cell, fmt);
             var cellPx = spanRows === 1 ? rh : cellH;
-            var borders = spanBorders(model, y, c, spanRows, spanCols);
-            applyCellStyle(td, model, cell, fmt, cellPx, false, place, borders);
+            var borders = collapseBorders(model, group, set, y, c, spanRows, spanCols,
+                spanBorders(model, y, c, spanRows, spanCols));
+            applyCellStyle(td, model, cell, fmt, cellPx, autoHeight, place, borders);
             if (spanRows !== 1) {
                 td.style.height = '';
                 td.style.maxHeight = '';
             }
             if (text) td.className = (td.className ? td.className + ' ' : '') + 'tp-has-text';
             var inner = el('div', 'tp-cell tp-place-' + place);
-            inner.style.height = cellPx + 'px';
+            /* The cell's own top and bottom lines sit inside the row height:
+             * a full-height inner box pushed every framed row down by its
+             * border, and drawings placed by the computed row tops drifted. */
+            var edges = (parseInt(borders.top, 10) || 0) + (parseInt(borders.bottom, 10) || 0);
+            var innerPx = Math.max(0, cellPx - edges);
+            if (autoHeight) inner.style.minHeight = innerPx + 'px';
+            else inner.style.height = innerPx + 'px';
+            if (spanRows === 1 && ownRow.max != null) {
+                inner.style.maxHeight = Math.max(0, ownRow.max - edges) + 'px';
+                td.style.overflow = 'hidden';
+            }
+            var halign = alignCss(fmt && fmt.horizontalAlignment, 'h');
+            var pad = textPadding(fmt, halign);
+            inner.style.boxSizing = 'border-box';
+            inner.style.paddingLeft = pad.left + 'px';
+            inner.style.paddingRight = pad.right + 'px';
+            if (pad.top) inner.style.paddingTop = pad.top + 'px';
+            if (pad.bottom) inner.style.paddingBottom = pad.bottom + 'px';
             /* The inner box fills the cell, so `vertical-align` on the td can
              * never move the text: the alignment has to live here. */
             var va = alignCss(fmt && fmt.verticalAlignment, 'v', defaultVAlign(model));
@@ -1031,16 +1316,19 @@ function renderGroupTable(model, group, ctx, rowHeights) {
             } else {
                 inner.style.overflow = 'hidden';
             }
-            if (text && place === 'auto' && spanCols === 1 && spanRows === 1) {
-                var box = spillBox(model, row, set, spans, ly, c,
-                    spanCols, alignCss(fmt && fmt.horizontalAlignment, 'h'));
+            if (text && spanCols === 1 && spanRows === 1 && isTrue(fmt && fmt.bySelectedColumns)) {
+                var across = acrossBox(model, row, set, spans, ly, c);
+                lockWidth(inner, across.width);
+                inner.style.overflow = 'hidden';
+            } else if (text && place === 'auto' && spanCols === 1 && spanRows === 1) {
+                var box = spillBox(model, row, set, spans, ly, c, spanCols, halign);
                 lockWidth(inner, box.width);
                 if (box.left) inner.style.marginLeft = box.left + 'px';
                 inner.style.overflow = 'hidden';
             }
             if (text) {
                 var shown = place === 'block'
-                    ? blockRepeat(text, colSpanWidth(set, c, spanCols), fontOf(model, fmt).height)
+                    ? blockFit(text, colSpanWidth(set, c, spanCols) - pad.left - pad.right, fontOf(model, fmt).height)
                     : text;
                 var node = inner;
                 if (isParamCell(cell, fmt) || (fmt && fmt.fillType === 'Template')) {
@@ -1114,8 +1402,9 @@ function renderDrawings(model, wrap, rowTops, rowHeights) {
         var row = model.rows[d.beginRow] || model.rows[0];
         var set = columnSetOf(model, row && row.columnsID);
         var lefts = colLefts(set);
-        var x0 = (lefts[d.beginColumn] || 0) + widthToPx(d.beginColumnOffset);
-        var x1 = (lefts[d.endColumn] || 0) + widthToPx(d.endColumnOffset);
+        /* Offsets inside the anchor cell use the vertical unit on both axes. */
+        var x0 = (lefts[d.beginColumn] || 0) + heightToPx(d.beginColumnOffset);
+        var x1 = (lefts[d.endColumn] || 0) + heightToPx(d.endColumnOffset);
         var y0 = (rowTops[d.beginRow] || 0) + heightToPx(d.beginRowOffset);
         var y1 = (rowTops[d.endRow] || 0) + heightToPx(d.endRowOffset);
         var w = x1 - x0;
@@ -1135,9 +1424,13 @@ function renderDrawings(model, wrap, rowTops, rowHeights) {
             if (w < 8) w = Math.max(60, widest * chPx + 8);
             if (h < 8) h = Math.max(20, lines.length * fontPt * (96 / 72) * 1.2 + 6);
         }
+        var anchored = w >= 8 && h >= 8;
         w = Math.max(4, w);
         h = Math.max(4, h);
         var box = el('div', 'tp-drawing');
+        /* Real row heights can differ from the computed ones (wrapped text,
+         * borders); syncChrome moves anchored drawings onto the laid-out rows. */
+        if (anchored) box._tpAnchor = { beginRow: d.beginRow, beginOffset: heightToPx(d.beginRowOffset), endRow: d.endRow, endOffset: heightToPx(d.endRowOffset) };
         box.style.left = x0 + 'px';
         box.style.top = y0 + 'px';
         box.style.width = w + 'px';
@@ -1165,7 +1458,9 @@ function renderDrawings(model, wrap, rowTops, rowHeights) {
             var img = document.createElement('img');
             img.src = url;
             img.alt = '';
-            img.style.objectFit = 'contain';
+            /* Stretch fills the box, RealSize keeps pixels, the rest keep the aspect. */
+            var sizeMode = String(d.pictureSize || '').toLowerCase();
+            img.style.objectFit = sizeMode === 'stretch' ? 'fill' : sizeMode === 'realsize' ? 'none' : 'contain';
             img.style.width = '100%';
             img.style.height = '100%';
             box.appendChild(img);
@@ -1230,6 +1525,16 @@ function syncChrome(container) {
         }
     }
     syncRowAreaLines(container, rowTops, rowHeights, last);
+    var boxes = wrap.querySelectorAll('.tp-drawing');
+    for (var k = 0; k < boxes.length; k++) {
+        var anchor = boxes[k]._tpAnchor;
+        if (!anchor) continue;
+        var top = (rowTops[anchor.beginRow] || 0) + anchor.beginOffset;
+        var bottom = (rowTops[anchor.endRow] || 0) + anchor.endOffset;
+        if (bottom - top < 4) continue;
+        boxes[k].style.top = top + 'px';
+        boxes[k].style.height = (bottom - top) + 'px';
+    }
     container._tpRowTops = rowTops;
     container._tpRowHeights = rowHeights;
 }
@@ -1575,6 +1880,9 @@ function render(model, container, options) {
     var scroll = el('div', 'tp-scroll');
     var sheet = el('div', 'tp-sheet');
 
+    /* Auto-width columns share the visible width; the row header and the
+     * area rail on the left take roughly this much of it. */
+    model._availableWidthPx = options.width || Math.max(0, (container.clientWidth || 0) - 80);
     var groups = groupsOf(model);
     var rowHeights = [];
     var rowTops = [];
@@ -1582,7 +1890,7 @@ function render(model, container, options) {
     var y;
     for (y = 0; y < model.height; y++) {
         rowTops[y] = acc;
-        var rh = rowHeight(model, model.rows[y]);
+        var rh = rowHeight(model, model.rows[y], y);
         rowHeights[y] = rh.px;
         acc += rh.px;
     }
@@ -1630,6 +1938,16 @@ function render(model, container, options) {
     container._tpGroups = groups;
     container._tpChromeColumnsID = groupForRowIndex(groups, 0).columnsID || '';
     syncChrome(container);
+    /* render() may run before the container is laid out, and wrapped text or
+     * late fonts change row heights afterwards: measure again once the grid
+     * has its final size, so row numbers and drawings follow the real rows. */
+    if (typeof ResizeObserver === 'function') {
+        if (container._tpResize) container._tpResize.disconnect();
+        container._tpResize = new ResizeObserver(function () { syncChrome(container); });
+        container._tpResize.observe(gridWrap);
+    } else if (typeof requestAnimationFrame === 'function') {
+        requestAnimationFrame(function () { syncChrome(container); });
+    }
 
     if (options.onSelect) {
         function onAreaClick(ev) {
@@ -1646,6 +1964,8 @@ function render(model, container, options) {
 
 root.TemplatePreview = {
     detect: detect,
+    /* Re-measure rows and move row numbers, areas and drawings onto them. */
+    sync: function (container) { if (container && container._tpModel) syncChrome(container); },
     parse: parse,
     render: render,
     outline: outline,
@@ -1680,12 +2000,19 @@ root.TemplatePreview = {
         alignCss: alignCss,
         defaultVAlign: defaultVAlign,
         patternFill: patternFill,
-        blockRepeat: blockRepeat,
+        blockFit: blockFit,
+        textPadding: textPadding,
+        acrossBox: acrossBox,
+        columnWidthPx: columnWidthPx,
+        distributeAutoWidths: distributeAutoWidths,
+        fontLinePx: fontLinePx,
+        rowHeight: rowHeight,
         spillBox: spillBox,
         isColumnArea: isColumnArea,
         eachRowArea: eachRowArea,
         buildSpans: buildSpans,
         spanBorders: spanBorders,
+        collapseBorders: collapseBorders,
         colSpanWidth: colSpanWidth,
         parseRow: parseRow,
         parseMerge: parseMerge,

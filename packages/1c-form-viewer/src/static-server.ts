@@ -9,9 +9,12 @@ const MIME: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  // std-pictures/*.svg: an <img> does not sniff SVG (StdPicture.DialogExclamation).
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
 };
 
-type PreviewDocument = Pick<LoadedDocument, 'resolvedPath' | 'content' | 'objectMeta'>;
+type PreviewDocument = Pick<LoadedDocument, 'resolvedPath' | 'content' | 'baseForm' | 'objectMeta' | 'refMeta' | 'commonCommands' | 'commonPictures' | 'styleItems'>;
 
 export class StaticAssetServer {
   private server: Server | null = null;
@@ -19,6 +22,7 @@ export class StaticAssetServer {
   private port = 0;
   private current: PreviewDocument | null = null;
   private revision = 0;
+  private reloader: (() => Promise<PreviewDocument>) | null = null;
 
   constructor(private readonly assetsDir: string) {}
 
@@ -51,6 +55,24 @@ export class StaticAssetServer {
           response.end(JSON.stringify({ revision: this.revision, available: !!this.current }));
           return;
         }
+        /* The page's refresh button: re-read the open file from disk so an
+         * agent's edit shows without reopening the preview. */
+        if (relative === 'reload' && request.method === 'POST') {
+          if (!this.reloader) {
+            response.writeHead(404).end();
+            return;
+          }
+          try {
+            this.setDocument(await this.reloader());
+          } catch (error) {
+            response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+            response.end(error instanceof Error ? error.message : String(error));
+            return;
+          }
+          response.writeHead(200, { 'Content-Type': MIME['.json'], 'Cache-Control': 'no-store' });
+          response.end(JSON.stringify({ revision: this.revision, available: !!this.current }));
+          return;
+        }
         if (relative === 'state.json') {
           if (!this.current) {
             response.writeHead(404).end();
@@ -65,7 +87,12 @@ export class StaticAssetServer {
             revision: this.revision,
             path: this.current.resolvedPath,
             content: this.current.content,
+            baseForm: this.current.baseForm,
             objectMeta: this.current.objectMeta,
+            refMeta: this.current.refMeta || {},
+            commonCommands: this.current.commonCommands || {},
+            commonPictures: this.current.commonPictures || {},
+            styleItems: this.current.styleItems || {},
           }));
           return;
         }
@@ -123,7 +150,12 @@ export class StaticAssetServer {
     this.revision += 1;
   }
 
+  setReloader(reloader: (() => Promise<PreviewDocument>) | null): void {
+    this.reloader = reloader;
+  }
+
   clearDocument(): void {
+    this.reloader = null;
     this.current = null;
     this.revision += 1;
   }

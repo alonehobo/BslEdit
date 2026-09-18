@@ -825,12 +825,14 @@ function formatIndentation(lines, initialState, initialIndent) {
         const change = getStructureChange(line, analysis.mask);
         indent = Math.max(0, indent + change.before);
 
-        const content = line.trim();
-        const result = content ? '\t'.repeat(indent) + content : '';
+        const touchesString = analysis.startState.inString || analysis.state.inString;
+        var content = line.replace(/^[\t ]+/, '');
+        if (!touchesString) content = content.trimEnd();
+        const result = content ? '\t'.repeat(indent) + content : (touchesString ? line : '');
 
         indent = Math.max(0, indent + change.after);
         state = analysis.state;
-        return result.trimEnd();
+        return touchesString ? result : result.trimEnd();
     });
 }
 

@@ -3,7 +3,7 @@
  * than a convention people remember. Run it in CI and before every release. */
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { browserAssets, browserPath, nodeFiles, nodePath, readSprite } from '../manifest.mjs';
+import { browserAssets, browserPath, nodeFiles, nodePath, platformIcons, readSprite, stdPictures } from '../manifest.mjs';
 import { repositoryDir, SPRITE_BEGIN, SPRITE_END, spriteBlock } from './paths.mjs';
 
 const problems = [];
@@ -21,12 +21,13 @@ async function compare(directory, names, resolve) {
 }
 
 const vscodeDir = path.join(repositoryDir, 'packages', '1c-form-viewer-vscode');
-const mcpDir = path.join(repositoryDir, 'packages', '1c-form-viewer');
 
 await compare(path.join(repositoryDir, 'web'), browserAssets, browserPath);
+await compare(path.join(repositoryDir, 'web'), platformIcons, browserPath);
+await compare(path.join(repositoryDir, 'web'), stdPictures, browserPath);
+await compare(path.join(vscodeDir, 'media'), stdPictures, browserPath);
 await compare(path.join(vscodeDir, 'media'), browserAssets, browserPath);
 await compare(path.join(vscodeDir, 'core'), nodeFiles, nodePath);
-await compare(path.join(mcpDir, 'src', 'core'), nodeFiles, nodePath);
 
 const viewerHtml = path.join(repositoryDir, 'web', 'viewer.html');
 const html = await readFile(viewerHtml, 'utf8');

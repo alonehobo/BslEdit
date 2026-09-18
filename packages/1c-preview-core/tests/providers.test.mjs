@@ -24,19 +24,35 @@ const claims = (id) => ({
 
 const all = {
   FormPreview: claims('form'),
+  SarifPreview: claims('sarif'),
   MxlPreview: claims('mxl'),
   TemplatePreview: claims('template'),
 };
 
 test('every entry names both modules, a label and its chrome', () => {
   const providers = load(all);
-  assert.deepEqual(Array.from(providers.list, (p) => p.id), ['form', 'mxl', 'template']);
+  assert.deepEqual(Array.from(providers.list, (p) => p.id), ['form', 'metadata', 'sarif', 'mxl', 'template']);
   for (const entry of providers.list) {
     assert.ok(entry.parser && entry.viewer, `${entry.id} names both modules`);
     assert.ok(entry.label, `${entry.id} has a label`);
     assert.ok(entry.rootCls && entry.emptyCls && entry.emptyMsg, `${entry.id} has an empty state`);
     assert.ok(entry.outlineTitle && entry.sourceTitle, `${entry.id} has button titles`);
   }
+});
+
+test('resetViewState reaches every renderer that keeps view state, once each', () => {
+  /* `mxl` and `template` are drawn by the same module, so a naive loop over the
+   * providers would reset it twice; and a renderer that keeps no view state at
+   * all must not be required to declare the hook. */
+  const calls = [];
+  const withReset = (id) => Object.assign(claims(id), { resetViewState: () => calls.push(id) });
+  const providers = load({
+    FormPreview: withReset('form'),
+    MxlPreview: claims('mxl'),
+    TemplatePreview: withReset('template'),
+  });
+  providers.resetViewState();
+  assert.deepEqual(calls, ['form', 'template']);
 });
 
 /* An .mxl is decoded by MxlPreview and drawn by TemplatePreview: the one place
