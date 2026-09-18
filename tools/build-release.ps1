@@ -113,6 +113,14 @@ try {
       Copy-Item -LiteralPath (Join-Path $repoRoot $name) -Destination $pluginStage
     }
     Copy-Item -LiteralPath (Join-Path $repoRoot 'BSLEdit.exe') -Destination $editorStage
+    # Both hosts load their interface from web\ next to the binary; without it
+    # the plugin falls back to IE and BSLEdit refuses to start.
+    foreach ($stage in @($pluginStage, $editorStage)) {
+      Copy-Item -LiteralPath (Join-Path $repoRoot 'web') -Destination (Join-Path $stage 'web') -Recurse
+      if (-not (Test-Path -LiteralPath (Join-Path $stage 'web\vs\loader.js'))) {
+        throw "web\vs (Monaco) is missing; run build.bat first."
+      }
+    }
 
     New-Zip $pluginStage (Join-Path $staging 'BSLView.zip')
     New-Zip $editorStage (Join-Path $staging 'BSLEdit.zip')
