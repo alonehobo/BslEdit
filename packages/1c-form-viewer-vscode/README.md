@@ -1,6 +1,6 @@
 # 1C Form Viewer для VS Code
 
-> Часть проекта [BSLEdit / BSLView](https://github.com/alonehobo/bsl-viewer):
+> Часть проекта [BSLEdit / BSLView](https://github.com/alonehobo/BslEdit):
 > редактор и просмотрщик модулей и форм 1С. Значок «BE» — BSLEdit.
 
 Расширение открывает визуальный preview управляемых форм 1С,

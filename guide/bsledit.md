@@ -11,7 +11,7 @@ BSLEdit — отдельное приложение для Windows x64 с тем
 ## Установка
 
 1. Скачайте `BSLEdit.zip` со страницы
-   [Releases](https://github.com/alonehobo/bsl-viewer/releases).
+   [Releases](https://github.com/alonehobo/BslEdit/releases).
 2. Распакуйте в любую постоянную папку. Папка `web` должна лежать рядом с
    `BSLEdit.exe`.
 3. Запустите `BSLEdit.exe`.

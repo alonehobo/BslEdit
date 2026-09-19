@@ -11,7 +11,7 @@ MXL, видит, как они выглядят, делает снимки и п
 ## Установка
 
 1. Скачайте `1c-form-viewer-native-<версия>-win-x64.zip` со страницы
-   [Releases](https://github.com/alonehobo/bsl-viewer/releases).
+   [Releases](https://github.com/alonehobo/BslEdit/releases).
 2. Распакуйте **целиком** в постоянную папку, например
    `C:\Tools\1c-form-viewer-native`. Рядом с `1c-form-viewer.exe` должна
    остаться папка `app`.

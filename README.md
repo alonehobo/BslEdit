@@ -1,4 +1,4 @@
-# BSLView
+# <img src="assets/app-icon.png" width="48" height="48" align="top" alt=""> BslEdit
 
 Инструменты для разработчиков 1С: просмотр и правка модулей, визуальный показ
 форм и макетов так, как они выглядят в конфигураторе, отчёты проверок кода и
@@ -60,7 +60,7 @@
 
 ## Установка
 
-Всё скачивается со страницы [Releases](https://github.com/alonehobo/bsl-viewer/releases).
+Всё скачивается со страницы [Releases](https://github.com/alonehobo/BslEdit/releases).
 
 | Файл | Инструмент | Как установить |
 |---|---|---|
@@ -72,7 +72,7 @@
 Требования: Windows 10/11 и WebView2 Runtime (обычно уже установлен). MCP-серверу
 нужен Edge или Chrome.
 
-Что нового в последней версии — [Releases](https://github.com/alonehobo/bsl-viewer/releases).
+Что нового в последней версии — [Releases](https://github.com/alonehobo/BslEdit/releases).
 
 ## Разработка
 

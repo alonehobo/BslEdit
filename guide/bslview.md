@@ -13,7 +13,7 @@ BSLView открывает файлы 1С по F3 прямо в Total Commander:
 
 ## Установка
 
-1. Скачайте `BSLView.zip` со страницы [Releases](https://github.com/alonehobo/bsl-viewer/releases).
+1. Скачайте `BSLView.zip` со страницы [Releases](https://github.com/alonehobo/BslEdit/releases).
 2. Откройте архив в Total Commander — установка предложится автоматически.
 
 Нужен WebView2 Runtime (в Windows 10/11 он обычно уже есть). Без него плагин

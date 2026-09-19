@@ -10,10 +10,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/alonehobo/bsl-viewer.git",
+    "url": "git+https://github.com/alonehobo/BslEdit.git",
     "directory": "packages/1c-form-viewer"
   },
-  "homepage": "https://github.com/alonehobo/bsl-viewer/tree/main/packages/1c-form-viewer",
+  "homepage": "https://github.com/alonehobo/BslEdit/tree/main/packages/1c-form-viewer",
   "type": "module",
   "license": "MIT",
   "os": [

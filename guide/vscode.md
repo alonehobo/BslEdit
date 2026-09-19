@@ -18,7 +18,7 @@ code --install-extension alonehobo.1c-form-viewer-vscode
 ```
 
 Можно установить и файл `.vsix` со страницы
-[Releases](https://github.com/alonehobo/bsl-viewer/releases): Extensions → `…` →
+[Releases](https://github.com/alonehobo/BslEdit/releases): Extensions → `…` →
 Install from VSIX.
 
 Требования: Windows, VS Code 1.101 или новее. Node.js не нужен.
