@@ -9,7 +9,7 @@ Upstream: design.md@3
 
 ## Реализация
 
-- [ ] 1.1 Добавить сессионный контракт аннотаций
+- [x] 1.1 Добавить сессионный контракт аннотаций
   - _Kind: implementation_
   - _Outcome: `PreviewServer::Session` хранит независимый список аннотаций, а `preview(operation="annotations")` возвращает его по `preview_id`._
   - _Context: [Решение](design.md#implementation); `packages/1c-form-viewer/native/mcp-server.cpp`, `PreviewServer::Session`, `McpApp::handle` — существующие сессии и маршрутизация preview._
@@ -20,7 +20,7 @@ Upstream: design.md@3
   - _Depends: none_
   - _Files: `packages/1c-form-viewer/native/mcp-server.cpp`; `packages/1c-form-viewer/tests/native-contract.test.ts`_
   - _Verify: из корня репозитория выполнить `npm run test:unit --workspace=1c-form-viewer`; ожидается успешное завершение._
-  - _Evidence: pending_
+  - _Evidence: native-сервер собран; целевые тесты `answers initialize...` и `keeps several previews...` прошли (2/2). Полный `test:unit`: 25/32, семь существующих несвязанных проверок падают на fixtures/path/presentation-контрактах._
 
 - [ ] 1.2 Добавить пользовательский режим аннотирования
   - _Kind: implementation_
@@ -37,4 +37,4 @@ Upstream: design.md@3
 
 ## Implementation Notes
 
-Реализация ещё не начата.
+Задача 1.1 реализована и проверена целевыми native-контракт тестами.

@@ -20,6 +20,7 @@ artifacts/
 releases/
 build.log
 node_modules/
+.npm-cache/
 
 # Downloaded at build time (tools/fetch-webview2.ps1, tools/fetch-monaco.ps1)
 webview2.nupkg

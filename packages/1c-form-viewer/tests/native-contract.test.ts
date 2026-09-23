@@ -133,6 +133,8 @@ test('the native server answers initialize, tools/list and a successful tools/ca
   assert.deepEqual(openSchema.properties?.audience?.enum, ['user', 'agent']);
   assert.deepEqual(openSchema.required, ['path', 'audience'], 'the agent must decide who the preview is for');
   assert.equal(openSchema.properties?.show?.type, 'boolean');
+  const previewSchema = tools.find((tool) => tool.name === 'preview')?.inputSchema as { properties?: Record<string, { enum?: string[] }> };
+  assert.ok(previewSchema.properties?.operation?.enum?.includes('annotations'));
   for (const tool of tools.filter((item) => PREVIEW_TOOLS.has(item.name))) {
     const properties = (tool.inputSchema as { properties?: Record<string, unknown> }).properties;
     assert.ok(properties?.preview_id, `${tool.name} takes preview_id`);
@@ -664,6 +666,22 @@ test('the native server keeps several previews open, each with its own preview_i
   assert.equal(await statePath(a.previewUrl), await fs.realpath(first), 'opening B does not replace A');
   assert.equal(await statePath(b.previewUrl), await fs.realpath(second));
   assert.equal((await open(first)).previewUrl, a.previewUrl, 'reopening a file keeps its link');
+
+  const annotationUrl = new URL('annotations', a.previewUrl);
+  const added = await fetch(annotationUrl, {
+    method: 'POST',
+    body: JSON.stringify({ elementId: '10', elementName: 'Field', text: 'Check this' }),
+  });
+  assert.equal(added.status, 200);
+  assert.deepEqual(await added.json(), { id: 'a1', elementId: '10', elementName: 'Field', text: 'Check this' });
+  const annotations = async (previewId: string) => {
+    const response = await client.send('tools/call', { name: 'preview', arguments: { operation: 'annotations', preview_id: previewId } });
+    return (response.result as { structuredContent: { annotations: unknown[] } }).structuredContent.annotations;
+  };
+  assert.deepEqual(await annotations(a.previewId), [{ id: 'a1', elementId: '10', elementName: 'Field', text: 'Check this' }]);
+  assert.deepEqual(await annotations(b.previewId), [], 'annotations are isolated by preview_id');
+  assert.equal((await fetch(new URL('annotations/a1', a.previewUrl), { method: 'DELETE' })).status, 204);
+  assert.deepEqual(await annotations(a.previewId), []);
 
   const listed = await client.send('tools/call', { name: 'get_preview_url', arguments: {} });
   const previews = (listed.result as { structuredContent: { previewId: string; previews: Array<{ previewId: string }> } }).structuredContent;

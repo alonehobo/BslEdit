@@ -513,7 +513,53 @@ public:
         const auto found = sessions_.find(id);
         if (found == sessions_.end()) return;
         found->second.document = std::move(document);
+        found->second.annotations.clear();
+        found->second.annotationCounter = 0;
         ++found->second.revision;
+    }
+
+    std::string annotationsJson(const std::string& id) const {
+        std::lock_guard lock(mutex_);
+        const auto found = sessions_.find(id);
+        if (found == sessions_.end()) return "{\"annotations\":[]}";
+        std::string output = "{\"annotations\":[";
+        for (const auto& annotation : found->second.annotations) {
+            if (output.back() != '[') output += ',';
+            output += "{\"id\":" + json_string(annotation.id)
+                + ",\"elementId\":" + json_string(annotation.elementId)
+                + ",\"elementName\":" + json_string(annotation.elementName)
+                + ",\"text\":" + json_string(annotation.text) + "}";
+        }
+        return output + "]}";
+    }
+
+    std::string addAnnotation(const std::string& id, const Json& value) {
+        const std::string elementId = value.get("elementId") ? value.get("elementId")->asString() : std::string();
+        const std::string elementName = value.get("elementName") ? value.get("elementName")->asString() : std::string();
+        const std::string text = value.get("text") ? value.get("text")->asString() : std::string();
+        if (elementId.empty() || elementName.empty() || text.empty())
+            throw std::runtime_error("elementId, elementName and non-empty text are required");
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) throw std::runtime_error("The preview is closed.");
+        Annotation annotation{"a" + std::to_string(++session->annotationCounter), elementId, elementName, text};
+        session->annotations.push_back(annotation);
+        return "{\"id\":" + json_string(annotation.id)
+            + ",\"elementId\":" + json_string(annotation.elementId)
+            + ",\"elementName\":" + json_string(annotation.elementName)
+            + ",\"text\":" + json_string(annotation.text) + "}";
+    }
+
+    bool removeAnnotation(const std::string& id, const std::string& annotationId) {
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) return false;
+        const auto found = std::find_if(session->annotations.begin(), session->annotations.end(), [&annotationId](const Annotation& item) {
+            return item.id == annotationId;
+        });
+        if (found == session->annotations.end()) return false;
+        session->annotations.erase(found);
+        return true;
     }
 
     bool hasDocument(const std::string& id) const {
@@ -633,6 +679,7 @@ public:
 private:
     struct Pending { std::string id; std::string op; std::string args; bool delivered; std::uint64_t revision; };
     struct Result { std::string id; std::string value; };
+    struct Annotation { std::string id; std::string elementId; std::string elementName; std::string text; };
     struct Session {
         std::optional<Document> document;
         std::function<Document()> reloader;
@@ -641,6 +688,8 @@ private:
         std::optional<Pending> pending;
         std::optional<Result> lastResult;
         std::optional<std::chrono::steady_clock::time_point> lastPoll;
+        std::uint64_t annotationCounter = 0;
+        std::vector<Annotation> annotations;
     };
 
     fs::path assets_;
@@ -761,6 +810,20 @@ private:
         }
         const std::string relative = url_decode(rest.substr(slash + 1));
         if (method == "GET" && relative == "state-meta.json") return make_http_response(200, "application/json; charset=utf-8", metaJson(sessionId));
+        if (method == "GET" && relative == "annotations")
+            return make_http_response(200, "application/json; charset=utf-8", annotationsJson(sessionId));
+        if (method == "POST" && relative == "annotations") {
+            try {
+                return make_http_response(200, "application/json; charset=utf-8", addAnnotation(sessionId, JsonParser(body).parse()));
+            } catch (const std::exception& error) {
+                return make_http_response(400, "text/plain; charset=utf-8", error.what());
+            }
+        }
+        if (method == "DELETE" && relative.rfind("annotations/", 0) == 0) {
+            return removeAnnotation(sessionId, relative.substr(12))
+                ? make_http_response(204, "text/plain", "")
+                : make_http_response(404, "text/plain", "Not found");
+        }
         if (method == "POST" && relative == "reload") {
             std::function<Document()> reloader;
             {
@@ -1140,7 +1203,7 @@ std::string documentKind(const fs::path& resolvedPath) {
 }
 
 std::string viewingToolSchemas() {
-    return u8R"JSON({"name":"open_preview","description":"Open and render a visual preview of a 1C:Enterprise managed form, form layout, spreadsheet template, or MXL file. Use this when the user asks to show a 1C form visually, open a form layout, inspect the form interface, or see how the form looks. Do not launch 1C:Enterprise or the configurator, and do not show XML source when a visual preview is requested. A metadata descriptor such as Forms/ФормаДокумента.xml is automatically resolved to Forms/ФормаДокумента/Ext/Form.xml. Показывает визуальное представление формы или макета 1С, а не исходный XML. Используйте для запросов «покажи форму», «открой макет формы», «покажи визуально» и «посмотри внешний вид формы». Не запускайте 1С и не открывайте XML-редактор. Decide the audience before calling: audience=\"user\" when the user asks to show, open or see a form or template (\"покажи\", \"открой\", \"хочу посмотреть\") — it opens a window on the user's screen; audience=\"agent\" when you only need the preview yourself (inspect_preview, capture_preview, checking your own edit) — it renders in a hidden browser the user never sees, and your screenshots are not shown to the user either. Each opened file is a separate preview with its own preview_id and URL; opening another file does not replace earlier previews, so several can be shown at once. Reopening the same file reuses its preview. Сначала решите, для кого открываете: audience=\"user\" — пользователь просит показать или открыть (окно на его экране); audience=\"agent\" — превью нужно только вам (скрытый браузер, пользователь ничего не видит). Каждый файл открывается отдельным превью со своей ссылкой.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute or workspace-relative path to Form.xml, a Forms/ИмяФормы.xml descriptor, Template.xml, or an MXL file."},"audience":{"type":"string","enum":["user","agent"],"description":"user: the user asked to see it, open a window on their screen. agent: for your own inspection, render hidden."},"show":{"type":"boolean","description":"Deprecated spelling of audience: true = user, false = agent. Ignored when audience is given."}},"required":["path","audience"]},"outputSchema":{"type":"object","properties":{"requestedPath":{"type":"string"},"resolvedPath":{"type":"string"},"path":{"type":"string"},"previewId":{"type":"string"},"audience":{"type":"string","enum":["user","agent"]},"previewUrl":{"type":"string"},"presentation":{"type":"string","enum":["hidden","window","client","unavailable"]},"kind":{"type":"string","enum":["managed-form","spreadsheet-template","mxl","xml"]},"size":{"type":"integer"},"encoding":{"type":"string"}},"required":["requestedPath","resolvedPath","previewUrl","kind","size","encoding"]},"annotations":{"readOnlyHint":true}},{"name":"preview","description":"Work with an open 1C preview; pass operation and that operation's arguments. Open a file with open_preview first and take screenshots with capture_preview; preview_id picks one of several open previews, the last used one by default. Operations: inspect — element and page ids, captions, visibility, nesting, tabs and scroll areas, narrowed by query and visible_only; use it to discover ids before navigating or capturing; switch_tab — activate a page by page_id (pages_id for a nested set); select — reveal the parent pages of element_id, highlight it and scroll it into view; scroll — move target document, active-page, table or spreadsheet by delta_x/delta_y or to x/y (element_id picks the table or field); reload — re-read the file after it changed, keeping the current view; url — the loopback URL of that preview plus every open preview with its previewId, path and previewUrl; close — end one preview (preview_id) or all of them, leaving every source file alone and their URLs dead. Инспекция, вкладки, выделение, прокрутка, перечитывание и закрытие превью.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["inspect","switch_tab","select","scroll","reload","url","close"]},"preview_id":{"type":"string","description":"Preview to act on, from open_preview; the last used preview by default."},"query":{"type":"string","description":"inspect: narrow the listing to matching names and captions."},"visible_only":{"type":"boolean","description":"inspect: skip hidden elements."},"page_id":{"type":"string","description":"switch_tab: the page to activate."},"pages_id":{"type":"string","description":"switch_tab: the nested page set that owns page_id."},"element_id":{"type":"string","description":"select: the element to highlight; scroll: the table or spreadsheet field to move."},"target":{"type":"string","enum":["document","active-page","table","spreadsheet"],"description":"scroll: what to move."},"delta_x":{"type":"number"},"delta_y":{"type":"number"},"x":{"type":"number"},"y":{"type":"number"}},"required":["operation"]},"annotations":{"readOnlyHint":true}},{"name":"capture_preview","description":"Capture the opened 1C preview viewport, full document, or one visible element as PNG. Use this for screenshots and visual comparison after navigating to the requested area.","inputSchema":{"type":"object","properties":{"preview_id":{"type":"string","description":"Preview to act on, from open_preview; the last used preview by default."},"scope":{"type":"string","enum":["viewport","document","element"]},"element_id":{"type":"string"}}},"annotations":{"readOnlyHint":true}})JSON";
+    return u8R"JSON({"name":"open_preview","description":"Open and render a visual preview of a 1C:Enterprise managed form, form layout, spreadsheet template, or MXL file. Use this when the user asks to show a 1C form visually, open a form layout, inspect the form interface, or see how the form looks. Do not launch 1C:Enterprise or the configurator, and do not show XML source when a visual preview is requested. A metadata descriptor such as Forms/ФормаДокумента.xml is automatically resolved to Forms/ФормаДокумента/Ext/Form.xml. Показывает визуальное представление формы или макета 1С, а не исходный XML. Используйте для запросов «покажи форму», «открой макет формы», «покажи визуально» и «посмотри внешний вид формы». Не запускайте 1С и не открывайте XML-редактор. Decide the audience before calling: audience=\"user\" when the user asks to show, open or see a form or template (\"покажи\", \"открой\", \"хочу посмотреть\") — it opens a window on the user's screen; audience=\"agent\" when you only need the preview yourself (inspect_preview, capture_preview, checking your own edit) — it renders in a hidden browser the user never sees, and your screenshots are not shown to the user either. Each opened file is a separate preview with its own preview_id and URL; opening another file does not replace earlier previews, so several can be shown at once. Reopening the same file reuses its preview. Сначала решите, для кого открываете: audience=\"user\" — пользователь просит показать или открыть (окно на его экране); audience=\"agent\" — превью нужно только вам (скрытый браузер, пользователь ничего не видит). Каждый файл открывается отдельным превью со своей ссылкой.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute or workspace-relative path to Form.xml, a Forms/ИмяФормы.xml descriptor, Template.xml, or an MXL file."},"audience":{"type":"string","enum":["user","agent"],"description":"user: the user asked to see it, open a window on their screen. agent: for your own inspection, render hidden."},"show":{"type":"boolean","description":"Deprecated spelling of audience: true = user, false = agent. Ignored when audience is given."}},"required":["path","audience"]},"outputSchema":{"type":"object","properties":{"requestedPath":{"type":"string"},"resolvedPath":{"type":"string"},"path":{"type":"string"},"previewId":{"type":"string"},"audience":{"type":"string","enum":["user","agent"]},"previewUrl":{"type":"string"},"presentation":{"type":"string","enum":["hidden","window","client","unavailable"]},"kind":{"type":"string","enum":["managed-form","spreadsheet-template","mxl","xml"]},"size":{"type":"integer"},"encoding":{"type":"string"}},"required":["requestedPath","resolvedPath","previewUrl","kind","size","encoding"]},"annotations":{"readOnlyHint":true}},{"name":"preview","description":"Work with an open 1C preview; pass operation and that operation's arguments. Open a file with open_preview first and take screenshots with capture_preview; preview_id picks one of several open previews, the last used one by default. Operations: inspect — element and page ids, captions, visibility, nesting, tabs and scroll areas, narrowed by query and visible_only; use it to discover ids before navigating or capturing; switch_tab — activate a page by page_id (pages_id for a nested set); select — reveal the parent pages of element_id, highlight it and scroll it into view; scroll — move target document, active-page, table or spreadsheet by delta_x/delta_y or to x/y (element_id picks the table or field); reload — re-read the file after it changed, keeping the current view; annotations — list user annotations for the preview; url — the loopback URL of that preview plus every open preview with its previewId, path and previewUrl; close — end one preview (preview_id) or all of them, leaving every source file alone and their URLs dead. Инспекция, вкладки, выделение, прокрутка, перечитывание и закрытие превью.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["inspect","switch_tab","select","scroll","reload","annotations","url","close"]},"preview_id":{"type":"string","description":"Preview to act on, from open_preview; the last used preview by default."},"query":{"type":"string","description":"inspect: narrow the listing to matching names and captions."},"visible_only":{"type":"boolean","description":"inspect: skip hidden elements."},"page_id":{"type":"string","description":"switch_tab: the page to activate."},"pages_id":{"type":"string","description":"switch_tab: the nested page set that owns page_id."},"element_id":{"type":"string","description":"select: the element to highlight; scroll: the table or spreadsheet field to move."},"target":{"type":"string","enum":["document","active-page","table","spreadsheet"],"description":"scroll: what to move."},"delta_x":{"type":"number"},"delta_y":{"type":"number"},"x":{"type":"number"},"y":{"type":"number"}},"required":["operation"]},"annotations":{"readOnlyHint":true}},{"name":"capture_preview","description":"Capture the opened 1C preview viewport, full document, or one visible element as PNG. Use this for screenshots and visual comparison after navigating to the requested area.","inputSchema":{"type":"object","properties":{"preview_id":{"type":"string","description":"Preview to act on, from open_preview; the last used preview by default."},"scope":{"type":"string","enum":["viewport","document","element"]},"element_id":{"type":"string"}}},"annotations":{"readOnlyHint":true}})JSON";
 }
 
 /* Tools that convert and read a spreadsheet template (Template.xml): always on. */
@@ -1221,12 +1284,12 @@ public:
             if (name == "preview") {
                 static const std::map<std::string, std::string> previewOperations{
                     {"inspect", "inspect_preview"}, {"switch_tab", "switch_tab"}, {"select", "select_element"},
-                    {"scroll", "scroll_preview"}, {"reload", "reload_preview"}, {"url", "get_preview_url"},
+                    {"scroll", "scroll_preview"}, {"reload", "reload_preview"}, {"annotations", "get_annotations"}, {"url", "get_preview_url"},
                     {"close", "close_preview"},
                 };
                 const auto found = previewOperations.find(argString(arguments, "operation"));
                 if (found == previewOperations.end())
-                    throw std::runtime_error("operation must be one of inspect, switch_tab, select, scroll, reload, url, close.");
+                    throw std::runtime_error("operation must be one of inspect, switch_tab, select, scroll, reload, annotations, url, close.");
                 name = found->second;
             }
             if (name == "open_preview") {
@@ -1428,6 +1491,7 @@ public:
             }
             /* Every remaining tool drives the page of one preview. */
             const std::string previewId = preview_.resolve(argString(arguments, "preview_id"));
+            if (name == "get_annotations") return success(idRaw, preview_.annotationsJson(previewId));
             if (name == "reload_preview") {
                 preview_.setDocument(previewId, loadDocument(options_, inputs_.at(previewId)));
                 ensurePage(previewId);
