@@ -19,7 +19,7 @@ body { display: flex; flex-direction: column; background: #f2f2f2; font-family: 
 .outline-item.selected { background: #cce8ff; }
 .outline-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .outline-line { margin-left: auto; color: #777; font-size: 11px; }
-body.browser-ui #outline-toggle, body.browser-ui #outline-pane, body.browser-ui #annotation-toggle, body.browser-ui #reload-preview { display: block; }
+body.browser-ui #outline-toggle, body.browser-ui #outline-pane, body.browser-ui #annotation-toggle:not([hidden]), body.browser-ui #reload-preview { display: block; }
 body.browser-ui.outline-collapsed #outline-pane { display: none; }
 body.bare #agent-header, body.bare #outline-pane { display: none; }
 #agent-preview-pane { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
@@ -27,7 +27,9 @@ body.bare #agent-header, body.bare #outline-pane { display: none; }
 #preview { display: block; position: absolute; inset: 0; width: auto; height: auto; min-width: 0; }
 #preview.fp-root, #preview.tp-root { display: flex; height: 100%; }
 body.annotating #preview [data-id] { cursor: crosshair; }
-.ann-delete { position: absolute; z-index: 5; width: 18px; height: 18px; padding: 0; border: 1px solid #b8751a; border-radius: 50%; background: #fff; color: #b8751a; cursor: pointer; font: 14px/15px Arial, sans-serif; }
+.annotation-anchor.ann { position: absolute; display: block; left: 100%; width: 0; height: 0; padding: 0; line-height: 1.15; background: none; box-shadow: none; pointer-events: none; }
+.annotation-anchor.ann[hidden] { display: none; }
+.ann-delete { position: absolute; z-index: 5; left: 40px; top: -9px; width: 18px; height: 18px; padding: 0; border: 1px solid #b8751a; border-radius: 50%; background: #fff; color: #b8751a; cursor: pointer; font: 14px/15px Arial, sans-serif; pointer-events: auto; }
 .fp-pages-active-panel > .fp-item[data-tag="Pages"] { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .fp-pages-active-panel > .fp-item[data-tag="Pages"] > .fp-control-wrap,
 .fp-pages-active-panel > .fp-item[data-tag="Pages"] > .fp-control-wrap > .fp-group-block,

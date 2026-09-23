@@ -2,6 +2,7 @@
 'use strict';
 
 var host = document.getElementById('preview');
+var previewPane = document.getElementById('agent-preview-pane');
 var empty = document.getElementById('agent-empty');
 var pathLabel = document.getElementById('agent-path');
 var formatLabel = document.getElementById('agent-format');
@@ -10,6 +11,7 @@ var outlineToggle = document.getElementById('outline-toggle');
 var annotationToggle = document.getElementById('annotation-toggle');
 var current = null;
 var annotations = [];
+var annotating = false;
 var internalMode = new URLSearchParams(window.location.search).get('internal') === '1';
 /* The native server's hidden renderer: nobody looks at this page, so the form
  * gets the whole window without the header and the element outline. */
@@ -84,20 +86,29 @@ function renderCurrent() {
     pathLabel.title = current.path;
     renderOutline();
     selectOutlineRow(current.selectedId);
+    annotationToggle.hidden = current.format !== 'form';
+    if (current.format !== 'form') {
+        annotating = false;
+        document.body.classList.remove('annotating');
+        annotationToggle.setAttribute('aria-pressed', 'false');
+    }
     renderAnnotations();
 }
 
 function renderAnnotations() {
-    host.querySelectorAll('.ann-delete').forEach(function (button) { button.remove(); });
-    host.querySelectorAll('.ann').forEach(function (node) {
-        node.classList.remove('ann', 'ann-w', 'ann-amber');
-        node.removeAttribute('data-note');
-    });
+    previewPane.querySelectorAll('.annotation-anchor').forEach(function (node) { node.remove(); });
+    if (!current || current.format !== 'form') return;
+    var counts = Object.create(null);
     annotations.forEach(function (annotation) {
         var node = findDom(annotation.elementId);
         if (!node) return;
-        node.classList.add('ann', 'ann-w', 'ann-amber');
-        node.setAttribute('data-note', annotation.text);
+        var marker = document.createElement('span');
+        marker.className = 'annotation-anchor ann ann-w ann-amber';
+        marker.setAttribute('data-note', annotation.text);
+        marker.setAttribute('data-element-id', annotation.elementId);
+        marker.annotationTarget = node;
+        marker.annotationIndex = counts[annotation.elementId] || 0;
+        counts[annotation.elementId] = (counts[annotation.elementId] || 0) + 1;
         var remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'ann-delete';
@@ -114,17 +125,34 @@ function renderAnnotations() {
             }).catch(function (error) { window.alert('Не удалось удалить аннотацию: ' + error.message); });
         });
         remove.addEventListener('pointerdown', function (event) { event.stopPropagation(); });
-        host.appendChild(remove);
-        var box = node.getBoundingClientRect();
-        var hostBox = host.getBoundingClientRect();
-        remove.style.left = (box.right - hostBox.left + 44) + 'px';
-        remove.style.top = (box.top - hostBox.top + box.height / 2 - 23) + 'px';
+        marker.appendChild(remove);
+        previewPane.appendChild(marker);
+    });
+    updateAnnotationPositions();
+}
+
+function updateAnnotationPositions() {
+    var paneBox = previewPane.getBoundingClientRect();
+    previewPane.querySelectorAll('.annotation-anchor').forEach(function (marker) {
+        var box = marker.annotationTarget.getBoundingClientRect();
+        marker.hidden = !marker.annotationTarget.getClientRects().length || box.bottom <= paneBox.top || box.top >= paneBox.bottom || box.right <= paneBox.left || box.left >= paneBox.right;
+        var leftSide = box.right - paneBox.left > paneBox.width / 2;
+        marker.classList.toggle('ann-e', leftSide);
+        marker.classList.toggle('ann-w', !leftSide);
+        marker.style.left = Math.max(60, Math.min(box.right - paneBox.left, paneBox.width - 190)) + 'px';
+        marker.style.top = (box.top + box.height / 2 - paneBox.top + marker.annotationIndex * 34) + 'px';
     });
 }
 
+document.addEventListener('scroll', updateAnnotationPositions, true);
+window.addEventListener('resize', updateAnnotationPositions);
+
 function loadAnnotations() {
     return fetch('annotations', { cache: 'no-store' })
-        .then(function (response) { return response.ok ? response.json() : { annotations: [] }; })
+        .then(function (response) {
+            if (!response.ok) throw new Error('HTTP ' + response.status);
+            return response.json();
+        })
         .then(function (value) { annotations = value.annotations || []; renderAnnotations(); });
 }
 
@@ -757,14 +785,14 @@ if (internalMode && !bareMode) {
         try { sessionStorage.setItem('1cFormViewer.outlineCollapsed', collapsed ? '1' : '0'); } catch (error) {}
         updateOutline();
     });
-    var annotating = false;
     annotationToggle.addEventListener('click', function () {
+        if (!current || current.format !== 'form') return;
         annotating = !annotating;
         document.body.classList.toggle('annotating', annotating);
         annotationToggle.setAttribute('aria-pressed', annotating ? 'true' : 'false');
     });
     host.addEventListener('click', function (event) {
-        if (!annotating || event.target.closest('.ann-delete')) return;
+        if (!annotating || !current || current.format !== 'form' || event.target.closest('.annotation-anchor')) return;
         var node = event.target.closest('[data-id]');
         if (!node || !host.contains(node)) return;
         if (!node.classList.contains('fp-item')) {
@@ -894,6 +922,10 @@ if (internalMode) {
         if (input.revision === loadingRevision && loadingPromise) return loadingPromise;
         loadingRevision = input.revision;
         loadingPromise = Promise.resolve(root.AgentViewer.load(input)).then(function () {
+            annotations = [];
+            renderAnnotations();
+            return bareMode ? null : loadAnnotations();
+        }).then(function () {
             lastRevision = input.revision;
         }, function (error) {
             loadingRevision = -1;
@@ -966,8 +998,6 @@ if (internalMode) {
                 lastRevision = -1;
                 loadingRevision = -1;
                 loadingPromise = null;
-                annotations = [];
-                renderAnnotations();
                 refreshState();
             })
             .catch(function (error) { window.alert('Не удалось обновить: ' + (error && error.message || error)); })
@@ -975,7 +1005,6 @@ if (internalMode) {
     });
 
     refreshState();
-    if (!bareMode) loadAnnotations();
     window.setInterval(refreshState, 300);
     commandTimer = window.setInterval(pollCommand, 120);
 }

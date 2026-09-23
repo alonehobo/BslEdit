@@ -1517,32 +1517,73 @@ test('one Edge page handles nested tabs, hidden selection, scrolling and reload'
   assert.match(await internalPage.locator('#agent-path').textContent() || '', /Nested\.xml/);
   const annotationToggle = internalPage.locator('#annotation-toggle');
   assert.equal(await annotationToggle.isVisible(), true);
+  const targetBefore = await internalPage.locator('#preview [data-id="100"]').boundingBox();
   await internalPage.evaluate(() => { window.prompt = () => '<b>Проверить</b>'; });
   await annotationToggle.click();
   await internalPage.locator('#preview [data-id="100"]').click();
-  await internalPage.waitForTimeout(300);
+  await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 1);
   assert.equal(annotations.length, 1, JSON.stringify(await internalPage.evaluate(() => ({
     pressed: document.getElementById('annotation-toggle')?.getAttribute('aria-pressed'),
     targetCount: document.querySelectorAll('#preview [data-id="100"]').length,
   }))));
-  const annotated = internalPage.locator('#preview [data-note]').first();
-  const annotationDebug = await internalPage.evaluate(() => Array.from(document.querySelectorAll('#preview [data-note]')).map((node) => ({
+  const annotated = internalPage.locator('#agent-preview-pane .annotation-anchor').first();
+  const annotationDebug = await internalPage.evaluate(() => Array.from(document.querySelectorAll('#agent-preview-pane [data-note]')).map((node) => ({
     tag: node.tagName, id: node.getAttribute('data-id'), className: node.getAttribute('class'), note: node.getAttribute('data-note'),
   })));
-  assert.deepEqual(annotationDebug.map((item) => ({ id: item.id, note: item.note })), [{ id: '100', note: '<b>Проверить</b>' }]);
+  assert.deepEqual(annotationDebug.map((item) => ({ id: item.id, note: item.note })), [{ id: null, note: '<b>Проверить</b>' }]);
+  assert.equal(await annotated.getAttribute('data-element-id'), '100');
+  const targetAfter = await internalPage.locator('#preview [data-id="100"]').boundingBox();
+  assert.deepEqual(targetAfter, targetBefore, 'annotation must not alter form layout');
   assert.equal(await annotated.getAttribute('data-note'), '<b>Проверить</b>');
+  assert.equal(await annotated.evaluate((node) => getComputedStyle(node).display), 'block');
   assert.equal(await annotated.locator('b').count(), 0, 'annotation text is not interpreted as HTML');
   const storedAnnotations = await internalPage.evaluate(async () => (await fetch('annotations')).json());
   assert.deepEqual(storedAnnotations.annotations, [{ id: 'a1', elementId: '100', elementName: 'ВнешниеСтраницы', text: '<b>Проверить</b>' }]);
-  await internalPage.locator('#preview > .ann-delete').click();
-  await internalPage.waitForTimeout(300);
+  assert.ok(await internalPage.locator('#agent-preview-pane .ann-delete').boundingBox());
+  const noteGeometry = await internalPage.locator('#agent-preview-pane .ann-delete').evaluate((node) => ({
+    button: node.getBoundingClientRect().toJSON(), marker: node.parentElement?.getBoundingClientRect().toJSON(),
+    pane: document.getElementById('agent-preview-pane')?.getBoundingClientRect().toJSON(),
+  }));
+  assert.ok(noteGeometry.button.x >= 0 && noteGeometry.button.y >= 0 && noteGeometry.button.x < 640 && noteGeometry.button.y < 480, JSON.stringify(noteGeometry));
+  await internalPage.locator('#agent-preview-pane .ann-delete').click();
+  await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 0);
   assert.equal(deletedAnnotationId, 'a1');
   assert.equal(annotations.length, 0, JSON.stringify(await internalPage.evaluate(() => ({
-    notes: document.querySelectorAll('#preview [data-note]').length,
-    buttons: document.querySelectorAll('#preview .ann-delete').length,
+    notes: document.querySelectorAll('#agent-preview-pane [data-note]').length,
+    buttons: document.querySelectorAll('#agent-preview-pane .ann-delete').length,
   }))));
-  assert.equal(await internalPage.locator('#preview [data-note]').count(), 0);
+  assert.equal(await internalPage.locator('#agent-preview-pane [data-note]').count(), 0);
   assert.deepEqual(await internalPage.evaluate(async () => (await fetch('annotations')).json()), { annotations: [] });
+  await internalPage.evaluate(() => { window.prompt = () => 'Первый'; });
+  await internalPage.locator('#preview [data-id="100"]').click();
+  await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 1);
+  await internalPage.evaluate(() => { window.prompt = () => 'Второй'; });
+  await internalPage.locator('#preview [data-id="100"]').click();
+  await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 2);
+  assert.deepEqual(await internalPage.locator('#agent-preview-pane > .annotation-anchor[data-element-id="100"]').evaluateAll((nodes) =>
+    nodes.map((node) => node.getAttribute('data-note'))), ['Первый', 'Второй']);
+  assert.equal(await internalPage.locator('#preview [data-id="100"]').evaluate((node) => getComputedStyle(node).display), 'flex');
+  await internalPage.locator('#agent-preview-pane > .annotation-anchor .ann-delete').first().click();
+  await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 1);
+  assert.equal(await internalPage.locator('#agent-preview-pane .annotation-anchor').getAttribute('data-note'), 'Второй');
+  const buttonBeforeMove = await internalPage.locator('#agent-preview-pane .ann-delete').boundingBox();
+  await internalPage.locator('#preview [data-id="100"]').evaluate((node) => { (node as HTMLElement).style.transform = 'translateY(20px)'; });
+  await internalPage.evaluate(() => window.dispatchEvent(new Event('resize')));
+  const buttonAfterMove = await internalPage.locator('#agent-preview-pane .ann-delete').boundingBox();
+  assert.ok(buttonBeforeMove && buttonAfterMove);
+  assert.ok(Math.abs(buttonAfterMove.y - buttonBeforeMove.y - 20) < 2,
+    'delete button must follow the annotated element after layout movement');
+  annotations = [];
+  await internalPage.reload();
+  await internalPage.waitForFunction(() => !document.getElementById('preview')?.hasAttribute('hidden'));
+  assert.equal(await internalPage.locator('#agent-preview-pane .annotation-anchor').count(), 0);
+  const templatePath = path.join(root, 'Template.xml');
+  await fs.copyFile(path.join(repositoryDir, 'testdata', 'Template.xml'), templatePath);
+  await controller.open(templatePath);
+  await internalPage.waitForFunction(() => document.getElementById('agent-format')?.textContent !== 'Форма 1С');
+  assert.equal(await annotationToggle.isVisible(), false);
+  await controller.open(formPath);
+  await internalPage.waitForFunction(() => document.getElementById('agent-format')?.textContent === 'Форма 1С');
   const outlineToggle = internalPage.locator('#outline-toggle');
   const outlinePane = internalPage.locator('#outline-pane');
   assert.equal(await outlineToggle.isVisible(), true);
