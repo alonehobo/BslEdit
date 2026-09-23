@@ -7,7 +7,9 @@ var pathLabel = document.getElementById('agent-path');
 var formatLabel = document.getElementById('agent-format');
 var outline = document.getElementById('outline');
 var outlineToggle = document.getElementById('outline-toggle');
+var annotationToggle = document.getElementById('annotation-toggle');
 var current = null;
+var annotations = [];
 var internalMode = new URLSearchParams(window.location.search).get('internal') === '1';
 /* The native server's hidden renderer: nobody looks at this page, so the form
  * gets the whole window without the header and the element outline. */
@@ -82,6 +84,48 @@ function renderCurrent() {
     pathLabel.title = current.path;
     renderOutline();
     selectOutlineRow(current.selectedId);
+    renderAnnotations();
+}
+
+function renderAnnotations() {
+    host.querySelectorAll('.ann-delete').forEach(function (button) { button.remove(); });
+    host.querySelectorAll('.ann').forEach(function (node) {
+        node.classList.remove('ann', 'ann-w', 'ann-amber');
+        node.removeAttribute('data-note');
+    });
+    annotations.forEach(function (annotation) {
+        var node = findDom(annotation.elementId);
+        if (!node) return;
+        node.classList.add('ann', 'ann-w', 'ann-amber');
+        node.setAttribute('data-note', annotation.text);
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'ann-delete';
+        remove.title = 'Удалить аннотацию';
+        remove.setAttribute('aria-label', 'Удалить аннотацию');
+        remove.textContent = '×';
+        remove.addEventListener('click', function (event) {
+            event.stopPropagation();
+            event.preventDefault();
+            fetch('annotations/' + encodeURIComponent(annotation.id), { method: 'DELETE' }).then(function (response) {
+                if (!response.ok) throw new Error('HTTP ' + response.status);
+                annotations = annotations.filter(function (item) { return item.id !== annotation.id; });
+                renderAnnotations();
+            }).catch(function (error) { window.alert('Не удалось удалить аннотацию: ' + error.message); });
+        });
+        remove.addEventListener('pointerdown', function (event) { event.stopPropagation(); });
+        host.appendChild(remove);
+        var box = node.getBoundingClientRect();
+        var hostBox = host.getBoundingClientRect();
+        remove.style.left = (box.right - hostBox.left + 44) + 'px';
+        remove.style.top = (box.top - hostBox.top + box.height / 2 - 23) + 'px';
+    });
+}
+
+function loadAnnotations() {
+    return fetch('annotations', { cache: 'no-store' })
+        .then(function (response) { return response.ok ? response.json() : { annotations: [] }; })
+        .then(function (value) { annotations = value.annotations || []; renderAnnotations(); });
 }
 
 /* The native MCP server sends only the file and asks the page to resolve its
@@ -713,6 +757,38 @@ if (internalMode && !bareMode) {
         try { sessionStorage.setItem('1cFormViewer.outlineCollapsed', collapsed ? '1' : '0'); } catch (error) {}
         updateOutline();
     });
+    var annotating = false;
+    annotationToggle.addEventListener('click', function () {
+        annotating = !annotating;
+        document.body.classList.toggle('annotating', annotating);
+        annotationToggle.setAttribute('aria-pressed', annotating ? 'true' : 'false');
+    });
+    host.addEventListener('click', function (event) {
+        if (!annotating || event.target.closest('.ann-delete')) return;
+        var node = event.target.closest('[data-id]');
+        if (!node || !host.contains(node)) return;
+        if (!node.classList.contains('fp-item')) {
+            var owner = node.closest('.fp-item[data-id]');
+            if (owner) node = owner;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        var elementId = node.getAttribute('data-id');
+        var item = byId(elementId);
+        var text = window.prompt('Комментарий к элементу «' + (item ? titleOf(item) : elementId) + '»:');
+        if (!text || !text.trim()) return;
+        fetch('annotations', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ elementId: elementId, elementName: item && item.name || elementId, text: text.trim() })
+        }).then(function (response) {
+            if (!response.ok) return response.text().then(function (message) { throw new Error(message || ('HTTP ' + response.status)); });
+            return response.json();
+        }).then(function (annotation) {
+            annotations.push(annotation);
+            renderAnnotations();
+        }).catch(function (error) { window.alert('Не удалось добавить аннотацию: ' + error.message); });
+    }, true);
     updateOutline();
 }
 
@@ -890,6 +966,8 @@ if (internalMode) {
                 lastRevision = -1;
                 loadingRevision = -1;
                 loadingPromise = null;
+                annotations = [];
+                renderAnnotations();
                 refreshState();
             })
             .catch(function (error) { window.alert('Не удалось обновить: ' + (error && error.message || error)); })
@@ -897,6 +975,7 @@ if (internalMode) {
     });
 
     refreshState();
+    if (!bareMode) loadAnnotations();
     window.setInterval(refreshState, 300);
     commandTimer = window.setInterval(pollCommand, 120);
 }

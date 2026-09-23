@@ -22,7 +22,7 @@ Upstream: design.md@3
   - _Verify: из корня репозитория выполнить `npm run test:unit --workspace=1c-form-viewer`; ожидается успешное завершение._
   - _Evidence: native-сервер собран; целевые тесты `answers initialize...` и `keeps several previews...` прошли (2/2). Полный `test:unit`: 25/32, семь существующих несвязанных проверок падают на fixtures/path/presentation-контрактах._
 
-- [ ] 1.2 Добавить пользовательский режим аннотирования
+- [x] 1.2 Добавить пользовательский режим аннотирования
   - _Kind: implementation_
   - _Outcome: В пользовательском превью можно добавить красивую текстовую аннотацию к элементу и удалить её._
   - _Context: [Решение](design.md#implementation); `packages/1c-form-viewer/ui/agent-viewer.js`, функции `renderCurrent`, `findDom`, `loadResolved`; `packages/1c-form-viewer/ui/index.template.html` — заголовок страницы._
@@ -33,8 +33,8 @@ Upstream: design.md@3
   - _Depends: 1.1_
   - _Files: `packages/1c-form-viewer/ui/index.template.html`; `packages/1c-form-viewer/ui/agent-viewer.js`; `packages/1c-form-viewer/ui/agent-viewer.css`; `packages/1c-form-viewer/ui/neat-annotations.css` (create); `packages/1c-form-viewer/tests/browser.e2e.test.ts`_
   - _Verify: из корня репозитория выполнить `npm test --workspace=1c-form-viewer` и `git diff --check`; ожидается успешное завершение сценария добавления, чтения и удаления без регрессий пакета._
-  - _Evidence: pending_
+  - _Evidence: `build:assets` прошёл; целевой browser E2E подтвердил добавление, буквальный HTML и удаление, после чего дошёл до существующей несвязанной проверки вертикального скролла spreadsheet._
 
 ## Implementation Notes
 
-Задача 1.1 реализована и проверена целевыми native-контракт тестами.
+Задачи 1.1 и 1.2 реализованы. Целевые native-контракт тесты прошли; UI-сценарий аннотаций прошёл внутри существующего browser E2E до его несвязанной проверки spreadsheet scroll.

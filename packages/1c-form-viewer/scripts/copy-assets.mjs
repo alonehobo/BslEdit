@@ -35,6 +35,7 @@ for (const name of stdPictures) {
 }
 await copyFile(path.join(sourceUi, 'agent-viewer.js'), path.join(targetWeb, 'agent-viewer.js'));
 await copyFile(path.join(sourceUi, 'agent-viewer.css'), path.join(targetWeb, 'agent-viewer.css'));
+await copyFile(path.join(sourceUi, 'neat-annotations.css'), path.join(targetWeb, 'neat-annotations.css'));
 
 const template = await readFile(path.join(sourceUi, 'index.template.html'), 'utf8');
 for (const placeholder of ['<!-- ICON_SPRITE -->', '<!-- CORE_STYLES -->', '<!-- CORE_SCRIPTS -->']) {

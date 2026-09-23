@@ -8,7 +8,7 @@ import { browserAssets, browserPath, platformIcons, readSprite, stdPictures } fr
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const targetWeb = path.join(packageDir, 'build', 'web');
-const expected = [...browserAssets, ...platformIcons, ...stdPictures, 'agent-viewer.css', 'agent-viewer.js', 'index.html'].sort();
+const expected = [...browserAssets, ...platformIcons, ...stdPictures, 'agent-viewer.css', 'agent-viewer.js', 'neat-annotations.css', 'index.html'].sort();
 
 for (const name of browserAssets) {
   const [source, built] = await Promise.all([

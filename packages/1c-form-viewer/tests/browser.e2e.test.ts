@@ -1490,11 +1490,59 @@ test('one Edge page handles nested tabs, hidden selection, scrolling and reload'
   assert.equal(opened.state.tabs.find((tab) => tab.pageId === '101')?.active, true);
   const context = (browser as unknown as { context: { newPage: () => Promise<any> } }).context;
   const internalPage = await context.newPage();
+  let annotations: Array<{ id: string; elementId: string; elementName: string; text: string }> = [];
+  let deletedAnnotationId = '';
+  await internalPage.route(/\/annotations(?:\/.*)?$/, async (route: any) => {
+    const request = route.request();
+    if (request.method() === 'POST') {
+      const value = request.postDataJSON();
+      const annotation = { id: `a${annotations.length + 1}`, ...value };
+      annotations.push(annotation);
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(annotation) });
+      return;
+    }
+    if (request.method() === 'DELETE') {
+      const id = new URL(request.url()).pathname.split('/').pop();
+      deletedAnnotationId = id || '';
+      annotations = annotations.filter((item) => item.id !== id);
+      await route.fulfill({ status: 204, body: '' });
+      return;
+    }
+    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ annotations }) });
+  });
   await internalPage.setViewportSize({ width: 640, height: 480 });
   await internalPage.goto(browser.previewUrl(), { waitUntil: 'load' });
   await internalPage.waitForFunction(() => !document.getElementById('preview')?.hasAttribute('hidden'));
   assert.match(await internalPage.locator('#agent-format').textContent() || '', /Форма 1С/);
   assert.match(await internalPage.locator('#agent-path').textContent() || '', /Nested\.xml/);
+  const annotationToggle = internalPage.locator('#annotation-toggle');
+  assert.equal(await annotationToggle.isVisible(), true);
+  await internalPage.evaluate(() => { window.prompt = () => '<b>Проверить</b>'; });
+  await annotationToggle.click();
+  await internalPage.locator('#preview [data-id="100"]').click();
+  await internalPage.waitForTimeout(300);
+  assert.equal(annotations.length, 1, JSON.stringify(await internalPage.evaluate(() => ({
+    pressed: document.getElementById('annotation-toggle')?.getAttribute('aria-pressed'),
+    targetCount: document.querySelectorAll('#preview [data-id="100"]').length,
+  }))));
+  const annotated = internalPage.locator('#preview [data-note]').first();
+  const annotationDebug = await internalPage.evaluate(() => Array.from(document.querySelectorAll('#preview [data-note]')).map((node) => ({
+    tag: node.tagName, id: node.getAttribute('data-id'), className: node.getAttribute('class'), note: node.getAttribute('data-note'),
+  })));
+  assert.deepEqual(annotationDebug.map((item) => ({ id: item.id, note: item.note })), [{ id: '100', note: '<b>Проверить</b>' }]);
+  assert.equal(await annotated.getAttribute('data-note'), '<b>Проверить</b>');
+  assert.equal(await annotated.locator('b').count(), 0, 'annotation text is not interpreted as HTML');
+  const storedAnnotations = await internalPage.evaluate(async () => (await fetch('annotations')).json());
+  assert.deepEqual(storedAnnotations.annotations, [{ id: 'a1', elementId: '100', elementName: 'ВнешниеСтраницы', text: '<b>Проверить</b>' }]);
+  await internalPage.locator('#preview > .ann-delete').click();
+  await internalPage.waitForTimeout(300);
+  assert.equal(deletedAnnotationId, 'a1');
+  assert.equal(annotations.length, 0, JSON.stringify(await internalPage.evaluate(() => ({
+    notes: document.querySelectorAll('#preview [data-note]').length,
+    buttons: document.querySelectorAll('#preview .ann-delete').length,
+  }))));
+  assert.equal(await internalPage.locator('#preview [data-note]').count(), 0);
+  assert.deepEqual(await internalPage.evaluate(async () => (await fetch('annotations')).json()), { annotations: [] });
   const outlineToggle = internalPage.locator('#outline-toggle');
   const outlinePane = internalPage.locator('#outline-pane');
   assert.equal(await outlineToggle.isVisible(), true);
