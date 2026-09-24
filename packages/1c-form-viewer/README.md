@@ -118,6 +118,30 @@
 локально. Без него `edit_form` работает, но значения и имена свойств не
 проверяются, а новый узел ставится перед companion-узлами, а не строго по схеме.
 
+## Node.js-сервер (Linux, macOS, Windows)
+
+Рядом с нативным exe есть кроссплатформенный Node.js-вариант того же сервера:
+те же десять инструментов, тот же stdio-протокол и те же схемы. Нужен Node.js
+20+ и Chromium.
+
+```bash
+npm install --force   # --force: пакет 1c-form-viewer-vscode помечен os=win32
+npm run start:node --workspace=1c-form-viewer -- --stdio --root /path/to/workspace
+```
+
+`start:node` собирает ассеты (`build:assets`) и компилирует сервер в `dist/`;
+далее сервер можно запускать напрямую: `node dist/mcp-server.js --stdio --root …`.
+На Linux и macOS рендеринг идёт через Chromium из playwright-core — один раз
+выполните `npx playwright-core install chromium-headless-shell` (на чистом
+Linux также `npx playwright-core install-deps chromium`, либо поставьте
+системный Chromium и укажите его в `ONE_C_FORM_VIEWER_CHROMIUM`). На Windows
+используется системный Edge, как в e2e-тестах.
+
+Отличия от нативного сервера: окно `audience="user"` открывается командой
+платформы (`xdg-open`, `open`, `start`); каждое превью — свой headless-браузер;
+трансформы (list/validate/edit форм и макетов, конвертация xlsx) выполняются в
+процессе сервера, без страницы браузера.
+
 ## Подключение
 
 В примерах сервер распакован в `C:\Tools\1c-form-viewer-native`, а файлы 1С

@@ -5,6 +5,26 @@
 
 ## [Unreleased]
 
+### Added
+- Node.js-вариант MCP-сервера (`src/mcp-server.ts`, запуск `npm run start:node`
+  или `node dist/mcp-server.js` после `npm run build:node`): все десять
+  инструментов нативного сервера по тому же stdio-протоколу и тем же схемам.
+  Работает на Linux, macOS и Windows: на Windows рендерит через системный Edge
+  (как раньше), на остальных платформах — через Chromium из playwright-core
+  (`npx playwright-core install chromium-headless-shell`) или браузер из
+  `ONE_C_FORM_VIEWER_CHROMIUM`. Окно для `audience="user"` открывается через
+  `xdg-open`/`open`/`start` по платформе.
+- Тесты `tests/node-mcp-server.test.ts`: протокол, список инструментов, флаги
+  `--no-form-edit-tools`/`--no-template-edit-tools`, чтение и точечная правка
+  форм и макетов на временных копиях, конвертация xlsx.
+
+### Changed
+- `src/browser-session.ts`: канал браузера выбирается по платформе (Edge только
+  на Windows); захват превью идёт через страничный `AgentViewer.capture` — тот
+  же растр, что отдаёт нативный сервер, без хрома вьюера в кадре.
+- Из `package.json` убрано ограничение `"os": ["win32"]`; `playwright-core`
+  перенесён в `dependencies` для Node-варианта сервера.
+
 ## [0.2.3] - 2026-09-18
 
 ### Added

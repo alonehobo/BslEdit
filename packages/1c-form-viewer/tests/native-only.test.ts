@@ -7,21 +7,23 @@ import { fileURLToPath } from 'node:url';
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repositoryDir = path.resolve(packageDir, '..', '..');
 
-test('the MCP package exposes only the native executable', async () => {
+test('the MCP package exposes the native executable and the Node server', async () => {
   const manifest = JSON.parse(await fs.readFile(path.join(packageDir, 'package.json'), 'utf8')) as Record<string, unknown>;
   const scripts = manifest.scripts as Record<string, string>;
 
   assert.equal(manifest.private, true);
-  assert.equal('bin' in manifest, false);
+  /* The Node.js server is the Linux/macOS distribution: it is built by tsc and
+   * started from dist, so the package carries a bin and a runtime dependency. */
+  assert.deepEqual(manifest.bin, { '1c-form-viewer-node': 'dist/mcp-server.js' });
   assert.equal('publishConfig' in manifest, false);
-  assert.equal('dependencies' in manifest, false);
+  assert.deepEqual(Object.keys(manifest.dependencies as Record<string, string>), ['playwright-core']);
   assert.equal(scripts.build, 'npm run build:native');
+  assert.equal(scripts['build:node'], 'tsc -p tsconfig.json');
   assert.equal(Object.keys(scripts).some((name) => /portable|compact|prepack/i.test(name)), false);
 
   const removedFiles = [
     'src/cli.ts',
     'src/config.ts',
-    'src/mcp-server.ts',
     'scripts/build-portable.ps1',
     'scripts/build-compact.ps1',
     'native/launcher.cpp',
@@ -32,6 +34,9 @@ test('the MCP package exposes only the native executable', async () => {
   for (const relativePath of removedFiles) {
     await assert.rejects(fs.access(path.join(packageDir, relativePath)), undefined, `${relativePath} must stay removed`);
   }
+  /* The Node server entry point and its schemas must stay present. */
+  await fs.access(path.join(packageDir, 'src', 'mcp-server.ts'));
+  await fs.access(path.join(packageDir, 'src', 'tool-schemas.ts'));
 });
 
 test('documentation and CI do not advertise the removed Node distribution', async () => {

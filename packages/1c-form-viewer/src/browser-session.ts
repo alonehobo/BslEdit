@@ -13,6 +13,7 @@ interface ViewerApi {
   switchTab(pageId: string, pagesId?: string): BrowserPreviewState;
   scroll(options: JsonObject): JsonObject;
   elementSelector(id: string): string;
+  capture(scope: CaptureScope, elementId: string): Promise<{ data: string; mimeType: string }>;
 }
 
 declare global {
@@ -23,6 +24,18 @@ declare global {
 
 export type CaptureScope = 'viewport' | 'document' | 'element';
 export interface CaptureViewport { width: number; height: number }
+
+/* The Windows host renders in the system Edge; other platforms fall back to
+ * playwright's own Chromium download (`npx playwright-core install
+ * chromium-headless-shell`). ONE_C_FORM_VIEWER_CHROMIUM points at a custom
+ * browser executable on any platform. */
+function browserLaunchOptions(): { channel?: string; executablePath?: string } {
+  if (process.env.ONE_C_FORM_VIEWER_CHROMIUM) {
+    return { executablePath: process.env.ONE_C_FORM_VIEWER_CHROMIUM };
+  }
+  if (process.platform === 'win32') return { channel: 'msedge' };
+  return {};
+}
 
 export class BrowserSession {
   private browser: Browser | null = null;
@@ -36,11 +49,11 @@ export class BrowserSession {
 
   private async ensurePage(): Promise<Page> {
     if (this.page && !this.page.isClosed()) return this.page;
-    const url = await this.assets.start();
+    await this.assets.start();
     let browser: Browser;
     try {
       browser = await chromium.launch({
-        channel: 'msedge',
+        ...browserLaunchOptions(),
         headless: this.options.headless,
         /* Playwright hides scrollbars in headless mode, while WebView2 hosts
          * and headed Edge paint them. Keep captures faithful to the host. */
@@ -49,7 +62,9 @@ export class BrowserSession {
     } catch (error) {
       await this.assets.close();
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Microsoft Edge could not be started. Install Edge or use a Windows host with Edge available. ${detail}`);
+      throw new Error(process.platform === 'win32'
+        ? `Microsoft Edge could not be started. Install Edge or set ONE_C_FORM_VIEWER_CHROMIUM to another Chromium browser. ${detail}`
+        : `Chromium could not be started. Install it with "npx playwright-core install chromium-headless-shell" or set ONE_C_FORM_VIEWER_CHROMIUM. ${detail}`);
     }
     /* Everything past a successful launch has to clean up after itself. Leaving
      * a launched browser behind on a failed newContext/goto left an orphan Edge
@@ -65,7 +80,12 @@ export class BrowserSession {
       });
       const context = await browser.newContext({ viewport: this.options.viewport });
       const page = await context.newPage();
-      await page.goto(url, { waitUntil: 'load' });
+      /* internalPreview (the MCP server) runs the page the way the native
+       * server's hidden renderer does — internal + bare, captures framed on
+       * the form host with no viewer chrome. The default stays the plain page
+       * the e2e suite and the other hosts drive. */
+      const startUrl = this.assets.url();
+      await page.goto(this.options.internalPreview ? `${this.assets.internalUrl()}&bare=1` : startUrl, { waitUntil: 'load' });
       await page.waitForFunction(() => window.AgentViewer?.ready === true);
       this.browser = browser;
       this.context = context;
@@ -142,6 +162,18 @@ export class BrowserSession {
   }
 
   private async capturePng(page: Page, scope: CaptureScope, elementId?: string): Promise<Buffer> {
+    /* internalPreview: captures go through the page itself
+     * (AgentViewer.capture). Its SVG foreignObject rasterisation is what the
+     * native server returns — framed on the form host, no viewer chrome, and a
+     * document capture re-lays scrollable areas at their full size. */
+    if (this.options.internalPreview) {
+      if (scope === 'element' && !elementId) throw new Error('element_id is required when scope is element.');
+      const result = await page.evaluate(
+        ({ scope: captureScope, id }) => window.AgentViewer.capture(captureScope, id),
+        { scope, id: elementId || '' },
+      );
+      return Buffer.from(result.data, 'base64');
+    }
     if (scope !== 'element') return page.screenshot({ type: 'png', fullPage: scope === 'document' });
     if (!elementId) throw new Error('element_id is required when scope is element.');
     const selector = await page.evaluate((id) => window.AgentViewer.elementSelector(id), elementId);

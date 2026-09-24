@@ -50,6 +50,7 @@ packages/1c-form-viewer-vscode/media/
 packages/1c-form-viewer-vscode/mcp/
 packages/1c-form-viewer/src/core/
 packages/1c-form-viewer/build/
+packages/1c-form-viewer/dist/
 
 # Derived from 1C products; built locally, never published
 packages/1c-preview-core/browser/form-item-properties.js

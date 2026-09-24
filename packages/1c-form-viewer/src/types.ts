@@ -7,6 +7,10 @@ export interface ViewerOptions {
   headless: boolean;
   maxBytes: number;
   assetsDir: string;
+  /* Run the preview page like the native server's hidden renderer (internal
+   * bare mode, page-side captures framed on the form host). Off by default:
+   * the e2e suite and the other hosts drive the plain page. */
+  internalPreview?: boolean;
 }
 
 export interface LoadedDocument {
