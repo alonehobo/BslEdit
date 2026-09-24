@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <cstdint>
@@ -409,7 +410,7 @@ std::string url_encode_component(std::string_view value) {
 }
 
 std::string make_http_response(int status, std::string_view contentType, std::string_view body) {
-    const char* reason = status == 200 ? "OK" : status == 204 ? "No Content" : status == 400 ? "Bad Request" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" : "Internal Server Error";
+    const char* reason = status == 200 ? "OK" : status == 204 ? "No Content" : status == 400 ? "Bad Request" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" : status == 409 ? "Conflict" : "Internal Server Error";
     std::ostringstream output;
     output << "HTTP/1.1 " << status << ' ' << reason << "\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Type: " << contentType << "\r\nContent-Length: " << body.size() << "\r\n\r\n";
     output << body;
@@ -425,6 +426,20 @@ struct Document {
 };
 
 class PreviewServer {
+    struct Pending { std::string id; std::string op; std::string args; bool delivered; std::uint64_t revision; };
+    struct Result { std::string id; std::string value; };
+    struct Annotation { std::string id; std::string elementId; std::string elementName; std::string text; };
+    struct Session {
+        std::optional<Document> document;
+        std::function<Document()> reloader;
+        std::uint64_t revision = 0;
+        std::uint64_t touched = 0;
+        std::optional<Pending> pending;
+        std::optional<Result> lastResult;
+        std::optional<std::chrono::steady_clock::time_point> lastPoll;
+        std::uint64_t annotationCounter = 0;
+        std::vector<Annotation> annotations;
+    };
 public:
     explicit PreviewServer(fs::path assets) : assets_(std::move(assets)), token_(random_token()) {}
     ~PreviewServer() { close(); }
@@ -477,6 +492,8 @@ public:
         Session& session = sessions_[id];
         session.document = std::move(document);
         session.reloader = std::move(reloader);
+        session.annotations.clear();
+        session.annotationCounter = 0;
         ++session.revision;
         session.touched = ++touchCounter_;
         active_ = id;
@@ -522,18 +539,32 @@ public:
         std::lock_guard lock(mutex_);
         const auto found = sessions_.find(id);
         if (found == sessions_.end()) return "{\"annotations\":[]}";
-        std::string output = "{\"annotations\":[";
-        for (const auto& annotation : found->second.annotations) {
+        return "{\"annotations\":" + annotationItemsJson(found->second.annotations) + "}";
+    }
+
+    static std::string annotationItemsJson(const std::vector<Annotation>& annotations) {
+        std::string output = "[";
+        for (const auto& annotation : annotations) {
             if (output.back() != '[') output += ',';
             output += "{\"id\":" + json_string(annotation.id)
                 + ",\"elementId\":" + json_string(annotation.elementId)
                 + ",\"elementName\":" + json_string(annotation.elementName)
                 + ",\"text\":" + json_string(annotation.text) + "}";
         }
-        return output + "]}";
+        return output + "]";
+    }
+
+    static std::uint64_t annotationRevision(const Json& value) {
+        const Json* revision = value.get("revision");
+        if (!revision || revision->kind != Json::Kind::Number || !std::isfinite(revision->number)
+            || revision->number < 0 || revision->number > 9007199254740991.0
+            || std::floor(revision->number) != revision->number)
+            throw std::runtime_error("A non-negative integer revision is required.");
+        return static_cast<std::uint64_t>(revision->number);
     }
 
     std::string addAnnotation(const std::string& id, const Json& value) {
+        const auto revision = annotationRevision(value);
         const std::string elementId = value.get("elementId") ? value.get("elementId")->asString() : std::string();
         const std::string elementName = value.get("elementName") ? value.get("elementName")->asString() : std::string();
         const std::string text = value.get("text") ? value.get("text")->asString() : std::string();
@@ -542,6 +573,7 @@ public:
         std::lock_guard lock(mutex_);
         Session* session = findSession(id);
         if (!session) throw std::runtime_error("The preview is closed.");
+        if (session->revision != revision) throw std::logic_error("The preview revision has changed.");
         Annotation annotation{"a" + std::to_string(++session->annotationCounter), elementId, elementName, text};
         session->annotations.push_back(annotation);
         return "{\"id\":" + json_string(annotation.id)
@@ -550,10 +582,11 @@ public:
             + ",\"text\":" + json_string(annotation.text) + "}";
     }
 
-    bool removeAnnotation(const std::string& id, const std::string& annotationId) {
+    bool removeAnnotation(const std::string& id, const std::string& annotationId, std::uint64_t revision) {
         std::lock_guard lock(mutex_);
         Session* session = findSession(id);
         if (!session) return false;
+        if (session->revision != revision) throw std::logic_error("The preview revision has changed.");
         const auto found = std::find_if(session->annotations.begin(), session->annotations.end(), [&annotationId](const Annotation& item) {
             return item.id == annotationId;
         });
@@ -612,7 +645,7 @@ public:
         const auto found = sessions_.find(id);
         if (found == sessions_.end() || !found->second.document) return "{}";
         const Session& session = found->second;
-        return "{\"revision\":" + std::to_string(session.revision) + ",\"path\":" + json_string(utf8_from_wide(session.document->resolvedPath.wstring())) + ",\"content\":" + json_string(session.document->content) + ",\"resolveContext\":true}";
+        return "{\"revision\":" + std::to_string(session.revision) + ",\"path\":" + json_string(utf8_from_wide(session.document->resolvedPath.wstring())) + ",\"content\":" + json_string(session.document->content) + ",\"resolveContext\":true,\"annotations\":" + annotationItemsJson(session.annotations) + "}";
     }
 
     /* The shared resolver reads configuration files through this server with
@@ -677,21 +710,6 @@ public:
     }
 
 private:
-    struct Pending { std::string id; std::string op; std::string args; bool delivered; std::uint64_t revision; };
-    struct Result { std::string id; std::string value; };
-    struct Annotation { std::string id; std::string elementId; std::string elementName; std::string text; };
-    struct Session {
-        std::optional<Document> document;
-        std::function<Document()> reloader;
-        std::uint64_t revision = 0;
-        std::uint64_t touched = 0;
-        std::optional<Pending> pending;
-        std::optional<Result> lastResult;
-        std::optional<std::chrono::steady_clock::time_point> lastPoll;
-        std::uint64_t annotationCounter = 0;
-        std::vector<Annotation> annotations;
-    };
-
     fs::path assets_;
     std::string token_;
     SOCKET socket_ = INVALID_SOCKET;
@@ -815,14 +833,22 @@ private:
         if (method == "POST" && relative == "annotations") {
             try {
                 return make_http_response(200, "application/json; charset=utf-8", addAnnotation(sessionId, JsonParser(body).parse()));
+            } catch (const std::logic_error& error) {
+                return make_http_response(409, "text/plain; charset=utf-8", error.what());
             } catch (const std::exception& error) {
                 return make_http_response(400, "text/plain; charset=utf-8", error.what());
             }
         }
         if (method == "DELETE" && relative.rfind("annotations/", 0) == 0) {
-            return removeAnnotation(sessionId, relative.substr(12))
-                ? make_http_response(204, "text/plain", "")
-                : make_http_response(404, "text/plain", "Not found");
+            try {
+                return removeAnnotation(sessionId, relative.substr(12), annotationRevision(JsonParser(body).parse()))
+                    ? make_http_response(204, "text/plain", "")
+                    : make_http_response(404, "text/plain", "Not found");
+            } catch (const std::logic_error& error) {
+                return make_http_response(409, "text/plain; charset=utf-8", error.what());
+            } catch (const std::exception& error) {
+                return make_http_response(400, "text/plain; charset=utf-8", error.what());
+            }
         }
         if (method == "POST" && relative == "reload") {
             std::function<Document()> reloader;

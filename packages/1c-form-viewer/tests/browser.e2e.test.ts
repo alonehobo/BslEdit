@@ -1492,11 +1492,15 @@ test('one Edge page handles nested tabs, hidden selection, scrolling and reload'
   const internalPage = await context.newPage();
   let annotations: Array<{ id: string; elementId: string; elementName: string; text: string }> = [];
   let deletedAnnotationId = '';
+  await internalPage.route('**/state.json', async (route: any) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, json: { ...await response.json(), annotations } });
+  });
   await internalPage.route(/\/annotations(?:\/.*)?$/, async (route: any) => {
     const request = route.request();
     if (request.method() === 'POST') {
       const value = request.postDataJSON();
-      const annotation = { id: `a${annotations.length + 1}`, ...value };
+      const annotation = { id: `a${annotations.length + 1}`, elementId: value.elementId, elementName: value.elementName, text: value.text };
       annotations.push(annotation);
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(annotation) });
       return;

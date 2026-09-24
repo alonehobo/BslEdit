@@ -660,17 +660,20 @@ test('the native server keeps several previews open, each with its own preview_i
 
   const a = await open(first);
   const b = await open(second);
+  const initialState = await (await fetch(new URL('state.json', a.previewUrl))).json() as { annotations: unknown[]; revision: number };
+  assert.deepEqual(initialState.annotations, [], 'native state advertises annotations even when empty');
   assert.notEqual(a.previewId, b.previewId);
   assert.notEqual(a.previewUrl, b.previewUrl);
   assert.equal(a.audience, 'user');
   assert.equal(await statePath(a.previewUrl), await fs.realpath(first), 'opening B does not replace A');
   assert.equal(await statePath(b.previewUrl), await fs.realpath(second));
   assert.equal((await open(first)).previewUrl, a.previewUrl, 'reopening a file keeps its link');
+  const revision = (await (await fetch(new URL('state.json', a.previewUrl))).json() as { revision: number }).revision;
 
   const annotationUrl = new URL('annotations', a.previewUrl);
   const added = await fetch(annotationUrl, {
     method: 'POST',
-    body: JSON.stringify({ elementId: '10', elementName: 'Field', text: 'Check this' }),
+    body: JSON.stringify({ revision, elementId: '10', elementName: 'Field', text: 'Check this' }),
   });
   assert.equal(added.status, 200);
   assert.deepEqual(await added.json(), { id: 'a1', elementId: '10', elementName: 'Field', text: 'Check this' });
@@ -680,8 +683,44 @@ test('the native server keeps several previews open, each with its own preview_i
   };
   assert.deepEqual(await annotations(a.previewId), [{ id: 'a1', elementId: '10', elementName: 'Field', text: 'Check this' }]);
   assert.deepEqual(await annotations(b.previewId), [], 'annotations are isolated by preview_id');
-  assert.equal((await fetch(new URL('annotations/a1', a.previewUrl), { method: 'DELETE' })).status, 204);
+  const secondAdded = await fetch(new URL('annotations', b.previewUrl), {
+    method: 'POST', body: JSON.stringify({ revision: (await (await fetch(new URL('state.json', b.previewUrl))).json() as { revision: number }).revision, elementId: '20', elementName: 'Other', text: 'Keep this' }),
+  });
+  assert.equal(secondAdded.status, 200);
+  const populatedState = await (await fetch(new URL('state.json', a.previewUrl))).json() as { annotations: unknown[] };
+  assert.deepEqual(populatedState.annotations, await annotations(a.previewId));
+  const reopened = await open(first);
+  assert.equal(reopened.previewId, a.previewId);
+  assert.equal(reopened.previewUrl, a.previewUrl);
+  assert.deepEqual(await annotations(a.previewId), [], 'reopening the same file clears annotations');
+  const clearedState = await (await fetch(new URL('state.json', a.previewUrl))).json() as { annotations: unknown[]; revision: number };
+  assert.deepEqual(clearedState.annotations, [], 'the reused page receives the cleared snapshot');
+  assert.notEqual(clearedState.revision, revision);
+  assert.equal((await fetch(annotationUrl, {
+    method: 'POST', body: JSON.stringify({ revision, elementId: '10', elementName: 'Field', text: 'Stale' }),
+  })).status, 409, 'a stale POST cannot restore an annotation after reopening');
+  assert.deepEqual(await annotations(b.previewId), [{ id: 'a1', elementId: '20', elementName: 'Other', text: 'Keep this' }], 'reopening A leaves B unchanged');
+  const afterReopen = await fetch(annotationUrl, {
+    method: 'POST', body: JSON.stringify({ revision: clearedState.revision, elementId: '10', elementName: 'Field', text: 'Again' }),
+  });
+  assert.equal((await afterReopen.json() as { id: string }).id, 'a1', 'reopening resets the session counter');
+  assert.equal((await fetch(new URL('annotations/a1', a.previewUrl), {
+    method: 'DELETE', body: JSON.stringify({ revision }),
+  })).status, 409, 'a stale DELETE cannot remove a reused annotation id');
+  assert.equal((await annotations(a.previewId)).length, 1);
+  assert.equal((await fetch(new URL('annotations/a1', a.previewUrl), {
+    method: 'DELETE', body: JSON.stringify({ revision: clearedState.revision }),
+  })).status, 204);
   assert.deepEqual(await annotations(a.previewId), []);
+
+  const reloadResponse = await fetch(new URL('reload', a.previewUrl), { method: 'POST' });
+  assert.equal(reloadResponse.status, 200);
+  const reloadedState = await (await fetch(new URL('state.json', a.previewUrl))).json() as { revision: number; annotations: unknown[] };
+  assert.notEqual(reloadedState.revision, clearedState.revision);
+  assert.equal((await fetch(annotationUrl, {
+    method: 'POST', body: JSON.stringify({ revision: clearedState.revision, elementId: '10', elementName: 'Field', text: 'Old reload' }),
+  })).status, 409);
+  assert.deepEqual(reloadedState.annotations, []);
 
   const listed = await client.send('tools/call', { name: 'get_preview_url', arguments: {} });
   const previews = (listed.result as { structuredContent: { previewId: string; previews: Array<{ previewId: string }> } }).structuredContent;
