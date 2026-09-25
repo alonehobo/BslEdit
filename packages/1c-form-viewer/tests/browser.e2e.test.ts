@@ -1498,6 +1498,18 @@ test('one Edge page handles nested tabs, hidden selection, scrolling and reload'
   });
   await internalPage.route(/\/annotations(?:\/.*)?$/, async (route: any) => {
     const request = route.request();
+    if (request.method() === 'PATCH') {
+      const id = new URL(request.url()).pathname.split('/').pop();
+      const value = request.postDataJSON();
+      if (value.text === 'Ошибка') {
+        await route.fulfill({ status: 409, body: 'Revision changed' });
+        return;
+      }
+      const annotation = annotations.find((item) => item.id === id)!;
+      annotation.text = value.text;
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(annotation) });
+      return;
+    }
     if (request.method() === 'POST') {
       const value = request.postDataJSON();
       const annotation = { id: `a${annotations.length + 1}`, elementId: value.elementId, elementName: value.elementName, text: value.text };
@@ -1522,61 +1534,87 @@ test('one Edge page handles nested tabs, hidden selection, scrolling and reload'
   const annotationToggle = internalPage.locator('#annotation-toggle');
   assert.equal(await annotationToggle.isVisible(), true);
   const targetBefore = await internalPage.locator('#preview [data-id="100"]').boundingBox();
-  await internalPage.evaluate(() => { window.prompt = () => '<b>Проверить</b>'; });
+  await internalPage.evaluate(() => { window.prompt = () => { throw new Error('Native prompt must not be used'); }; });
   await annotationToggle.click();
   await internalPage.locator('#preview [data-id="100"]').click();
+  assert.equal(await internalPage.locator('#annotation-editor').isVisible(), true);
+  assert.equal(await internalPage.locator('#annotation-target').textContent(), 'Внешние страницы');
+  await internalPage.locator('#annotation-cancel').click();
+  assert.equal(await internalPage.locator('#annotation-editor').isVisible(), false);
+  await internalPage.locator('#preview [data-id="100"]').click();
+  await internalPage.locator('#annotation-text').fill('<b>Проверить</b>');
+  await internalPage.locator('#annotation-editor button[type="submit"]').click();
   await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 1);
   assert.equal(annotations.length, 1, JSON.stringify(await internalPage.evaluate(() => ({
     pressed: document.getElementById('annotation-toggle')?.getAttribute('aria-pressed'),
     targetCount: document.querySelectorAll('#preview [data-id="100"]').length,
   }))));
   const annotated = internalPage.locator('#agent-preview-pane .annotation-anchor').first();
-  const annotationDebug = await internalPage.evaluate(() => Array.from(document.querySelectorAll('#agent-preview-pane [data-note]')).map((node) => ({
-    tag: node.tagName, id: node.getAttribute('data-id'), className: node.getAttribute('class'), note: node.getAttribute('data-note'),
-  })));
-  assert.deepEqual(annotationDebug.map((item) => ({ id: item.id, note: item.note })), [{ id: null, note: '<b>Проверить</b>' }]);
+  assert.equal(await annotated.textContent(), '1');
+  assert.equal(await internalPage.locator('.annotation-content span').textContent(), '<b>Проверить</b>');
   assert.equal(await annotated.getAttribute('data-element-id'), '100');
   const targetAfter = await internalPage.locator('#preview [data-id="100"]').boundingBox();
   assert.deepEqual(targetAfter, targetBefore, 'annotation must not alter form layout');
-  assert.equal(await annotated.getAttribute('data-note'), '<b>Проверить</b>');
-  assert.equal(await annotated.evaluate((node) => getComputedStyle(node).display), 'block');
-  assert.equal(await annotated.locator('b').count(), 0, 'annotation text is not interpreted as HTML');
+  assert.equal(await annotated.evaluate((node) => getComputedStyle(node).display), 'grid');
+  assert.equal(await internalPage.locator('.annotation-content b').count(), 0, 'annotation text is not interpreted as HTML');
   const storedAnnotations = await internalPage.evaluate(async () => (await fetch('annotations')).json());
   assert.deepEqual(storedAnnotations.annotations, [{ id: 'a1', elementId: '100', elementName: 'ВнешниеСтраницы', text: '<b>Проверить</b>' }]);
-  assert.ok(await internalPage.locator('#agent-preview-pane .ann-delete').boundingBox());
-  const noteGeometry = await internalPage.locator('#agent-preview-pane .ann-delete').evaluate((node) => ({
-    button: node.getBoundingClientRect().toJSON(), marker: node.parentElement?.getBoundingClientRect().toJSON(),
-    pane: document.getElementById('agent-preview-pane')?.getBoundingClientRect().toJSON(),
-  }));
-  assert.ok(noteGeometry.button.x >= 0 && noteGeometry.button.y >= 0 && noteGeometry.button.x < 640 && noteGeometry.button.y < 480, JSON.stringify(noteGeometry));
-  await internalPage.locator('#agent-preview-pane .ann-delete').click();
+  assert.ok(await internalPage.locator('#annotation-tray .ann-delete').boundingBox());
+  assert.ok((await annotated.boundingBox())!.width <= 24, 'numbered marker must stay compact');
+  await internalPage.locator('#annotation-tray .ann-edit').click();
+  await internalPage.locator('.annotation-edit-text').fill('Ошибка');
+  await internalPage.getByRole('button', { name: 'Сохранить' }).click();
+  await internalPage.locator('.annotation-error').waitFor();
+  assert.equal(await internalPage.locator('.annotation-edit-text').inputValue(), 'Ошибка');
+  assert.equal(annotations[0].text, '<b>Проверить</b>');
+  await internalPage.locator('#annotation-toggle').click();
+  assert.equal(await internalPage.locator('.annotation-edit-text').inputValue(), 'Ошибка');
+  await internalPage.locator('.annotation-row').locator('.annotation-content').click();
+  assert.equal(await internalPage.locator('.annotation-edit-text').inputValue(), 'Ошибка');
+  assert.equal(await internalPage.locator('.annotation-error').textContent(), 'Не удалось сохранить: Revision changed');
+  await internalPage.locator('.annotation-edit-text').fill('Исправлено');
+  await internalPage.getByRole('button', { name: 'Сохранить' }).click();
+  await internalPage.waitForFunction(() => document.querySelector('.annotation-content span')?.textContent === 'Исправлено');
+  assert.equal(annotations[0].id, 'a1');
+  assert.equal(annotations[0].elementId, '100');
+  await internalPage.locator('#annotation-tray .ann-edit').click();
+  await internalPage.locator('.annotation-edit-text').fill('Не сохранять');
+  await internalPage.getByRole('button', { name: 'Отмена' }).click();
+  assert.equal(await internalPage.locator('.annotation-content span').textContent(), 'Исправлено');
+  await internalPage.locator('#annotation-tray-toggle').click();
+  assert.equal(await internalPage.locator('#annotation-list').isVisible(), false);
+  await internalPage.locator('#annotation-tray-toggle').click();
+  await internalPage.locator('#annotation-tray .ann-delete').click();
   await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 0);
   assert.equal(deletedAnnotationId, 'a1');
   assert.equal(annotations.length, 0, JSON.stringify(await internalPage.evaluate(() => ({
-    notes: document.querySelectorAll('#agent-preview-pane [data-note]').length,
-    buttons: document.querySelectorAll('#agent-preview-pane .ann-delete').length,
+    notes: document.querySelectorAll('#agent-preview-pane .annotation-anchor').length,
+    buttons: document.querySelectorAll('#annotation-tray .ann-delete').length,
   }))));
-  assert.equal(await internalPage.locator('#agent-preview-pane [data-note]').count(), 0);
+  assert.equal(await internalPage.locator('#annotation-tray').isVisible(), false);
   assert.deepEqual(await internalPage.evaluate(async () => (await fetch('annotations')).json()), { annotations: [] });
-  await internalPage.evaluate(() => { window.prompt = () => 'Первый'; });
+  await annotationToggle.click();
   await internalPage.locator('#preview [data-id="100"]').click();
+  await internalPage.locator('#annotation-text').fill('Первый');
+  await internalPage.locator('#annotation-editor button[type="submit"]').click();
   await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 1);
-  await internalPage.evaluate(() => { window.prompt = () => 'Второй'; });
   await internalPage.locator('#preview [data-id="100"]').click();
+  await internalPage.locator('#annotation-text').fill('Второй');
+  await internalPage.locator('#annotation-editor button[type="submit"]').click();
   await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 2);
-  assert.deepEqual(await internalPage.locator('#agent-preview-pane > .annotation-anchor[data-element-id="100"]').evaluateAll((nodes) =>
-    nodes.map((node) => node.getAttribute('data-note'))), ['Первый', 'Второй']);
+  assert.deepEqual(await internalPage.locator('#agent-preview-pane > .annotation-anchor[data-element-id="100"]').allTextContents(), ['1', '2']);
+  assert.deepEqual(await internalPage.locator('.annotation-content span').allTextContents(), ['Первый', 'Второй']);
   assert.equal(await internalPage.locator('#preview [data-id="100"]').evaluate((node) => getComputedStyle(node).display), 'flex');
-  await internalPage.locator('#agent-preview-pane > .annotation-anchor .ann-delete').first().click();
+  await internalPage.locator('#annotation-tray .ann-delete').first().click();
   await internalPage.waitForFunction(() => document.querySelectorAll('#agent-preview-pane .annotation-anchor').length === 1);
-  assert.equal(await internalPage.locator('#agent-preview-pane .annotation-anchor').getAttribute('data-note'), 'Второй');
-  const buttonBeforeMove = await internalPage.locator('#agent-preview-pane .ann-delete').boundingBox();
+  assert.equal(await internalPage.locator('.annotation-content span').textContent(), 'Второй');
+  const markerBeforeMove = await internalPage.locator('#agent-preview-pane .annotation-anchor').boundingBox();
   await internalPage.locator('#preview [data-id="100"]').evaluate((node) => { (node as HTMLElement).style.transform = 'translateY(20px)'; });
   await internalPage.evaluate(() => window.dispatchEvent(new Event('resize')));
-  const buttonAfterMove = await internalPage.locator('#agent-preview-pane .ann-delete').boundingBox();
-  assert.ok(buttonBeforeMove && buttonAfterMove);
-  assert.ok(Math.abs(buttonAfterMove.y - buttonBeforeMove.y - 20) < 2,
-    'delete button must follow the annotated element after layout movement');
+  const markerAfterMove = await internalPage.locator('#agent-preview-pane .annotation-anchor').boundingBox();
+  assert.ok(markerBeforeMove && markerAfterMove);
+  assert.ok(Math.abs(markerAfterMove.y - markerBeforeMove.y - 20) < 2,
+    'numbered marker must follow the annotated element after layout movement');
   annotations = [];
   await internalPage.reload();
   await internalPage.waitForFunction(() => !document.getElementById('preview')?.hasAttribute('hidden'));

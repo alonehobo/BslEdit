@@ -683,6 +683,15 @@ test('the native server keeps several previews open, each with its own preview_i
   };
   assert.deepEqual(await annotations(a.previewId), [{ id: 'a1', elementId: '10', elementName: 'Field', text: 'Check this' }]);
   assert.deepEqual(await annotations(b.previewId), [], 'annotations are isolated by preview_id');
+  const editUrl = new URL('annotations/a1', a.previewUrl);
+  const edited = await fetch(editUrl, { method: 'PATCH', body: JSON.stringify({ revision, text: 'Updated' }) });
+  assert.equal(edited.status, 200);
+  assert.deepEqual(await edited.json(), { id: 'a1', elementId: '10', elementName: 'Field', text: 'Updated' });
+  assert.equal((await fetch(editUrl, { method: 'PATCH', body: JSON.stringify({ revision, text: '   ' }) })).status, 400);
+  assert.equal((await fetch(new URL('annotations/missing', a.previewUrl), {
+    method: 'PATCH', body: JSON.stringify({ revision, text: 'Missing' }),
+  })).status, 404);
+  assert.deepEqual(await annotations(a.previewId), [{ id: 'a1', elementId: '10', elementName: 'Field', text: 'Updated' }]);
   const secondAdded = await fetch(new URL('annotations', b.previewUrl), {
     method: 'POST', body: JSON.stringify({ revision: (await (await fetch(new URL('state.json', b.previewUrl))).json() as { revision: number }).revision, elementId: '20', elementName: 'Other', text: 'Keep this' }),
   });
@@ -704,6 +713,10 @@ test('the native server keeps several previews open, each with its own preview_i
     method: 'POST', body: JSON.stringify({ revision: clearedState.revision, elementId: '10', elementName: 'Field', text: 'Again' }),
   });
   assert.equal((await afterReopen.json() as { id: string }).id, 'a1', 'reopening resets the session counter');
+  assert.equal((await fetch(editUrl, {
+    method: 'PATCH', body: JSON.stringify({ revision, text: 'Stale edit' }),
+  })).status, 409, 'a stale PATCH cannot change a reused annotation id');
+  assert.deepEqual(await annotations(a.previewId), [{ id: 'a1', elementId: '10', elementName: 'Field', text: 'Again' }]);
   assert.equal((await fetch(new URL('annotations/a1', a.previewUrl), {
     method: 'DELETE', body: JSON.stringify({ revision }),
   })).status, 409, 'a stale DELETE cannot remove a reused annotation id');

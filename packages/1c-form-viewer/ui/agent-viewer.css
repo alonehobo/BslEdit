@@ -3,10 +3,8 @@ body { display: flex; flex-direction: column; background: #f2f2f2; font-family: 
 #agent-header { flex: 0 0 auto; display: flex; gap: 12px; align-items: center; min-height: 34px; padding: 0 12px; box-sizing: border-box; background: #fff; border-bottom: 1px solid #d2d2d2; color: #333; font-size: 12px; }
 #outline-toggle { display: none; width: 26px; height: 24px; padding: 0; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 15px; line-height: 22px; }
 #outline-toggle:hover { background: #f0f0f0; }
-#annotation-toggle, #reload-preview { display: none; flex: 0 0 auto; height: 24px; padding: 0 8px; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 12px; white-space: nowrap; }
-#annotation-toggle { margin-left: auto; }
-#annotation-toggle:hover, #reload-preview:hover { background: #f0f0f0; }
-#annotation-toggle[aria-pressed="true"] { border-color: #0067c0; background: #cce8ff; color: #004b8d; }
+#reload-preview { display: none; flex: 0 0 auto; height: 24px; padding: 0 8px; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 12px; white-space: nowrap; }
+#reload-preview:hover { background: #f0f0f0; }
 #reload-preview:disabled { color: #999; cursor: default; }
 #agent-format { color: #0067c0; white-space: nowrap; }
 #agent-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -19,17 +17,13 @@ body { display: flex; flex-direction: column; background: #f2f2f2; font-family: 
 .outline-item.selected { background: #cce8ff; }
 .outline-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .outline-line { margin-left: auto; color: #777; font-size: 11px; }
-body.browser-ui #outline-toggle, body.browser-ui #outline-pane, body.browser-ui #annotation-toggle:not([hidden]), body.browser-ui #reload-preview { display: block; }
+body.browser-ui #outline-toggle, body.browser-ui #outline-pane, body.browser-ui #reload-preview { display: block; }
 body.browser-ui.outline-collapsed #outline-pane { display: none; }
 body.bare #agent-header, body.bare #outline-pane { display: none; }
 #agent-preview-pane { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
 #agent-empty { padding: 24px; color: #666; }
 #preview { display: block; position: absolute; inset: 0; width: auto; height: auto; min-width: 0; }
 #preview.fp-root, #preview.tp-root { display: flex; height: 100%; }
-body.annotating #preview [data-id] { cursor: crosshair; }
-.annotation-anchor.ann { position: absolute; display: block; left: 100%; width: 0; height: 0; padding: 0; line-height: 1.15; background: none; box-shadow: none; pointer-events: none; }
-.annotation-anchor.ann[hidden] { display: none; }
-.ann-delete { position: absolute; z-index: 5; left: 40px; top: -9px; width: 18px; height: 18px; padding: 0; border: 1px solid #b8751a; border-radius: 50%; background: #fff; color: #b8751a; cursor: pointer; font: 14px/15px Arial, sans-serif; pointer-events: auto; }
 .fp-pages-active-panel > .fp-item[data-tag="Pages"] { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .fp-pages-active-panel > .fp-item[data-tag="Pages"] > .fp-control-wrap,
 .fp-pages-active-panel > .fp-item[data-tag="Pages"] > .fp-control-wrap > .fp-group-block,

@@ -8,12 +8,12 @@ var pathLabel = document.getElementById('agent-path');
 var formatLabel = document.getElementById('agent-format');
 var outline = document.getElementById('outline');
 var outlineToggle = document.getElementById('outline-toggle');
-var annotationToggle = document.getElementById('annotation-toggle');
 var current = null;
-var annotations = [];
-var annotating = false;
-var annotationAvailable = false;
 var lastRevision = -1;
+var sessionAnnotations = root.SessionAnnotations(host, previewPane, function (id) {
+    var item = byId(id);
+    return { id: id, name: item && item.name || id, title: titleOf(item || { name: id }) };
+});
 var internalMode = new URLSearchParams(window.location.search).get('internal') === '1';
 /* The native server's hidden renderer: nobody looks at this page, so the form
  * gets the whole window without the header and the element outline. */
@@ -88,71 +88,8 @@ function renderCurrent() {
     pathLabel.title = current.path;
     renderOutline();
     selectOutlineRow(current.selectedId);
-    annotationToggle.hidden = current.format !== 'form' || !annotationAvailable;
-    if (annotationToggle.hidden) {
-        annotating = false;
-        document.body.classList.remove('annotating');
-        annotationToggle.setAttribute('aria-pressed', 'false');
-    }
-    renderAnnotations();
+    sessionAnnotations.updatePositions();
 }
-
-function renderAnnotations() {
-    previewPane.querySelectorAll('.annotation-anchor').forEach(function (node) { node.remove(); });
-    if (!current || current.format !== 'form') return;
-    var counts = Object.create(null);
-    annotations.forEach(function (annotation) {
-        var marker = document.createElement('span');
-        marker.className = 'annotation-anchor ann ann-w ann-amber';
-        marker.setAttribute('data-note', annotation.text);
-        marker.setAttribute('data-element-id', annotation.elementId);
-        marker.annotationIndex = counts[annotation.elementId] || 0;
-        counts[annotation.elementId] = (counts[annotation.elementId] || 0) + 1;
-        var remove = document.createElement('button');
-        remove.type = 'button';
-        remove.className = 'ann-delete';
-        remove.title = 'Удалить аннотацию';
-        remove.setAttribute('aria-label', 'Удалить аннотацию');
-        remove.textContent = '×';
-        remove.addEventListener('click', function (event) {
-            event.stopPropagation();
-            event.preventDefault();
-            var revision = lastRevision;
-            fetch('annotations/' + encodeURIComponent(annotation.id), {
-                method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: revision })
-            }).then(function (response) {
-                if (!response.ok) throw new Error('HTTP ' + response.status);
-                if (lastRevision !== revision) return;
-                annotations = annotations.filter(function (item) { return item.id !== annotation.id; });
-                renderAnnotations();
-            }).catch(function (error) { window.alert('Не удалось удалить аннотацию: ' + error.message); });
-        });
-        remove.addEventListener('pointerdown', function (event) { event.stopPropagation(); });
-        marker.appendChild(remove);
-        previewPane.appendChild(marker);
-    });
-    updateAnnotationPositions();
-}
-
-function updateAnnotationPositions() {
-    if (!annotations.length) return;
-    var paneBox = previewPane.getBoundingClientRect();
-    previewPane.querySelectorAll('.annotation-anchor').forEach(function (marker) {
-        var target = findDom(marker.getAttribute('data-element-id'));
-        if (!target || !target.getClientRects().length) { marker.hidden = true; return; }
-        var box = target.getBoundingClientRect();
-        marker.hidden = box.bottom <= paneBox.top || box.top >= paneBox.bottom || box.right <= paneBox.left || box.left >= paneBox.right;
-        var leftSide = box.right - paneBox.left > paneBox.width / 2;
-        marker.classList.toggle('ann-e', leftSide);
-        marker.classList.toggle('ann-w', !leftSide);
-        marker.style.left = Math.max(60, Math.min(box.right - paneBox.left, paneBox.width - 190)) + 'px';
-        marker.style.top = (box.top + box.height / 2 - paneBox.top + marker.annotationIndex * 34) + 'px';
-    });
-}
-
-document.addEventListener('scroll', updateAnnotationPositions, true);
-window.addEventListener('resize', updateAnnotationPositions);
-host.addEventListener('click', function () { requestAnimationFrame(updateAnnotationPositions); }, true);
 
 /* The native MCP server sends only the file and asks the page to resolve its
  * context with the shared form-context.js, reading through context-file under
@@ -384,7 +321,7 @@ function selectElement(id) {
     var hit = view.highlight(host, String(id));
     current.selectedId = String(id);
     selectOutlineRow(id);
-    updateAnnotationPositions();
+    sessionAnnotations.updatePositions();
     return { found: !!hit, element: item, state: state() };
 }
 
@@ -403,7 +340,7 @@ function switchTab(pageId, pagesId) {
     if (matches.length > 1) fail('page_id is ambiguous; provide pages_id. Candidates: ' + matches.map(function (m) { return m.pagesId; }).join(', '));
     root.FormPreview.highlight(host, String(pageId));
     current.selectedId = String(pageId);
-    updateAnnotationPositions();
+    sessionAnnotations.updatePositions();
     return state();
 }
 
@@ -785,40 +722,6 @@ if (internalMode && !bareMode) {
         try { sessionStorage.setItem('1cFormViewer.outlineCollapsed', collapsed ? '1' : '0'); } catch (error) {}
         updateOutline();
     });
-    annotationToggle.addEventListener('click', function () {
-        if (!annotationAvailable || !current || current.format !== 'form') return;
-        annotating = !annotating;
-        document.body.classList.toggle('annotating', annotating);
-        annotationToggle.setAttribute('aria-pressed', annotating ? 'true' : 'false');
-    });
-    host.addEventListener('click', function (event) {
-        if (!annotationAvailable || !annotating || !current || current.format !== 'form' || event.target.closest('.annotation-anchor')) return;
-        var node = event.target.closest('[data-id]');
-        if (!node || !host.contains(node)) return;
-        if (!node.classList.contains('fp-item')) {
-            var owner = node.closest('.fp-item[data-id]');
-            if (owner) node = owner;
-        }
-        event.preventDefault();
-        event.stopPropagation();
-        var elementId = node.getAttribute('data-id');
-        var item = byId(elementId);
-        var text = window.prompt('Комментарий к элементу «' + (item ? titleOf(item) : elementId) + '»:');
-        if (!text || !text.trim()) return;
-        var revision = lastRevision;
-        fetch('annotations', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ revision: revision, elementId: elementId, elementName: item && item.name || elementId, text: text.trim() })
-        }).then(function (response) {
-            if (!response.ok) return response.text().then(function (message) { throw new Error(message || ('HTTP ' + response.status)); });
-            return response.json();
-        }).then(function (annotation) {
-            if (lastRevision !== revision) return;
-            annotations.push(annotation);
-            renderAnnotations();
-        }).catch(function (error) { window.alert('Не удалось добавить аннотацию: ' + error.message); });
-    }, true);
     updateOutline();
 }
 
@@ -928,10 +831,7 @@ if (internalMode) {
         var available = Array.isArray(input.annotations);
         loadingPromise = Promise.resolve(root.AgentViewer.load(input)).then(function () {
             if (token !== loadingToken) return;
-            annotationAvailable = available;
-            annotations = available ? input.annotations : [];
-            annotationToggle.hidden = current.format !== 'form' || !annotationAvailable;
-            renderAnnotations();
+            sessionAnnotations.snapshot(available ? input.annotations : [], input.revision, available && current.format === 'form');
             lastRevision = input.revision;
         }, function (error) {
             if (token === loadingToken) {

@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>1C Form Viewer</title>
   <!-- CORE_STYLES -->
-  <link rel="stylesheet" href="neat-annotations.css">
   <link rel="stylesheet" href="agent-viewer.css">
+  <link rel="stylesheet" href="session-annotations.css">
 </head>
 <body>
 <!-- ICON_SPRITE -->
@@ -25,9 +25,19 @@
   <section id="agent-preview-pane">
     <div id="agent-empty">Вызовите MCP-инструмент open_preview.</div>
     <div id="preview" hidden></div>
+    <form id="annotation-editor" hidden aria-label="Новая аннотация">
+      <strong id="annotation-target"></strong>
+      <textarea id="annotation-text" rows="3" placeholder="Опишите замечание" aria-label="Текст аннотации" required></textarea>
+      <div class="annotation-actions"><button type="button" id="annotation-cancel">Отмена</button><button type="submit">Добавить</button></div>
+    </form>
+    <aside id="annotation-tray" hidden aria-label="Аннотации формы">
+      <button id="annotation-tray-toggle" type="button" aria-expanded="true"></button>
+      <ol id="annotation-list"></ol>
+    </aside>
   </section>
 </main>
 <!-- CORE_SCRIPTS -->
+<script src="session-annotations.js"></script>
 <script src="agent-viewer.js"></script>
 </body>
 </html>

@@ -1,0 +1,22 @@
+#annotation-toggle { display: none; flex: 0 0 auto; height: 24px; margin-left: auto; padding: 0 8px; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 12px; white-space: nowrap; }
+body.browser-ui #annotation-toggle:not([hidden]) { display: block; }
+#annotation-toggle:hover { background: #f0f0f0; }
+#annotation-toggle[aria-pressed="true"] { border-color: #0067c0; background: #cce8ff; color: #004b8d; }
+body.annotating #preview [data-id] { cursor: crosshair; }
+.annotation-anchor { position: absolute; z-index: 2; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #b8751a; color: #fff; font: bold 12px Arial, sans-serif; pointer-events: none; box-shadow: 0 1px 4px #0005; }
+.annotation-anchor[hidden], #annotation-editor[hidden], #annotation-tray[hidden], #annotation-list[hidden] { display: none; }
+#annotation-editor, #annotation-tray { position: absolute; z-index: 4; box-sizing: border-box; width: min(300px, calc(100% - 16px)); border: 1px solid #d2d2d2; border-radius: 8px; background: #fff; box-shadow: 0 4px 16px #0003; font-size: 12px; }
+#annotation-editor { z-index: 5; left: 8px; top: 8px; padding: 12px; display: grid; gap: 8px; }
+#annotation-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#annotation-text, .annotation-edit-text { box-sizing: border-box; width: 100%; resize: vertical; font: inherit; }
+.annotation-actions, .annotation-edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
+#annotation-tray { right: 8px; bottom: 8px; max-height: min(240px, 45%); display: flex; flex-direction: column; overflow: hidden; }
+#annotation-tray-toggle { flex: 0 0 auto; width: 100%; padding: 8px 10px; border: 0; background: #fff; text-align: left; cursor: pointer; font-weight: bold; }
+#annotation-list { margin: 0; padding: 0; overflow: auto; list-style: none; }
+.annotation-row { display: flex; gap: 8px; align-items: start; padding: 8px 10px; border-top: 1px solid #eee; }
+.annotation-number { flex: 0 0 24px; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #b8751a; color: #fff; font-weight: bold; }
+.annotation-content { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.annotation-content strong { display: block; margin-bottom: 3px; }
+.ann-edit, .ann-delete { flex: 0 0 auto; border: 0; background: transparent; color: #666; cursor: pointer; font-size: 18px; }
+.annotation-edit-text { min-height: 70px; }
+.annotation-error { display: block; color: #a22; }

@@ -46,7 +46,8 @@ test('annotations follow user and agent tab switches without changing the form D
   await page.waitForFunction(() => document.querySelectorAll('.annotation-anchor').length === 2);
   const markers = page.locator('.annotation-anchor');
   assert.equal(await page.locator('#annotation-toggle').isVisible(), true);
-  assert.deepEqual(await markers.evaluateAll((nodes: Element[]) => nodes.map((node) => node.getAttribute('data-note'))), ['Первый', 'Второй']);
+  assert.deepEqual(await markers.allTextContents(), ['1', '2']);
+  assert.deepEqual(await page.locator('.annotation-content span').allTextContents(), ['Первый', 'Второй']);
   assert.equal(await page.locator('#preview .annotation-anchor').count(), 0);
   await page.locator('.fp-pages-tab').nth(1).click();
   await page.waitForFunction(() => Array.from(document.querySelectorAll('.annotation-anchor')).every((marker) => (marker as HTMLElement).hidden));
@@ -78,6 +79,95 @@ test('annotation on an initially inactive tab appears when the tab first opens',
   assert.deepEqual(await markerState(page), [false]);
 });
 
+test('the list keeps annotations from both tabs without navigating on row click', async (t) => {
+  const { browser, page } = await openForm(t);
+  await page.route('**/state.json', async (route: any) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    await route.fulfill({ response, json: { ...state, annotations: [
+      { id: 'a1', elementId: '103', elementName: 'Цель', text: 'Первая' },
+      { id: 'a2', elementId: '104', elementName: 'Другое', text: 'Вторая' },
+    ] } });
+  });
+  await page.goto(browser.previewUrl(), { waitUntil: 'load' });
+  await page.waitForFunction(() => document.querySelectorAll('.annotation-row').length === 2);
+  assert.deepEqual(await page.locator('.annotation-content span').allTextContents(), ['Первая', 'Вторая']);
+  assert.deepEqual(await markerState(page), [false, true]);
+  await page.locator('.annotation-row').nth(1).locator('.annotation-content').click();
+  assert.equal(await page.locator('.fp-pages-tab').nth(0).getAttribute('aria-selected'), 'true');
+  await page.evaluate(() => window.AgentViewer.selectElement('104'));
+  assert.deepEqual(await markerState(page), [true, false]);
+  assert.deepEqual(await page.locator('.annotation-content span').allTextContents(), ['Первая', 'Вторая']);
+});
+
+test('a failed edit stays visible after another annotation is deleted', async (t) => {
+  const { browser, page } = await openForm(t);
+  const annotations = [
+    { id: 'a1', elementId: '103', elementName: 'Цель', text: 'Исходный' },
+    { id: 'a2', elementId: '104', elementName: 'Другое', text: 'Удалить' },
+  ];
+  await page.route('**/state.json', async (route: any) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    await route.fulfill({ response, json: { ...state, annotations } });
+  });
+  let releasePatch!: () => void;
+  let patchStarted!: () => void;
+  const patchHold = new Promise<void>((resolve) => { releasePatch = resolve; });
+  const patchRequest = new Promise<void>((resolve) => { patchStarted = resolve; });
+  t.after(() => releasePatch());
+  await page.route('**/annotations/*', async (route: any) => {
+    if (route.request().method() === 'PATCH') {
+      patchStarted();
+      await patchHold;
+      await route.fulfill({ status: 500, body: 'Ошибка записи' });
+    } else {
+      await route.fulfill({ status: 204 });
+    }
+  });
+  await page.goto(browser.previewUrl(), { waitUntil: 'load' });
+  await page.locator('.annotation-row').first().locator('.ann-edit').click();
+  await page.locator('.annotation-edit-text').fill('Новый текст');
+  await page.locator('.annotation-edit-actions button').last().click();
+  await patchRequest;
+  await page.locator('.annotation-row').nth(1).locator('.ann-delete').click();
+  await page.waitForFunction(() => document.querySelectorAll('.annotation-row').length === 1);
+  releasePatch();
+  await page.locator('.annotation-error').getByText('Не удалось сохранить: Ошибка записи').waitFor();
+  assert.equal(await page.locator('.annotation-edit-text').inputValue(), 'Новый текст');
+  assert.equal(await page.locator('.annotation-row').count(), 1);
+});
+
+test('a stale delete does not disable actions in a newer revision', async (t) => {
+  const { browser, page, reload } = await openForm(t);
+  await page.route('**/state.json', async (route: any) => {
+    const response = await route.fetch();
+    const state = await response.json();
+    await route.fulfill({ response, json: { ...state, annotations: [{
+      id: 'a1', elementId: '103', elementName: 'Цель', text: String(state.revision),
+    }] } });
+  });
+  let releaseDelete!: () => void;
+  let deleteStarted!: () => void;
+  const deleteHold = new Promise<void>((resolve) => { releaseDelete = resolve; });
+  const deleteRequest = new Promise<void>((resolve) => { deleteStarted = resolve; });
+  t.after(() => releaseDelete());
+  await page.route('**/annotations/*', async (route: any) => {
+    deleteStarted();
+    await deleteHold;
+    await route.fulfill({ status: 409, body: 'Revision changed' });
+  });
+  await page.goto(browser.previewUrl(), { waitUntil: 'load' });
+  await page.locator('.ann-delete').click();
+  await deleteRequest;
+  const oldText = await page.locator('.annotation-content span').textContent();
+  await reload();
+  await page.waitForFunction((previous) => document.querySelector('.annotation-content span')?.textContent !== previous, oldText);
+  releaseDelete();
+  await page.waitForFunction(() => !(document.querySelector('.ann-edit') as HTMLButtonElement).disabled);
+  assert.equal(await page.locator('.ann-delete').isEnabled(), true);
+});
+
 test('late completion of an older revision does not restore its annotations', async (t) => {
   const { browser, page, reload } = await openForm(t);
   await page.goto(browser.previewUrl(), { waitUntil: 'load' });
@@ -104,13 +194,13 @@ test('late completion of an older revision does not restore its annotations', as
   await reload();
   await page.waitForFunction(() => typeof (window as any).releaseOldRevision === 'function');
   await reload();
-  await page.waitForFunction(() => document.querySelector('.annotation-anchor')?.getAttribute('data-note') === 'Новая');
-  assert.equal(await page.evaluate(() => document.querySelector('.annotation-anchor')?.getAttribute('data-note')), 'Новая');
+  await page.waitForFunction(() => document.querySelector('.annotation-content span')?.textContent === 'Новая');
+  assert.equal(await page.evaluate(() => document.querySelector('.annotation-content span')?.textContent), 'Новая');
   assert.equal(await page.evaluate(() => typeof (window as any).releaseOldRevision), 'function');
   const afterLateCompletion = await page.evaluate(async () => {
     (window as any).releaseOldRevision();
     await new Promise((resolve) => setTimeout(resolve, 0));
-    return document.querySelector('.annotation-anchor')?.getAttribute('data-note');
+    return document.querySelector('.annotation-content span')?.textContent;
   });
   assert.equal(afterLateCompletion, 'Новая');
 });

@@ -595,6 +595,26 @@ public:
         return true;
     }
 
+    std::optional<std::string> updateAnnotation(const std::string& id, const std::string& annotationId, const Json& value) {
+        const auto revision = annotationRevision(value);
+        const std::string text = value.get("text") ? value.get("text")->asString() : std::string();
+        if (text.find_first_not_of(" \t\r\n") == std::string::npos)
+            throw std::runtime_error("Non-empty text is required");
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) return std::nullopt;
+        if (session->revision != revision) throw std::logic_error("The preview revision has changed.");
+        const auto found = std::find_if(session->annotations.begin(), session->annotations.end(), [&annotationId](const Annotation& item) {
+            return item.id == annotationId;
+        });
+        if (found == session->annotations.end()) return std::nullopt;
+        found->text = text;
+        return "{\"id\":" + json_string(found->id)
+            + ",\"elementId\":" + json_string(found->elementId)
+            + ",\"elementName\":" + json_string(found->elementName)
+            + ",\"text\":" + json_string(found->text) + "}";
+    }
+
     bool hasDocument(const std::string& id) const {
         std::lock_guard lock(mutex_);
         const auto found = sessions_.find(id);
@@ -833,6 +853,18 @@ private:
         if (method == "POST" && relative == "annotations") {
             try {
                 return make_http_response(200, "application/json; charset=utf-8", addAnnotation(sessionId, JsonParser(body).parse()));
+            } catch (const std::logic_error& error) {
+                return make_http_response(409, "text/plain; charset=utf-8", error.what());
+            } catch (const std::exception& error) {
+                return make_http_response(400, "text/plain; charset=utf-8", error.what());
+            }
+        }
+        if (method == "PATCH" && relative.rfind("annotations/", 0) == 0) {
+            try {
+                const auto updated = updateAnnotation(sessionId, relative.substr(12), JsonParser(body).parse());
+                return updated
+                    ? make_http_response(200, "application/json; charset=utf-8", *updated)
+                    : make_http_response(404, "text/plain", "Not found");
             } catch (const std::logic_error& error) {
                 return make_http_response(409, "text/plain; charset=utf-8", error.what());
             } catch (const std::exception& error) {
