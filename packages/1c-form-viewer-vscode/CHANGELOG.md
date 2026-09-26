@@ -3,7 +3,7 @@
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).
 
-## [0.3.0] - 2026-09-26
+## [0.2.4] - 2026-09-26
 
 ### Added
 - Вложенный MCP-сервер той же версии, что отдельный: `open_preview` с

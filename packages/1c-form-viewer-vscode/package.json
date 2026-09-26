@@ -2,7 +2,7 @@
   "name": "1c-form-viewer-vscode",
   "displayName": "1C Form Viewer (BSLEdit)",
   "description": "Part of the BSLEdit project (github.com/alonehobo/BslEdit). Visual preview of 1C managed forms, templates and MXL files, with bundled MCP tools for VS Code agents",
-  "version": "0.3.0",
+  "version": "0.2.4",
   "icon": "images/icon.png",
   "publisher": "alonehobo",
   "author": {

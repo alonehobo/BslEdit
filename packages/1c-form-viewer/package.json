@@ -1,7 +1,7 @@
 {
   "name": "1c-form-viewer",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.2.4",
   "description": "MCP server for visually inspecting 1C managed forms and spreadsheet templates — native Windows exe and the cross-platform Node.js server",
   "author": {
     "name": "Sergey Martemyanov",
