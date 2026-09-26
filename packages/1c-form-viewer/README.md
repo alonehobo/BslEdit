@@ -4,9 +4,10 @@
 управляемые формы 1С, `Template.xml` и MXL без установки 1С, Node.js или npm,
 а также собирает макет печатной формы из `.xlsx`.
 
-Сервер поставляется как архив `1c-form-viewer-native-<версия>-win-x64.zip`. Распакуйте его
-целиком в постоянный каталог: рядом с `1c-form-viewer.exe` должна остаться папка
-`app/web` с интерфейсом и renderer-ами.
+Сервер поставляется как архив `1c-form-viewer-native-<версия>-win-x64.zip`.
+`1c-form-viewer.exe` самодостаточен: интерфейс и renderer-ы лежат внутри него,
+рядом ничего держать не нужно. При первом запуске он распаковывает их в
+`%LOCALAPPDATA%\1c-form-viewer`; ключ `--assets DIR` подменяет их рабочей копией.
 
 ## Возможности
 
@@ -118,6 +119,36 @@
 локально. Без него `edit_form` работает, но значения и имена свойств не
 проверяются, а новый узел ставится перед companion-узлами, а не строго по схеме.
 
+## Node.js-сервер (Linux, macOS, Windows)
+
+Рядом с нативным exe есть кроссплатформенный Node.js-вариант того же сервера:
+те же десять инструментов, тот же stdio-протокол и те же схемы. Нужен Node.js
+20+ и Chromium.
+
+```bash
+npm install
+npm run start:node --workspace=1c-form-viewer -- --stdio --root /path/to/workspace
+```
+
+`start:node` собирает ассеты (`build:assets`) и компилирует сервер в `dist/`;
+далее сервер можно запускать напрямую: `node dist/mcp-server.js --stdio --root …`.
+На Linux и macOS рендеринг идёт через Chromium из playwright-core — один раз
+выполните `npx playwright-core install chromium-headless-shell` (на чистом
+Linux также `npx playwright-core install-deps chromium`, либо поставьте
+системный Chromium и укажите его в `ONE_C_FORM_VIEWER_CHROMIUM`). На Windows
+
+Отличия от нативного сервера: окно `audience="user"` открывается командой
+платформы (`xdg-open`, `open`, `start`) в браузере по умолчанию, а не в
+BSLEdit; все превью живут в одном headless-браузере, каждое в своём контексте;
+трансформы (list/validate/edit форм и макетов, конвертация xlsx) выполняются в
+процессе сервера, без страницы браузера; запись файла не проверяет, открыт ли
+он в BSLEdit; `base_revision` читает версию из git через `git` из `PATH`, а не
+через код BSLEdit.
+
+Схемы инструментов Node-сервер берёт у нативного: `src/tool-schemas.ts`
+генерируется из `native/mcp-server.cpp` командой
+пока они расходятся. После правки схем нативного сервера запускайте генератор.
+
 ## Подключение
 
 В примерах сервер распакован в `C:\Tools\1c-form-viewer-native`, а файлы 1С
@@ -182,16 +213,15 @@ claude mcp add --transport stdio --scope local one-c-form-viewer -- "C:\Tools\1c
 
 Проверка: `claude mcp get one-c-form-viewer` или `claude mcp list`.
 
-## Сборка и тесты
+## Сборка
 
 ```powershell
 npm run build:native --workspace=1c-form-viewer
-npm test --workspace=1c-form-viewer
 ```
 
 Сборка создаёт `artifacts/1c-form-viewer-native-win-x64` и используется при
-упаковке VS Code-расширения. npm здесь является только инструментом разработки
-репозитория; устанавливаемого npm MCP-пакета и Node.js-варианта сервера нет.
+упаковке VS Code-расширения. Устанавливаемого npm MCP-пакета нет: Node.js-вариант
+сервера (см. «Node.js-сервер» выше) запускается из рабочей копии репозитория.
 
 Исходник сервера: `native/mcp-server.cpp`. Web-интерфейс собирается из общего
 `1c-preview-core` и файлов `ui/`.

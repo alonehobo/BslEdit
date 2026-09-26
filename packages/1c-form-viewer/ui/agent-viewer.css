@@ -3,9 +3,12 @@ body { display: flex; flex-direction: column; background: #f2f2f2; font-family: 
 #agent-header { flex: 0 0 auto; display: flex; gap: 12px; align-items: center; min-height: 34px; padding: 0 12px; box-sizing: border-box; background: #fff; border-bottom: 1px solid #d2d2d2; color: #333; font-size: 12px; }
 #outline-toggle { display: none; width: 26px; height: 24px; padding: 0; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 15px; line-height: 22px; }
 #outline-toggle:hover { background: #f0f0f0; }
-#reload-preview { display: none; margin-left: auto; flex: 0 0 auto; height: 24px; padding: 0 8px; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 12px; white-space: nowrap; }
+#reload-preview { display: none; flex: 0 0 auto; height: 24px; padding: 0 8px; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 12px; white-space: nowrap; }
 #reload-preview:hover { background: #f0f0f0; }
 #reload-preview:disabled { color: #999; cursor: default; }
+#open-editor { display: none; flex: 0 0 auto; height: 24px; padding: 0 8px; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 12px; white-space: nowrap; }
+#open-editor:hover { background: #f0f0f0; }
+#open-editor:disabled { color: #999; cursor: default; }
 #agent-format { color: #0067c0; white-space: nowrap; }
 #agent-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #agent-main { flex: 1 1 auto; min-height: 0; display: flex; position: relative; }
@@ -18,13 +21,21 @@ body { display: flex; flex-direction: column; background: #f2f2f2; font-family: 
 .outline-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .outline-line { margin-left: auto; color: #777; font-size: 11px; }
 body.browser-ui #outline-toggle, body.browser-ui #outline-pane, body.browser-ui #reload-preview { display: block; }
+/* The editor button appears only when the server found BSLEdit. */
+body.browser-ui #open-editor.available { display: block; }
 body.browser-ui.outline-collapsed #outline-pane { display: none; }
 body.bare #agent-header, body.bare #outline-pane { display: none; }
 #agent-preview-pane { flex: 1 1 auto; min-width: 0; min-height: 0; position: relative; }
 #agent-empty { padding: 24px; color: #666; }
 #preview { display: block; position: absolute; inset: 0; width: auto; height: auto; min-width: 0; }
 #preview.fp-root, #preview.tp-root { display: flex; height: 100%; }
-.fp-pages-active-panel > .fp-item[data-tag="Pages"] { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-.fp-pages-active-panel > .fp-item[data-tag="Pages"] > .fp-control-wrap,
-.fp-pages-active-panel > .fp-item[data-tag="Pages"] > .fp-control-wrap > .fp-group-block,
-.fp-pages-active-panel > .fp-item[data-tag="Pages"] .fp-pages-outer { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* open_preview base_path/base_revision: the diff views expect the flex host
+ * BSLEdit gives them (#diff-sheets), so the sheets and the change list share
+ * the height and each scrolls on its own. */
+#preview.agent-diff { display: flex; overflow: hidden; }
+#preview.agent-diff > * { flex: 1 1 auto; min-width: 0; min-height: 0; }
+/* The change cards are sized for BSLEdit's compact panel; in a window of
+ * their own they read too small. zoom keeps their 9-12px proportions. */
+#preview.agent-diff .tpd-list, #preview.agent-diff .fpd-cards, #preview.agent-diff .dcsd-nav { zoom: 1.25; }
+/* "было / стало" above the two versions. */
+#preview.agent-diff .tpd-pane-head, #preview.agent-diff .fpd-preview-head { flex: 0 0 auto; font-size: 13px; padding: 5px 10px; color: #333; }

@@ -6,7 +6,10 @@
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
 <title>BSLView</title>
 <link rel="stylesheet" href="viewer.css">
+<link rel="stylesheet" href="form-preview-85.css">
+<link rel="stylesheet" href="session-annotations.css">
 <link rel="stylesheet" href="form-workbench.css">
+<link rel="stylesheet" href="epf-unpack.css">
 <link rel="stylesheet" href="vs/editor/editor.main.css">
 <link rel="preload" as="script" href="vs/loader.js">
 <link rel="preload" as="script" href="vs/editor/editor.main.js">
@@ -14,7 +17,6 @@
 <body>
 <!-- ICON_SPRITE:BEGIN generated from packages/1c-preview-core/browser/icons.svg -->
 <svg style="display:none" aria-hidden="true">
-  <symbol id="i-pdf" viewBox="0 0 24 24"><path d="M14 3v4a1 1 0 0 0 1 1h4" /><path d="M5 12v-7a2 2 0 0 1 2 -2h7l5 5v4" /><path d="M5 18h1.5a1.5 1.5 0 0 0 0 -3h-1.5v6" /><path d="M17 18h2" /><path d="M20 15h-3v6" /><path d="M11 15v6h1a2 2 0 0 0 2 -2v-2a2 2 0 0 0 -2 -2h-1" /></symbol>
   <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4l10.5 -10.5a2.828 2.828 0 1 0 -4 -4l-10.5 10.5v4" /><path d="M13.5 6.5l4 4" /></symbol>
   <symbol id="i-eye" viewBox="0 0 24 24"><path d="M10 12a2 2 0 1 0 4 0a2 2 0 0 0 -4 0" /><path d="M21 12c-2.4 4 -5.4 6 -9 6c-3.6 0 -6.6 -2 -9 -6c2.4 -4 5.4 -6 9 -6c3.6 0 6.6 2 9 6" /></symbol>
   <symbol id="i-window" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z" /><path d="M4 9h16" /><path d="M8 6v.01" /><path d="M12 6v.01" /></symbol>
@@ -23,8 +25,19 @@
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3c.132 0 .263 0 .393 0a7.5 7.5 0 0 0 7.92 12.446a9 9 0 1 1 -8.313 -12.454l0 .008" /></symbol>
   <symbol id="i-code" viewBox="0 0 24 24"><path d="M7 8l-4 4l4 4" /><path d="M17 8l4 4l-4 4" /><path d="M14 4l-4 16" /></symbol>
   <symbol id="i-comment" viewBox="0 0 24 24"><path d="M8 9h8" /><path d="M8 13h6" /><path d="M11.012 19.193l-3.012 1.807v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v6" /><path d="M20 21l2 -2l-2 -2" /><path d="M17 17l-2 2l2 2" /></symbol>
+  <symbol id="i-robot" viewBox="0 0 24 24"><path d="M12 4v-2" /><path d="M9 2h6" /><rect x="4" y="6" width="16" height="14" rx="3" /><path d="M4 12h-2" /><path d="M22 12h-2" /><path d="M9 11v.01" /><path d="M15 11v.01" /><path d="M9 16h6" /></symbol>
+  <symbol id="i-layout-source" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z" /><path d="M10 10l-2 2l2 2" /><path d="M14 10l2 2l-2 2" /></symbol>
+  <symbol id="i-layout-split" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z" /><path d="M12 4v16" /><path d="M7 10l-1 1l1 1" /><path d="M15 9h3" /><path d="M15 13h3" /></symbol>
+  <symbol id="i-layout-preview" viewBox="0 0 24 24"><path d="M4 4m0 2a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z" /><path d="M8 9h8" /><path d="M8 13h8" /><path d="M8 17h5" /></symbol>
+  <symbol id="i-pilcrow" viewBox="0 0 24 24"><path d="M13 4v16" /><path d="M17 4v16" /><path d="M19 4h-9.5a4.5 4.5 0 0 0 0 9h3.5" /></symbol>
   <symbol id="i-format" viewBox="0 0 24 24"><path d="M4 6l16 0" /><path d="M4 12l10 0" /><path d="M4 18l14 0" /></symbol>
   <symbol id="i-save" viewBox="0 0 24 24"><path d="M6 4h10l4 4v10a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2v-12a2 2 0 0 1 2 -2" /><path d="M10 14a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /><path d="M14 4l0 4l-6 0l0 -4" /></symbol>
+
+  <symbol id="i-git-commit" viewBox="0 0 24 24"><path d="M9 12a3 3 0 1 0 6 0a3 3 0 1 0 -6 0" /><path d="M12 3l0 6" /><path d="M12 15l0 6" /></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M21 3 3 10l7 3 3 8 8-18Z" /><path d="m10 13 11-10" /></symbol>
+  <symbol id="i-clipboard-check" viewBox="0 0 24 24"><path d="M9 5H6a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-3" /><path d="M9 3h6v4H9z" /><path d="m9 15 2 2 4-4" /></symbol>
+  <symbol id="i-square-plus" viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M12 7v10M7 12h10" /></symbol>
+  <symbol id="i-square-minus" viewBox="0 0 24 24"><path d="M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" /><path d="M7 12h10" /></symbol>
   <symbol id="i-outline" viewBox="0 0 24 24"><path d="M9 6h11" /><path d="M12 12h8" /><path d="M15 18h5" /><path d="M5 6v.01" /><path d="M8 12v.01" /><path d="M11 18v.01" /></symbol>
   <symbol id="i-sort-numbers" viewBox="0 0 24 24"><path d="M4 15l3 3l3 -3" /><path d="M7 6v12" /><path d="M17 3a2 2 0 0 1 2 2v3a2 2 0 1 1 -4 0v-3a2 2 0 0 1 2 -2" /><path d="M15 16a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /><path d="M19 16v3a2 2 0 0 1 -2 2h-1.5" /></symbol>
   <symbol id="i-sidebar-right" viewBox="0 0 24 24"><path d="M4 6a2 2 0 0 1 2 -2h12a2 2 0 0 1 2 2v12a2 2 0 0 1 -2 2h-12a2 2 0 0 1 -2 -2z" /><path d="M15 4v16" /><path d="M17.5 8h.01" /><path d="M17.5 11h.01" /></symbol>
@@ -47,8 +60,18 @@
   <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9l6 6l6 -6" /></symbol>
   <symbol id="i-credit-card" viewBox="0 0 24 24"><path d="M3 5m0 3a3 3 0 0 1 3 -3h12a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-12a3 3 0 0 1 -3 -3z" /><path d="M3 10h18" /><path d="M7 15h.01" /><path d="M11 15h2" /></symbol>
   <symbol id="i-ban" viewBox="0 0 24 24"><path d="M12 3a9 9 0 1 0 0 18a9 9 0 0 0 0 -18" /><path d="M5.7 5.7l12.6 12.6" /></symbol>
+  <symbol id="i-circle-x" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" /><path d="M9 9l6 6M15 9l-6 6" /></symbol>
   <symbol id="i-caret-down" viewBox="0 0 24 24"><path d="M7 10l5 5l5 -5z" fill="currentColor" stroke="none" /></symbol>
   <symbol id="i-open-1c" viewBox="0 0 24 24"><path d="M12 5h8v8h-8z" /><path d="M12 11h-7v8h8v-6" /></symbol>
+  <symbol id="i-open-85" viewBox="0 0 18 18">
+    <image width="18" height="18" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABIAAAASCAYAAABWzo5XAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAACRSURBVDhPzZQxCgAhDAT9/8cEbbQS/UyODeTwokLEKyxGJMkOWqgjIgdqrRRCIO+9CcwiI3leYozDoBVkWQQrCqWU124FGWRba+TkOnrICrJw8OZUBC4U6cYuF4tks0IHNf+LdCPnfC4SSS/TQc0gknBKicM7In4iM4lV9Hm0M8lKJLWe9xuBSEssIlwHJ5HeA8Mn9qnY4WwgAAAAAElFTkSuQmCC" />
+  </symbol>
+  <symbol id="i-caret-down-85" viewBox="0 0 10 6">
+    <image width="10" height="6" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAoAAAAGCAYAAAD68A/GAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAABSSURBVBhXbY7RCUAxCAPdf4fqRm5RdYs88kAptB/5aO5oFHdHVQGAvEJGR1QVzEtm1/x/mBnWWth7j3z2EXGXlPunlujMTGbOTIdd8+umc+5kH2ufvRDml9WtAAAAAElFTkSuQmCC" />
+  </symbol>
+  <symbol id="i-dots-85" viewBox="0 0 20 23">
+    <g fill="currentColor" stroke="none"><circle cx="7" cy="12" r="1.5" /><circle cx="12" cy="12" r="1.5" /><circle cx="17" cy="12" r="1.5" /></g>
+  </symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M5 4h4l3 3h7a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-14a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2" /></symbol>
   <symbol id="i-info-circle" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0" /><path d="M12 9h.01" /><path d="M11 12h1v4h1" /></symbol>
   <symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="M12 9v4" /><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z" /><path d="M12 17h.01" /></symbol>
@@ -61,6 +84,7 @@
   </symbol>
   <symbol id="i-history" viewBox="0 0 24 24"><path d="M12 8v4l2 2" /><path d="M3.05 11a9 9 0 1 0 .5 -3" /><path d="M3 4v7h7" /></symbol>
   <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 4h16v2.172a2 2 0 0 1 -.586 1.414l-4.828 4.828a2 2 0 0 0 -.586 1.414v5.172l-4 -2v-3.172a2 2 0 0 0 -.586 -1.414l-4.828 -4.828a2 2 0 0 1 -.586 -1.414v-2.172" /></symbol>
+  <symbol id="i-filter-list" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4" /></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0 -15.5 -2m-.5 -4v4h4" /><path d="M4 13a8.1 8.1 0 0 0 15.5 2m.5 4v-4h-4" /></symbol>
   <symbol id="i-settings" viewBox="2 2 20 20"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065z" /><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" /></symbol>
   <symbol id="i-adjustments" viewBox="0 0 24 24"><path d="M14 6m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /><path d="M4 6h8" /><path d="M16 6h4" /><path d="M8 12m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /><path d="M4 12h2" /><path d="M10 12h10" /><path d="M17 18m-2 0a2 2 0 1 0 4 0a2 2 0 1 0 -4 0" /><path d="M4 18h11" /><path d="M19 18h1" /></symbol>
@@ -94,36 +118,267 @@
   <symbol id="i-px-chip-x" viewBox="0 0 12 12" shape-rendering="crispEdges"><rect x="3" y="0" width="1" height="1" fill-opacity="0.14" /><rect x="4" y="0" width="1" height="1" fill-opacity="0.26" /><rect x="5" y="0" width="1" height="1" fill-opacity="0.31" /><rect x="6" y="0" width="1" height="1" fill-opacity="0.31" /><rect x="7" y="0" width="1" height="1" fill-opacity="0.26" /><rect x="8" y="0" width="1" height="1" fill-opacity="0.14" /><rect x="1" y="1" width="1" height="1" fill-opacity="0.04" /><rect x="2" y="1" width="1" height="1" fill-opacity="0.27" /><rect x="3" y="1" width="1" height="1" fill-opacity="0.33" /><rect x="4" y="1" width="1" height="1" fill-opacity="0.33" /><rect x="5" y="1" width="1" height="1" fill-opacity="0.33" /><rect x="6" y="1" width="1" height="1" fill-opacity="0.33" /><rect x="7" y="1" width="1" height="1" fill-opacity="0.33" /><rect x="8" y="1" width="1" height="1" fill-opacity="0.33" /><rect x="9" y="1" width="1" height="1" fill-opacity="0.27" /><rect x="10" y="1" width="1" height="1" fill-opacity="0.04" /><rect x="1" y="2" width="1" height="1" fill-opacity="0.27" /><rect x="2" y="2" width="1" height="1" fill-opacity="0.33" /><rect x="3" y="2" width="1" height="1" fill-opacity="0.31" /><rect x="4" y="2" width="1" height="1" fill-opacity="0.33" /><rect x="5" y="2" width="1" height="1" fill-opacity="0.33" /><rect x="6" y="2" width="1" height="1" fill-opacity="0.33" /><rect x="7" y="2" width="1" height="1" fill-opacity="0.33" /><rect x="8" y="2" width="1" height="1" fill-opacity="0.31" /><rect x="9" y="2" width="1" height="1" fill-opacity="0.33" /><rect x="10" y="2" width="1" height="1" fill-opacity="0.27" /><rect x="0" y="3" width="1" height="1" fill-opacity="0.14" /><rect x="1" y="3" width="1" height="1" fill-opacity="0.33" /><rect x="2" y="3" width="1" height="1" fill-opacity="0.31" /><rect x="3" y="3" width="1" height="1" fill-opacity="0.03" /><rect x="4" y="3" width="1" height="1" fill-opacity="0.22" /><rect x="5" y="3" width="1" height="1" fill-opacity="0.33" /><rect x="6" y="3" width="1" height="1" fill-opacity="0.33" /><rect x="7" y="3" width="1" height="1" fill-opacity="0.22" /><rect x="8" y="3" width="1" height="1" fill-opacity="0.03" /><rect x="9" y="3" width="1" height="1" fill-opacity="0.31" /><rect x="10" y="3" width="1" height="1" fill-opacity="0.33" /><rect x="11" y="3" width="1" height="1" fill-opacity="0.14" /><rect x="0" y="4" width="1" height="1" fill-opacity="0.26" /><rect x="1" y="4" width="1" height="1" fill-opacity="0.33" /><rect x="2" y="4" width="1" height="1" fill-opacity="0.33" /><rect x="3" y="4" width="1" height="1" fill-opacity="0.22" /><rect x="5" y="4" width="1" height="1" fill-opacity="0.22" /><rect x="6" y="4" width="1" height="1" fill-opacity="0.22" /><rect x="8" y="4" width="1" height="1" fill-opacity="0.22" /><rect x="9" y="4" width="1" height="1" fill-opacity="0.33" /><rect x="10" y="4" width="1" height="1" fill-opacity="0.33" /><rect x="11" y="4" width="1" height="1" fill-opacity="0.26" /><rect x="0" y="5" width="1" height="1" fill-opacity="0.32" /><rect x="1" y="5" width="1" height="1" fill-opacity="0.33" /><rect x="2" y="5" width="1" height="1" fill-opacity="0.33" /><rect x="3" y="5" width="1" height="1" fill-opacity="0.33" /><rect x="4" y="5" width="1" height="1" fill-opacity="0.22" /><rect x="7" y="5" width="1" height="1" fill-opacity="0.22" /><rect x="8" y="5" width="1" height="1" fill-opacity="0.33" /><rect x="9" y="5" width="1" height="1" fill-opacity="0.33" /><rect x="10" y="5" width="1" height="1" fill-opacity="0.33" /><rect x="11" y="5" width="1" height="1" fill-opacity="0.32" /><rect x="0" y="6" width="1" height="1" fill-opacity="0.32" /><rect x="1" y="6" width="1" height="1" fill-opacity="0.33" /><rect x="2" y="6" width="1" height="1" fill-opacity="0.33" /><rect x="3" y="6" width="1" height="1" fill-opacity="0.33" /><rect x="4" y="6" width="1" height="1" fill-opacity="0.22" /><rect x="7" y="6" width="1" height="1" fill-opacity="0.22" /><rect x="8" y="6" width="1" height="1" fill-opacity="0.33" /><rect x="9" y="6" width="1" height="1" fill-opacity="0.33" /><rect x="10" y="6" width="1" height="1" fill-opacity="0.33" /><rect x="11" y="6" width="1" height="1" fill-opacity="0.31" /><rect x="0" y="7" width="1" height="1" fill-opacity="0.26" /><rect x="1" y="7" width="1" height="1" fill-opacity="0.33" /><rect x="2" y="7" width="1" height="1" fill-opacity="0.33" /><rect x="3" y="7" width="1" height="1" fill-opacity="0.22" /><rect x="5" y="7" width="1" height="1" fill-opacity="0.22" /><rect x="6" y="7" width="1" height="1" fill-opacity="0.22" /><rect x="8" y="7" width="1" height="1" fill-opacity="0.22" /><rect x="9" y="7" width="1" height="1" fill-opacity="0.33" /><rect x="10" y="7" width="1" height="1" fill-opacity="0.33" /><rect x="11" y="7" width="1" height="1" fill-opacity="0.26" /><rect x="0" y="8" width="1" height="1" fill-opacity="0.14" /><rect x="1" y="8" width="1" height="1" fill-opacity="0.33" /><rect x="2" y="8" width="1" height="1" fill-opacity="0.31" /><rect x="3" y="8" width="1" height="1" fill-opacity="0.03" /><rect x="4" y="8" width="1" height="1" fill-opacity="0.22" /><rect x="5" y="8" width="1" height="1" fill-opacity="0.33" /><rect x="6" y="8" width="1" height="1" fill-opacity="0.33" /><rect x="7" y="8" width="1" height="1" fill-opacity="0.22" /><rect x="8" y="8" width="1" height="1" fill-opacity="0.03" /><rect x="9" y="8" width="1" height="1" fill-opacity="0.31" /><rect x="10" y="8" width="1" height="1" fill-opacity="0.33" /><rect x="11" y="8" width="1" height="1" fill-opacity="0.14" /><rect x="1" y="9" width="1" height="1" fill-opacity="0.27" /><rect x="2" y="9" width="1" height="1" fill-opacity="0.33" /><rect x="3" y="9" width="1" height="1" fill-opacity="0.31" /><rect x="4" y="9" width="1" height="1" fill-opacity="0.33" /><rect x="5" y="9" width="1" height="1" fill-opacity="0.33" /><rect x="6" y="9" width="1" height="1" fill-opacity="0.33" /><rect x="7" y="9" width="1" height="1" fill-opacity="0.33" /><rect x="8" y="9" width="1" height="1" fill-opacity="0.31" /><rect x="9" y="9" width="1" height="1" fill-opacity="0.33" /><rect x="10" y="9" width="1" height="1" fill-opacity="0.27" /><rect x="1" y="10" width="1" height="1" fill-opacity="0.04" /><rect x="2" y="10" width="1" height="1" fill-opacity="0.27" /><rect x="3" y="10" width="1" height="1" fill-opacity="0.33" /><rect x="4" y="10" width="1" height="1" fill-opacity="0.33" /><rect x="5" y="10" width="1" height="1" fill-opacity="0.33" /><rect x="6" y="10" width="1" height="1" fill-opacity="0.33" /><rect x="7" y="10" width="1" height="1" fill-opacity="0.33" /><rect x="8" y="10" width="1" height="1" fill-opacity="0.33" /><rect x="9" y="10" width="1" height="1" fill-opacity="0.27" /><rect x="10" y="10" width="1" height="1" fill-opacity="0.04" /><rect x="3" y="11" width="1" height="1" fill-opacity="0.15" /><rect x="4" y="11" width="1" height="1" fill-opacity="0.26" /><rect x="5" y="11" width="1" height="1" fill-opacity="0.31" /><rect x="6" y="11" width="1" height="1" fill-opacity="0.31" /><rect x="7" y="11" width="1" height="1" fill-opacity="0.26" /><rect x="8" y="11" width="1" height="1" fill-opacity="0.15" /></symbol>
 </svg>
 <!-- ICON_SPRITE:END -->
+<div id="pack" class="epf-panel" hidden>
+<form id="pack-form" class="epf-form" autocomplete="off" onsubmit="return false">
+  <div class="epf-grid">
+    <span>XML выгрузка:</span>
+    <div class="epf-with-btn">
+      <a href="#" id="pack-source" class="epf-path-link" title="Вернуться к объекту"></a>
+      <button type="button" id="pack-explore" tabindex="-1" title="Открыть каталог в Проводнике"><svg viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M21 21l-6 -6" /></svg></button>
+    </div>
+    <span></span>
+    <span>Вид данных:</span>
+    <div id="pack-dump" class="span2"></div>
+    <div class="epf-row" id="pack-object-row">
+      <span>Объект:</span>
+      <div id="pack-object" class="span2 epf-mono"></div>
+    </div>
+    <div class="epf-row" id="pack-do-row">
+      <span>Действия:</span>
+      <div class="span2 epf-inline">
+        <label class="epf-check"><input type="checkbox" id="pack-do-assemble"> Собрать в файл</label>
+        <label class="epf-check"><input type="checkbox" id="pack-do-load"> Загрузить в базу</label>
+      </div>
+    </div>
+    <div class="epf-row" id="pack-out-row">
+      <label for="pack-out">Собрать в:</label>
+      <input type="text" id="pack-out" spellcheck="false">
+      <button type="button" id="pack-out-browse" class="epf-dots" title="Выбрать файл">...</button>
+    </div>
+    <label for="pack-platform">Платформа:</label>
+    <select id="pack-platform" class="span2"></select>
+  </div>
+  <fieldset class="epf-group" id="pack-context-group">
+    <legend>Конфигурация для разрешения ссылок</legend>
+    <div class="epf-grid">
+      <label class="epf-radio span3"><input type="radio" name="pack-kind" value="empty"> Без конфигурации (пустая база) <span class="epf-note">— только если обработка не содержит ссылочные типы</span></label>
+      <label class="epf-radio span3"><input type="radio" name="pack-kind" value="base"> База из списка:</label>
+      <div class="epf-row" id="pack-ctx-base-row">
+        <span></span>
+        <select id="pack-ctx-base" class="span2"></select>
+        <span></span>
+        <div class="epf-auth span2">
+          <label for="pack-ctx-user">Пользователь:</label>
+          <input type="text" id="pack-ctx-user" spellcheck="false">
+          <label for="pack-ctx-password">Пароль:</label>
+          <input type="password" id="pack-ctx-password">
+          <label class="epf-check" title="Пароль хранится зашифрованным (Windows DPAPI) и доступен только вашей учётной записи"><input type="checkbox" id="pack-ctx-save-auth"> Сохранить авторизацию</label>
+        </div>
+      </div>
+      <div class="epf-row" id="pack-cf-row">
+        <label class="epf-radio"><input type="radio" name="pack-kind" value="cf"> CF-файл:</label>
+        <input type="text" id="pack-cf" spellcheck="false">
+        <button type="button" id="pack-cf-browse" class="epf-dots" title="Выбрать файл конфигурации">...</button>
+      </div>
+    </div>
+  </fieldset>
+  <fieldset class="epf-group" id="pack-ib-group">
+    <legend id="pack-ib-legend">Информационная база для загрузки</legend>
+    <div class="epf-grid">
+      <label for="pack-base">База:</label>
+      <select id="pack-base" class="span2"></select>
+      <span></span>
+      <div class="epf-auth span2">
+        <label for="pack-user">Пользователь:</label>
+        <input type="text" id="pack-user" spellcheck="false">
+        <label for="pack-password">Пароль:</label>
+        <input type="password" id="pack-password">
+        <label class="epf-check" title="Пароль хранится зашифрованным (Windows DPAPI) и доступен только вашей учётной записи"><input type="checkbox" id="pack-save-auth"> Сохранить авторизацию</label>
+      </div>
+      <label class="epf-check span3"><input type="checkbox" id="pack-update-db"> Обновить конфигурацию базы данных</label>
+      <div id="pack-load-note" class="span3 epf-note"></div>
+    </div>
+  </fieldset>
+  <div class="epf-actions">
+    <button type="button" id="pack-run" class="primary">Выполнить</button>
+  </div>
+</form>
+<textarea id="pack-log" readonly spellcheck="false" aria-label="Журнал сборки"></textarea>
+</div>
+<div id="epf" class="epf-panel" hidden>
+<form id="epf-form" class="epf-form" autocomplete="off" onsubmit="return false">
+  <div class="epf-grid">
+    <label for="epf-file">Файл:</label>
+    <input type="text" id="epf-file" spellcheck="false">
+    <button type="button" id="epf-file-browse" class="epf-dots" title="Выбрать файл">...</button>
+    <div class="epf-row epf-only-config">
+      <span>Действия:</span>
+      <div class="span2 epf-inline">
+        <label class="epf-check"><input type="checkbox" id="epf-do-load"> Загрузить в базу</label>
+        <label class="epf-check"><input type="checkbox" id="epf-do-unpack"> Распаковать в XML</label>
+      </div>
+    </div>
+    <div class="epf-row" id="epf-target-row">
+      <label for="epf-target">Распаковать в:</label>
+      <div class="epf-with-btn">
+        <input type="text" id="epf-target" spellcheck="false">
+        <button type="button" id="epf-explore" tabindex="-1" title="Открыть каталог в Проводнике"><svg viewBox="0 0 24 24"><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M21 21l-6 -6" /></svg></button>
+      </div>
+      <button type="button" id="epf-target-browse" class="epf-dots" title="Выбрать каталог">...</button>
+    </div>
+    <label class="epf-check span3" id="epf-git-row"><input type="checkbox" id="epf-add-git"> Добавить распакованные файлы в Git</label>
+    <label for="epf-platform">Платформа:</label>
+    <select id="epf-platform" class="span2"></select>
+  </div>
+  <fieldset class="epf-group epf-only-config" id="epf-ib-group">
+    <legend>Информационная база для загрузки</legend>
+    <div class="epf-grid">
+      <label class="epf-radio"><input type="radio" name="epf-ib" value="existing"> Из списка</label>
+      <span class="span2"></span>
+      <div class="epf-row" id="epf-ib-existing">
+        <span></span>
+        <select id="epf-ib-base" class="span2"></select>
+        <span></span>
+        <div class="epf-auth span2">
+          <label for="epf-ib-user">Пользователь:</label>
+          <input type="text" id="epf-ib-user" spellcheck="false">
+          <label for="epf-ib-password">Пароль:</label>
+          <input type="password" id="epf-ib-password">
+          <label class="epf-check" title="Пароль хранится зашифрованным (Windows DPAPI) и доступен только вашей учётной записи"><input type="checkbox" id="epf-ib-save-auth"> Сохранить авторизацию</label>
+        </div>
+      </div>
+      <label class="epf-radio"><input type="radio" name="epf-ib" value="new"> Новая файловая</label>
+      <span class="span2"></span>
+      <div class="epf-row" id="epf-ib-new">
+        <label for="epf-new-name" class="epf-sub">Имя в списке:</label>
+        <input type="text" id="epf-new-name" spellcheck="false" class="span2">
+        <label for="epf-new-dir" class="epf-sub">Каталог базы:</label>
+        <input type="text" id="epf-new-dir" spellcheck="false">
+        <button type="button" id="epf-new-dir-browse" class="epf-dots" title="Выбрать каталог">...</button>
+      </div>
+      <label class="epf-check span3" id="epf-ext-unsafe-row"><input type="checkbox" id="epf-ext-unsafe"> Отключить безопасный режим и защиту от опасных действий</label>
+      <div id="epf-ext-unsafe-server" class="span3 epf-note" hidden>Серверная база загружается через конфигуратор. Безопасный режим и защиту от опасных действий расширения у неё отключите в конфигураторе (Конфигурация → Расширения конфигурации): пакетной команды для этого у платформы нет.</div>
+      <div id="epf-ib-warning" class="span3 epf-warn" hidden></div>
+    </div>
+  </fieldset>
+  <fieldset class="epf-group epf-only-external">
+    <legend>Конфигурация для разрешения ссылок</legend>
+    <div class="epf-grid">
+      <label class="epf-radio span3"><input type="radio" name="epf-kind" value="empty"> Без конфигурации (пустая база) <span id="epf-empty-note" class="epf-note">— только если обработка не содержит ссылочные типы</span></label>
+      <label class="epf-radio"><input type="radio" name="epf-kind" value="base"> База из списка:</label>
+      <div class="epf-row" id="epf-base-row">
+        <select id="epf-base" class="span2"></select>
+        <span></span>
+        <div class="epf-auth span2">
+          <label for="epf-user">Пользователь:</label>
+          <input type="text" id="epf-user" spellcheck="false">
+          <label for="epf-password">Пароль:</label>
+          <input type="password" id="epf-password">
+          <label class="epf-check" title="Пароль хранится зашифрованным (Windows DPAPI) и доступен только вашей учётной записи"><input type="checkbox" id="epf-save-auth"> Сохранить авторизацию</label>
+        </div>
+      </div>
+      <span class="span2" id="epf-base-gap"></span>
+      <label class="epf-radio"><input type="radio" name="epf-kind" value="cf"> CF-файл:</label>
+      <div class="epf-row" id="epf-cf-row">
+        <input type="text" id="epf-cf" spellcheck="false">
+        <button type="button" id="epf-cf-browse" class="epf-dots" title="Выбрать файл конфигурации">...</button>
+      </div>
+      <span class="span2" id="epf-cf-gap"></span>
+      <div id="epf-cache-info" class="span3 epf-note" hidden></div>
+    </div>
+  </fieldset>
+  <div class="epf-actions">
+    <button type="button" id="epf-unpack" class="primary">Распаковать</button>
+    <button type="button" id="epf-open" disabled title="Показать распакованный объект">Открыть</button>
+    <label class="epf-check" id="epf-open-after-row"><input type="checkbox" id="epf-open-after"> Открыть после успешной распаковки</label>
+    <a href="#" id="epf-clear-cache">Очистить кэш служебных баз</a>
+  </div>
+</form>
+<textarea id="epf-log" readonly spellcheck="false" aria-label="Журнал распаковки"></textarea>
+</div>
 <div id="loading">Загрузка редактора…</div>
 <div id="main" style="display:none">
 <div id="topbar">
-<button id="btn-back" class="tb-btn" title="Назад (Alt+←)" style="display:none"><img class="tb-icon platform-icon" src="platform-back.png" alt=""></button>
-<button id="btn-save" class="tb-btn" title="Сохранить (Ctrl+S)" style="display:none"><img class="tb-icon platform-icon" src="platform-save.png" alt=""></button>
-<button id="btn-format" class="tb-btn" title="Форматировать документ (Alt+Shift+F)" style="display:none"><svg class="tb-icon"><use href="#i-format"></use></svg></button>
-<button id="btn-comment" class="tb-btn" title="Комментировать строку (Ctrl+/)" style="display:none"><svg class="tb-icon"><use href="#i-comment"></use></svg></button>
-<span class="tb-sep"></span>
+<div id="editor-toolbar" class="topbar-group topbar-left" role="toolbar" aria-label="Команды редактирования" hidden>
+<button id="btn-undo" class="tb-btn" title="Отменить (Ctrl+Z)" aria-label="Отменить" style="display:none"><svg class="tb-icon"><use href="#i-arrow-back-up"></use></svg></button>
+<button id="btn-redo" class="tb-btn" title="Вернуть (Ctrl+Y)" aria-label="Вернуть" style="display:none"><svg class="tb-icon"><use href="#i-arrow-forward-up"></use></svg></button>
+<span class="tb-sep code-edit-only" style="display:none"></span>
+<button id="btn-move-line-up" class="tb-btn code-edit-only" title="Сдвинуть строку выше (Alt+↑)" aria-label="Сдвинуть строку выше" style="display:none"><svg class="tb-icon"><use href="#i-arrow-up"></use></svg></button>
+<button id="btn-move-line-down" class="tb-btn code-edit-only" title="Сдвинуть строку ниже (Alt+↓)" aria-label="Сдвинуть строку ниже" style="display:none"><svg class="tb-icon"><use href="#i-arrow-down"></use></svg></button>
+<button id="btn-copy-line-down" class="tb-btn code-edit-only" title="Дублировать строку ниже (Shift+Alt+↓)" aria-label="Дублировать строку ниже" style="display:none"><svg class="tb-icon"><use href="#i-copy"></use></svg></button>
+<button id="btn-delete-line" class="tb-btn code-edit-only" title="Удалить строку (Ctrl+Shift+K)" aria-label="Удалить строку" style="display:none"><svg class="tb-icon"><use href="#i-x"></use></svg></button>
+<span class="tb-sep code-edit-only" style="display:none"></span>
+<button id="btn-string-bar" class="tb-btn tb-btn-text code-edit-only" title="Поставить или убрать | в начале строк многострочной строки" aria-label="Поставить или убрать | в начале строк" style="display:none">|</button>
+<button id="btn-format" class="tb-btn" title="Форматировать выделение или документ (Alt+Shift+F)" style="display:none"><svg class="tb-icon"><use href="#i-format"></use></svg></button>
+<button id="btn-comment" class="tb-btn" title="Комментировать строку (Ctrl+/)" style="display:none"><span class="tb-text">//</span></button>
+</div>
+<div class="topbar-group topbar-right" role="toolbar" aria-label="Режим просмотра">
+<button id="btn-epf" class="tb-btn" title="Сборка и загрузка в базу" style="display:none"><svg class="tb-icon"><use href="#i-box"></use></svg></button>
+<button id="btn-commit" class="tb-btn" title="Закоммитить в git" style="display:none"><svg class="tb-icon"><use href="#i-git-commit"></use></svg></button>
+<button id="btn-diff" class="tb-btn tb-btn-text" title="Показать изменения (Alt+Shift+D)" aria-pressed="false" style="display:none">diff</button>
+<button id="btn-whitespace" class="tb-btn" title="Показать непечатаемые символы (Alt+Shift+W)" aria-pressed="false"><svg class="tb-icon"><use href="#i-pilcrow"></use></svg></button>
 <button id="btn-minimap" class="tb-btn" title="Показать/скрыть карту кода"><svg class="tb-icon"><use href="#i-map"></use></svg></button>
-<span class="tb-sep"></span>
-<button id="btn-theme" class="tb-btn" title="Переключить тему"><svg class="tb-icon"><use href="#i-moon"></use></svg></button>
+<span id="md-layout-sep" class="tb-sep" hidden></span>
+<span id="md-layout" class="tb-layout" hidden role="group" aria-label="Расположение исходника и просмотра"><button type="button" id="btn-md-source" class="tb-btn" data-md-layout="source" title="Только исходник" aria-pressed="false"><svg class="tb-icon"><use href="#i-layout-source"></use></svg></button><button type="button" id="btn-md-split" class="tb-btn" data-md-layout="split" title="Исходник и просмотр" aria-pressed="false"><svg class="tb-icon"><use href="#i-layout-split"></use></svg></button><button type="button" id="btn-md-preview" class="tb-btn" data-md-layout="preview" title="Только просмотр" aria-pressed="false"><svg class="tb-icon"><use href="#i-layout-preview"></use></svg></button></span>
 <button id="btn-preview" class="tb-btn" title="Исходник и просмотр" style="display:none"><svg class="tb-icon"><use href="#i-window"></use></svg></button>
 <button id="btn-edit" class="tb-btn" title="Редактировать (Ctrl+E)"><svg class="tb-icon"><use href="#i-pencil"></use></svg></button>
+<span id="nav-save-sep" class="tb-sep" hidden></span>
+<div id="nav-save-toolbar" class="topbar-group" role="toolbar" aria-label="Навигация и сохранение" hidden>
+<button id="btn-save" class="tb-btn" title="Сохранить (Ctrl+S)" disabled><svg class="tb-icon"><use href="#i-save"></use></svg></button>
+<div id="nav-toolbar" class="topbar-group" aria-label="Навигация" hidden>
+<button id="btn-back" class="tb-btn" title="Назад"><svg class="tb-icon"><use href="#i-arrow-left"></use></svg></button>
+<button id="btn-forward" class="tb-btn" title="Вперёд"><svg class="tb-icon"><use href="#i-arrow-right"></use></svg></button>
+<button id="btn-up" class="tb-btn" title="Уровень вверх (Alt+↑, Backspace в режиме просмотра)"><svg class="tb-icon"><use href="#i-arrow-up"></use></svg></button>
+<span id="nav-history"><button id="btn-nav-history" class="tb-btn" title="История переходов" aria-haspopup="menu" aria-controls="nav-history-menu" aria-expanded="false"><svg class="tb-icon"><use href="#i-history"></use></svg><span class="nav-caret" aria-hidden="true">&#9662;</span></button><div id="nav-history-menu" role="menu" aria-label="История переходов" hidden></div></span>
+</div>
+</div>
 <span class="tb-sep"></span>
-<button id="btn-reload" class="tb-btn" title="Перечитать файл с диска" aria-label="Перечитать файл с диска"><img class="tb-icon platform-icon" src="platform-refresh.png" alt=""></button>
-<button id="btn-help" class="tb-btn" title="Справка" style="display:none"><svg class="tb-icon"><use href="#i-help"></use></svg></button>
-<button id="btn-pdf" class="tb-btn" title="Экспорт в PDF"><svg class="tb-icon"><use href="#i-pdf"></use></svg></button>
+<button id="btn-theme" class="tb-btn" title="Переключить тему"><svg class="tb-icon"><use href="#i-moon"></use></svg></button>
+<button id="btn-reload" class="tb-btn" title="Перечитать файл с диска" aria-label="Перечитать файл с диска"><svg class="tb-icon"><use href="#i-refresh"></use></svg></button>
+<button id="btn-explorer" class="tb-btn" title="Показать файл в Проводнике" aria-label="Показать файл в Проводнике"><svg class="tb-icon"><use href="#i-folder"></use></svg></button>
+<button id="btn-agent" class="tb-btn" title="Открыть файл в AI-агенте" aria-label="Открыть файл в AI-агенте"><svg class="tb-icon"><use href="#i-robot"></use></svg></button>
 <span class="tb-sep"></span>
+<button id="btn-settings" class="tb-btn" title="Настройки" style="display:none"><svg class="tb-icon"><use href="#i-settings"></use></svg></button>
 <button id="outline-toggle" class="tb-btn active" title="Структура" aria-pressed="true"><svg class="tb-icon"><use href="#i-sidebar-right"></use></svg></button>
+</div>
 </div>
 <div id="workspace">
 <div id="editor"></div>
 <div id="preview-handle" title="Ширина панелей"></div>
 <iframe id="preview" sandbox="allow-same-origin"></iframe>
 <div id="form-preview" hidden></div>
+<form id="annotation-editor" hidden aria-label="Новая аннотация">
+  <strong id="annotation-target"></strong>
+  <textarea id="annotation-text" rows="3" placeholder="Опишите замечание" aria-label="Текст аннотации"></textarea>
+  <div class="annotation-actions"><button type="button" id="annotation-cancel">Отмена</button><button type="submit">Добавить</button></div>
+</form>
+<aside id="annotation-tray" hidden aria-label="Аннотации формы">
+  <button id="annotation-tray-toggle" type="button" aria-expanded="true"></button>
+  <ol id="annotation-list"></ol>
+</aside>
 <div id="form-context-progress" hidden role="status" aria-live="polite"><svg class="fp-ctx-icon"><use href="#i-loader"></use></svg><span>Дозагружаем команды и картинки…</span></div>
 <div id="form-preview-actions" hidden>
+  <button type="button" id="annotation-toggle" class="tb-btn tb-btn-text" hidden aria-label="Аннотация к выделенному элементу формы (Alt+A)" title="Аннотация к выделенному элементу формы (Alt+A): замечание прочитает агент">✎</button>
+  <div id="form-interface-mode" class="form-interface-mode">
+    <button type="button" id="btn-form-interface-mode" class="tb-btn tb-btn-text" aria-haspopup="menu" aria-controls="form-interface-mode-menu" aria-expanded="false" title="Режим представления формы">Режим: авто</button>
+    <div id="form-interface-mode-menu" class="form-interface-mode-menu" role="menu" aria-label="Режим представления" hidden>
+      <button type="button" role="menuitemradio" data-form-interface-mode="Auto" aria-checked="true">Автоматически</button>
+      <button type="button" role="menuitemradio" data-form-interface-mode="Taxi" aria-checked="false">Такси 8.3</button>
+      <button type="button" role="menuitemradio" data-form-interface-mode="Version85" aria-checked="false">Интерфейс 8.5</button>
+    </div>
+  </div>
   <button type="button" id="btn-form-fit" class="tb-btn" title="Вписать по ширине" aria-label="Вписать по ширине" aria-pressed="false"><svg class="tb-icon"><use href="#i-fit-width"></use></svg></button>
   <button type="button" id="btn-form-screenshot" class="tb-btn" title="Сохранить снимок формы в PNG" aria-label="Сохранить снимок формы в PNG"><svg class="tb-icon"><use href="#i-photo"></use></svg></button>
 </div>
+<section id="diff-panel" hidden aria-label="Изменения по сравнению с выбранным эталоном">
+  <div class="diff-head">
+    <span id="diff-title">Изменения</span>
+    <label class="diff-base-label" for="diff-base">с</label>
+    <select id="diff-base" title="С чем сравнивать текущее состояние">
+      <option value="disk">файлом на диске</option>
+    </select>
+    <input type="text" id="diff-rev" hidden spellcheck="false" autocomplete="off"
+           placeholder="ветка, тег или хэш" title="Enter — сравнить, Esc — отменить">
+    <span id="diff-summary"></span>
+    <span id="diff-legend">Слева — файл на диске, справа — текущее состояние</span>
+    <button type="button" id="diff-restore" class="diff-opt" disabled title="Выберите изменение (F7 / Shift+F7)">Вернуть фрагмент</button>
+    <button type="button" id="diff-side" class="diff-opt" aria-pressed="false">Одной колонкой</button>
+    <label class="diff-opt diff-ws-label"><input type="checkbox" id="diff-ignore-ws"> Игнорировать пробелы</label>
+    <button type="button" id="diff-close" title="Закрыть (Esc)">&times;</button>
+  </div>
+  <div id="diff-body"></div>
+  <div id="diff-sheets" hidden></div>
+</section>
 <section id="help-panel" hidden aria-label="Справка">
   <div class="help-head"><span id="help-title">Справка</span><button type="button" id="help-close" title="Закрыть (Esc)">&times;</button></div>
   <iframe id="help-frame" sandbox="allow-same-origin" title="Справка"></iframe>
@@ -132,7 +387,7 @@
   <div id="resize-handle"></div>
   <div id="outline-content">
     <div id="outline-top">
-      <div id="outline-header"><button id="sort-btn"><svg class="tb-icon"><use href="#i-outline"></use></svg></button><button id="outline-fold" title="Свернуть все процедуры и области">−</button><button id="outline-unfold" title="Развернуть все процедуры и области">+</button><span id="outline-count"></span></div>
+      <div id="outline-header"><button id="sort-btn"><svg class="tb-icon"><use href="#i-outline"></use></svg></button><button id="outline-fold" title="Свернуть все процедуры и области">−</button><button id="outline-unfold" title="Развернуть все процедуры и области">+</button><button id="outline-move-up" hidden title="Переместить элемент выше (Ctrl+Shift+↑)"><svg class="tb-icon"><use href="#i-arrow-up"></use></svg></button><button id="outline-move-down" hidden title="Переместить элемент ниже (Ctrl+Shift+↓)"><svg class="tb-icon"><use href="#i-arrow-down"></use></svg></button><span id="outline-count"></span></div>
       <div id="outline-kinds" hidden role="tablist" aria-label="Раздел правой панели">
         <button type="button" data-outline-kind="elements" class="active" role="tab" aria-selected="true">Элементы</button>
         <button type="button" data-outline-kind="attributes" role="tab" aria-selected="false">Реквизиты</button>
@@ -165,7 +420,26 @@
   <span id="sb-sel"></span>
   <span id="sb-lines">Строк: 0</span>
 </div>
-<iframe id="print-frame" sandbox="allow-same-origin"></iframe>
+<!-- Файл открытого документа изменился на диске: агент, работающий по тому же
+     файлу, уже записал его. Полоска, а не модальное окно: смотреть документ
+     это не мешает. -->
+<div id="external-change" hidden>
+  <span id="external-change-msg"></span>
+  <span id="external-change-btns"></span>
+</div>
+<div id="commit-prompt" hidden>
+  <div class="save-prompt-box commit-box">
+    <div class="save-prompt-msg">Коммит в git <span id="commit-branch"></span></div>
+    <label class="commit-scope"><input type="radio" name="commit-scope" value="file" checked> <span>Файл:</span> <code id="commit-file"></code></label>
+    <label class="commit-scope"><input type="radio" name="commit-scope" value="object"> <span>Весь объект:</span> <code id="commit-object"></code></label>
+    <textarea id="commit-message" rows="3" placeholder="Сообщение коммита"></textarea>
+    <div id="commit-error" class="commit-error" hidden></div>
+    <div class="save-prompt-btns">
+      <button type="button" id="commit-ok" class="save-prompt-yes">Закоммитить</button>
+      <button type="button" id="commit-cancel">Отмена</button>
+    </div>
+  </div>
+</div>
 <div id="save-prompt" hidden>
   <div class="save-prompt-box">
     <div class="save-prompt-msg">Сохранить изменения?</div>
@@ -177,16 +451,48 @@
   </div>
 </div>
 <script src="xml-util.js"></script>
+<script src="doc-edits.js"></script>
 <script src="form-context.js"></script>
+<!-- Optional: the canonical spelling of platform names is generated from 1C's
+     syntax help and is git-ignored, so it may be absent; the formatter then
+     restores keywords only. It must load before bsl-format.js. -->
+<script src="bsl-platform-names.js"></script>
 <script src="bsl-format.js"></script>
+<script src="bsl-completion-data.js"></script>
+<script src="proj-form-converter.js"></script>
+<script src="proj-metadata-converter.js"></script>
+<script src="platform-85-assets.js"></script>
 <script src="form-preview.js"></script>
 <script src="template-preview.js"></script>
+<script src="template-markup.js"></script>
+<script src="font-editor.js"></script>
+<script src="template-edit.js"></script>
+<script src="template-diff.js"></script>
+<script src="diff-nav.js"></script>
+<script src="template-diff-view.js"></script>
+<!-- Optional: the property dictionary is generated from 1C's own schemas and
+     is git-ignored, so it may be absent; the form editor then works without
+     property checks. It must load before form-edit.js. -->
+<script src="form-item-properties.js"></script>
+<script src="form-edit.js"></script>
+<script src="form-diff.js"></script>
+<script src="form-diff-view.js"></script>
+<script src="form-properties.js"></script>
 <script src="mxl-preview.js"></script>
 <script src="metadata-preview.js"></script>
 <script src="metadata-relations.js"></script>
+<script src="configuration-preview.js"></script>
+<script src="bsl-metadata-completion.js"></script>
+<script src="dcs-preview.js"></script>
+<script src="dcs-diff.js"></script>
+<script src="dcs-diff-view.js"></script>
 <script src="sarif-rules-ru.js"></script>
 <script src="sarif-preview.js"></script>
+<script src="session-annotations.js"></script>
 <script src="providers.js"></script>
+<script src="epf-unpack.js"></script>
+<script src="epf-pack.js"></script>
+<script src="bsl-editing.js"></script>
 <script src="viewer.js"></script>
 </body>
 </html>

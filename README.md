@@ -55,17 +55,30 @@
 | Объекты метаданных, связи и роли | ✓ | ✓ | — | — |
 | Отчёты SARIF | ✓ | ✓ | — | — |
 | Снимки форм | ✓ | ✓ | через Chat | ✓ |
+| Сравнение форм и макетов с git-версией | ✓ | ✓ | через Chat | ✓ |
+| «Вернуть» изменение из сравнения | ✓ | ✓ | — | — |
+| Распаковка EPF/ERF/CF/CFE с добавлением в Git | ✓ | ✓ | — | — |
 | Правка форм агентом | — | — | через Chat | ✓ |
 | Макеты из Excel и их правка | — | — | через Chat | ✓ |
 
 ## Установка
+
+MCP-сервер и BSLEdit ставятся одной командой PowerShell (без прав
+администратора, сам подключает сервер к Claude Code, Codex и Cursor):
+
+```powershell
+irm https://raw.githubusercontent.com/alonehobo/BslEdit/main/install.ps1 | iex
+```
+
+Можно просто дать агенту ссылку на репозиторий и попросить «установи» —
+инструкция для агентов в [INSTALL.md](INSTALL.md).
 
 Всё скачивается со страницы [Releases](https://github.com/alonehobo/BslEdit/releases).
 
 | Файл | Инструмент | Как установить |
 |---|---|---|
 | `BSLView.zip` | Плагин Total Commander | Открыть архив в Total Commander |
-| `BSLEdit.zip` | Редактор | Распаковать и запустить `BSLEdit.exe` |
+| `BSLEdit.zip` | Редактор | Распаковать и запустить `BSLEdit.exe` (один файл, ничего рядом не нужно) |
 | `1c-form-viewer-vscode-*.vsix` | VS Code | Marketplace: **1C Form Viewer** или Install from VSIX |
 | `1c-form-viewer-native-*-win-x64.zip` | MCP-сервер | Распаковать и [подключить к агенту](guide/mcp.md#подключение) |
 
@@ -76,7 +89,7 @@
 
 ## Разработка
 
-Сборка, тесты и выпуск релиза — в [DEVELOPMENT.md](DEVELOPMENT.md).
+Сборка и выпуск релиза — в [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## Благодарности
 

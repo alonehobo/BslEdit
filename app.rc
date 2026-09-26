@@ -1,3 +1,8 @@
 #include "resource.h"
 
 IDI_APP_ICON ICON "assets/app-icon.ico"
+
+/* The whole web interface, packed by tools/pack-assets.mjs into objgen before
+ * the resource compiler runs. BSLView.wlx, BSLView.wlx64 and BSLEdit.exe all
+ * link this .res, so each of them ships as a single file. */
+IDR_WEB_ASSETS RCDATA "objgen/web-assets.bin"

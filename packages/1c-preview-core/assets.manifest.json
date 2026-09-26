@@ -2,24 +2,50 @@
   "comment": "The single list of shared preview assets. Every host build reads this file; nothing else may hardcode these names. `scripts` is a load order, not a set: xml-util.js has to come first because the renderers alias its exports at load time.",
   "scripts": [
     "xml-util.js",
+    "doc-edits.js",
     "form-context.js",
+    "proj-form-converter.js",
+    "proj-metadata-converter.js",
     "form-preview.js",
     "template-preview.js",
     "mxl-preview.js",
     "metadata-preview.js",
     "metadata-relations.js",
+    "configuration-preview.js",
+    "bsl-metadata-completion.js",
+    "dcs-preview.js",
+    "diff-nav.js",
+    "dcs-diff.js",
+    "dcs-diff-view.js",
     "xlsx-template.js",
     "template-markup.js",
+    "font-editor.js",
+    "template-edit.js",
+    "template-diff.js",
+    "template-diff-view.js",
     "form-edit.js",
+    "form-diff.js",
+    "form-diff-view.js",
+    "form-properties.js",
     "form-validate.js",
+    "session-annotations.js",
     "providers.js"
   ],
   "comment2": "Optional scripts are built locally and git-ignored, because they are derived from 1C's own schemas and this repository is public. `before` keeps the load order when the file is there; without it the form editor works with no property checks.",
   "optionalScripts": [
-    { "name": "form-item-properties.js", "before": "form-edit.js" }
+    {
+      "name": "form-item-properties.js",
+      "before": "form-edit.js"
+    },
+    {
+      "name": "platform-85-assets.js",
+      "before": "form-preview.js"
+    }
   ],
   "styles": [
-    "viewer.css"
+    "viewer.css",
+    "form-preview-85.css",
+    "session-annotations.css"
   ],
   "platformIcons": [
     "platform-attribute.png",

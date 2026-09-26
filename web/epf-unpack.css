@@ -1,0 +1,138 @@
+/* The unpacking panel of an .epf/.erf (epf-unpack.js): a Windows dialog, in
+ * the page's light or dark theme. */
+.epf-panel {
+    --epf-bg:#fff; --epf-fg:#1b1b1b; --epf-muted:#6b6b6b; --epf-border:#c8c8c8; --epf-field:#fff;
+    --epf-field-disabled:#f3f3f3; --epf-group:#f9f9f9; --epf-accent:#0067c0; --epf-accent-fg:#fff;
+    --epf-button:#fdfdfd; --epf-button-hover:#f3f3f3; --epf-link:#0645ad;
+    position:fixed; inset:0; z-index:5; display:flex; flex-direction:column; gap:10px;
+    padding:12px 14px 14px; box-sizing:border-box; overflow:auto;
+    background:var(--epf-bg); color:var(--epf-fg);
+    font:12px/1.35 "Segoe UI", system-ui, sans-serif;
+}
+.epf-panel[hidden] { display:none; }
+/* Unused parts are hidden, not greyed out; a row groups grid cells. */
+.epf-panel [hidden] { display:none !important; }
+.epf-panel .epf-row { display:contents; }
+
+/* Infobase drop-down: name, and the connection string in a smaller monospace line. */
+.epf-panel .epf-combo-model { display:none !important; }
+.epf-panel .epf-combo { position:relative; min-width:0; }
+.epf-panel button.epf-combo-btn {
+    display:flex; flex-direction:column; align-items:flex-start; justify-content:center; gap:1px;
+    width:100%; height:auto; min-height:26px; padding:3px 26px 3px 7px; text-align:left;
+    background:var(--epf-field); position:relative; overflow:hidden;
+}
+.epf-panel button.epf-combo-btn::after {
+    content:""; position:absolute; right:10px; top:50%; width:6px; height:6px; margin-top:-5px;
+    border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(45deg); opacity:.7;
+}
+.epf-panel .epf-combo.disabled button.epf-combo-btn { background:var(--epf-field-disabled); }
+.epf-panel .epf-combo-name, .epf-panel .epf-combo-conn {
+    display:block; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.epf-panel .epf-combo-conn { font:11px/1.3 Consolas, "Courier New", monospace; color:var(--epf-muted); }
+.epf-panel .epf-combo-list {
+    position:absolute; z-index:10; left:0; right:0; top:calc(100% + 2px); max-height:260px; overflow-y:auto;
+    background:var(--epf-field); border:1px solid var(--epf-border); border-radius:4px;
+    box-shadow:0 4px 14px rgba(0,0,0,.18); padding:3px 0;
+}
+.epf-panel .epf-combo-item { padding:4px 8px; cursor:default; }
+.epf-panel .epf-combo-item:hover, .epf-panel .epf-combo-item.active { background:var(--epf-button-hover); }
+.epf-panel .epf-combo-item.selected .epf-combo-name { font-weight:600; }
+.epf-panel .epf-combo-item.unsupported { opacity:.6; }
+html.theme-dark .epf-panel {
+    --epf-bg:#202020; --epf-fg:#e4e4e4; --epf-muted:#9a9a9a; --epf-border:#4a4a4a; --epf-field:#2b2b2b;
+    --epf-field-disabled:#262626; --epf-group:#272727; --epf-accent:#4cc2ff; --epf-accent-fg:#000;
+    --epf-button:#2d2d2d; --epf-button-hover:#383838; --epf-link:#6cb8ff;
+}
+html.epf-mode #main, html.epf-mode #loading { display:none !important; }
+
+.epf-form { display:flex; flex-direction:column; gap:8px; margin:0; }
+.epf-panel .epf-grid {
+    display:grid; grid-template-columns:max-content minmax(0, 1fr) auto; gap:6px 8px; align-items:center;
+}
+.epf-panel .span2 { grid-column:span 2; }
+.epf-panel .span3 { grid-column:1 / -1; }
+
+.epf-panel input[type="text"], .epf-panel input[type="password"], .epf-panel select {
+    height:26px; box-sizing:border-box; min-width:0; width:100%; padding:2px 7px;
+    border:1px solid var(--epf-border); border-bottom-color:color-mix(in srgb, var(--epf-border) 60%, var(--epf-fg));
+    border-radius:4px; background:var(--epf-field); color:var(--epf-fg); font:inherit;
+}
+.epf-panel input:disabled, .epf-panel select:disabled { background:var(--epf-field-disabled); color:var(--epf-muted); }
+/* A version is short and a base name rarely long: these drop-downs are given
+   what they need instead of the whole row. */
+.epf-panel select#pack-platform { width:130px; justify-self:start; }
+.epf-panel select#pack-base, .epf-panel select#pack-ctx-base {
+    width:min(100%, 380px); justify-self:start;
+}
+.epf-panel input:focus-visible, .epf-panel select:focus-visible {
+    outline:none; border-bottom:2px solid var(--epf-accent);
+}
+
+.epf-panel button {
+    height:26px; min-width:32px; padding:0 14px; box-sizing:border-box;
+    border:1px solid var(--epf-border); border-radius:4px; background:var(--epf-button);
+    color:var(--epf-fg); font:inherit; cursor:default;
+}
+.epf-panel button:hover:not(:disabled) { background:var(--epf-button-hover); }
+.epf-panel button:disabled { color:var(--epf-muted); opacity:.7; }
+.epf-panel button.epf-dots { padding:0; width:32px; }
+.epf-panel button.primary { min-width:106px; height:30px; border-color:var(--epf-accent); }
+.epf-panel button#epf-open { min-width:86px; height:30px; }
+.epf-panel.busy button.primary { border-color:var(--epf-border); }
+
+/* «Распаковать в»: the folder button sits inside the field. */
+.epf-panel .epf-with-btn { position:relative; min-width:0; }
+.epf-panel .epf-with-btn input { padding-right:28px; }
+.epf-panel .epf-with-btn button {
+    position:absolute; right:2px; top:2px; height:22px; width:24px; min-width:0; padding:0;
+    border:0; background:transparent; display:flex; align-items:center; justify-content:center;
+}
+.epf-panel .epf-with-btn svg { width:15px; height:15px; fill:none; stroke:currentColor; stroke-width:2; }
+
+/* «XML выгрузка» is shown, not edited: a link back to the object. */
+.epf-panel .epf-path-link {
+    display:block; height:26px; line-height:26px; box-sizing:border-box; padding:0 28px 0 1px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    color:var(--epf-link); text-decoration:none; cursor:pointer;
+}
+.epf-panel .epf-path-link:hover { text-decoration:underline; }
+.epf-panel .epf-path-link.disabled { color:var(--epf-muted); pointer-events:none; }
+
+.epf-panel fieldset.epf-group {
+    margin:2px 0 0; padding:6px 10px 10px; border:1px solid var(--epf-border); border-radius:4px;
+    background:var(--epf-group);
+}
+.epf-panel fieldset.epf-group legend { padding:0 4px; }
+.epf-panel .epf-radio, .epf-panel .epf-check { display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+.epf-panel .epf-radio input, .epf-panel .epf-check input { margin:0; accent-color:var(--epf-accent); }
+.epf-panel .epf-auth { display:flex; flex-wrap:wrap; align-items:center; gap:6px 8px; }
+.epf-panel .epf-auth input[type="text"], .epf-panel .epf-auth input[type="password"] { width:160px; }
+.epf-panel .epf-auth label:not(.epf-check) { color:var(--epf-fg); }
+.epf-panel .epf-note { color:var(--epf-muted); }
+.epf-panel .epf-radio .epf-note { white-space:normal; }
+.epf-panel .epf-note[hidden] { display:none; }
+.epf-panel .epf-inline { display:flex; flex-wrap:wrap; align-items:center; gap:6px 18px; }
+.epf-panel .epf-sub { padding-left:22px; }
+.epf-panel .epf-warn { color:#b3261e; }
+html.theme-dark .epf-panel .epf-warn { color:#ff9a8f; }
+.epf-panel .epf-warn[hidden] { display:none; }
+/* .epf/.erf and .cf/.cfe/.dt show their own parts of the panel. */
+.epf-panel.config-mode .epf-only-external, .epf-panel:not(.config-mode) .epf-only-config { display:none; }
+
+.epf-panel .epf-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; margin-top:4px; }
+.epf-panel .epf-actions .epf-check { margin-left:6px; }
+.epf-panel #epf-clear-cache { color:var(--epf-link); margin-left:6px; }
+.epf-panel #epf-clear-cache.disabled { color:var(--epf-muted); pointer-events:none; text-decoration:none; }
+
+#epf-log, #pack-log {
+    flex:1 1 auto; min-height:120px; resize:none; box-sizing:border-box; margin:0; padding:6px 8px;
+    border:1px solid var(--epf-border); border-radius:4px; background:var(--epf-field); color:var(--epf-fg);
+    font:12px/1.4 Consolas, "Courier New", monospace; white-space:pre-wrap; overflow-y:auto;
+}
+
+/* The assembly panel (epf-pack.js) shares every style above; only the two
+ * lines that name what it is working on are its own. */
+.epf-panel #pack-dump { font-weight:600; }
+.epf-panel .epf-mono { font:12px/1.4 Consolas, "Courier New", monospace; }

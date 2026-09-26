@@ -63,9 +63,11 @@ if ($busy -and -not $Force) {
 foreach ($f in 'BSLView.wlx', 'BSLView.wlx64', 'BSLView.ini', 'pluginst.inf') {
     if (-not (Test-Path -LiteralPath (Join-Path $repo $f))) { throw "Missing $f - run build.bat first." }
 }
-if (-not (Test-Path -LiteralPath (Join-Path $repo 'web\vs\loader.js'))) {
-    throw "web\vs is missing - run tools\fetch-monaco.ps1 first."
-}
+# The plugin carries its interface inside the .wlx, so nothing is copied
+# beside it; a .wlx built before web\vs was fetched would install cleanly and
+# then render nothing, which is what this check is for.
+& node (Join-Path $repo 'tools\verify-asset-pack.mjs') (Join-Path $repo 'objgen\web-assets.bin') 'vs/loader.js' 'viewer.html'
+if ($LASTEXITCODE -ne 0) { throw "The packed interface is incomplete - run build.bat first." }
 
 # ------------------------------------------------- find or choose target dir
 
@@ -109,11 +111,14 @@ foreach ($f in 'BSLView.wlx', 'BSLView.wlx64', 'pluginst.inf') {
     Copy-Item -LiteralPath (Join-Path $repo $f) -Destination $targetDir -Force
 }
 
-# Replace web\ wholesale: stale Monaco files from an older version would be
-# served alongside the new ones.
+# An older installation left a web\ beside the plugin, and ResolveWebRoot
+# still prefers one over the interface inside the binary, so it has to go or
+# the new plugin would keep rendering the old files.
 $webTarget = Join-Path $targetDir 'web'
-if (Test-Path -LiteralPath $webTarget) { Remove-Item -LiteralPath $webTarget -Recurse -Force }
-Copy-Item -LiteralPath (Join-Path $repo 'web') -Destination $webTarget -Recurse -Force
+if (Test-Path -LiteralPath $webTarget) {
+    Remove-Item -LiteralPath $webTarget -Recurse -Force
+    Write-Host "Removed the web\ directory of the previous installation."
+}
 
 $copied = (Get-ChildItem -LiteralPath $targetDir -Recurse -File | Measure-Object -Property Length -Sum)
 Write-Host ("Copied {0} files, {1:N1} MB" -f $copied.Count, ($copied.Sum / 1MB))

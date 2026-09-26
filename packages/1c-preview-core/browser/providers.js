@@ -30,6 +30,11 @@ var PROVIDERS = [
         /* FormPreview.parse takes the owning object's metadata as its second
          * argument; the other parsers take content only. */
         usesObjectMeta: true,
+        /* Edited where it is drawn: the property panel writes into the XML
+         * behind the mockup, so the picture stays and saving is allowed from
+         * it. Without this the panel accepted edits the user could not save -
+         * neither the button nor Ctrl+S was live in the form view. */
+        editable: true,
         /* A form mockup stands in for the real 1C application window, so it
          * always renders as light chrome and hides the theme toggle. */
         lightChrome: true,
@@ -50,6 +55,8 @@ var PROVIDERS = [
         viewer: 'MetadataPreview',
         label: 'Объект метаданных 1С',
         requiresLanguage: 'xml',
+        /* Name, synonym and comment are edited in the window itself. */
+        editable: true,
         lightChrome: true,
         tree: true,
         outlineTitle: 'Структура объекта',
@@ -60,6 +67,45 @@ var PROVIDERS = [
         /* MetadataPreview.parse takes what the configuration scan found
          * about the object (metadata-relations.js) as context.relations. */
         usesRelations: true,
+        selectHighlightsPreview: true
+    },
+    {
+        /* Configuration.xml of an export, drawn as the client application's
+         * main window: sections panel, main menu and each section's function
+         * panel. The rest of the export is read through the host (options.io). */
+        id: 'configuration',
+        parser: 'ConfigurationPreview',
+        viewer: 'ConfigurationPreview',
+        label: 'Конфигурация 1С',
+        requiresLanguage: 'xml',
+        lightChrome: true,
+        tree: true,
+        defaultSelection: 'configuration',
+        outlineTitle: 'Разделы',
+        sourceTitle: 'Показать конфигурацию',
+        rootCls: 'ci-root',
+        emptyCls: 'ci-empty',
+        emptyMsg: 'Это не корень конфигурации 1С.',
+        usesConfigurationIo: true,
+        selectHighlightsPreview: true
+    },
+    {
+        /* A data composition schema (a report's Template.xml whose root is
+         * DataCompositionSchema), drawn as the Designer's schema editor. The
+         * query of a data set is shown read-only; a host may let the user edit
+         * properties and the schema's own lists. */
+        id: 'dcs',
+        parser: 'DcsPreview',
+        viewer: 'DcsPreview',
+        label: 'Схема компоновки данных',
+        requiresLanguage: 'xml',
+        lightChrome: true,
+        tree: true,
+        outlineTitle: 'Схема компоновки',
+        sourceTitle: 'Показать схему',
+        rootCls: 'dcs-root',
+        emptyCls: 'dcs-empty',
+        emptyMsg: 'Это не схема компоновки данных.',
         selectHighlightsPreview: true
     },
     {
@@ -97,6 +143,9 @@ var PROVIDERS = [
         parser: 'TemplatePreview',
         viewer: 'TemplatePreview',
         label: 'Макет 1С',
+        /* Edited where it is drawn, like a module: the pencil turns editing on
+         * without swapping the sheet for its XML. */
+        editable: true,
         outlineTitle: 'Области макета',
         sourceTitle: 'Показать макет',
         rootCls: 'tp-root',
@@ -134,12 +183,19 @@ function detect(content, context) {
 }
 
 function parse(entry, content, context) {
+    var parsed = parseWith(entry, content, context);
+    if (parsed && parsed.model && context && context.configInterfaceMode)
+        parsed.model.configInterfaceMode = String(context.configInterfaceMode);
+    return parsed;
+}
+
+function parseWith(entry, content, context) {
     var parser = root[entry.parser];
     return entry.usesObjectMeta
         ? parser.parse(content, (context && context.objectMeta) || '',
             (context && context.styleItems) || {}, (context && context.baseForm) || '',
             (context && context.commonCommands) || {}, (context && context.commonPictures) || {},
-            (context && context.refMeta) || {})
+            (context && context.refMeta) || {}, (context && context.interfaceMode) || 'Any')
         : entry.usesRelations ? parser.parse(content, { relations: (context && context.relations) || null })
         : parser.parse(content);
 }
@@ -175,6 +231,6 @@ root.PreviewProviders = {
     resetViewState: resetViewState,
     view: view,
     /* Every host reports an unrecognised file the same way. */
-    unsupportedMessage: 'Файл не распознан как форма 1С, Template.xml или MXL.'
+    unsupportedMessage: 'Файл не распознан как форма 1С, Template.xml, схема компоновки данных или MXL.'
 };
 })(typeof globalThis !== 'undefined' ? globalThis : window);

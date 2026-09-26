@@ -4,7 +4,7 @@ import type { BrowserPreviewState, LoadedDocument, PreviewScrollArea } from './t
 import type { CaptureViewport } from './browser-session.js';
 
 export interface PreviewResponse {
-  document: Omit<LoadedDocument, 'content' | 'baseForm' | 'objectMeta' | 'refMeta' | 'commonCommands' | 'commonPictures'>;
+  document: Omit<LoadedDocument, 'content' | 'baseForm' | 'objectMeta' | 'refMeta' | 'commonCommands' | 'commonPictures' | 'baseContent'>;
   state: BrowserPreviewState;
 }
 
@@ -19,8 +19,16 @@ export interface Visual<T> {
 
 const DEFAULT_INSPECT_LIMIT = 500;
 
+export type DocumentPreparer = (document: LoadedDocument) => Promise<LoadedDocument>;
+
 export class ViewerController {
   private activePath = '';
+  /* An explicit interface layout (open_preview interface_mode) overrides the
+   * one inferred from the export; empty keeps the inference. */
+  private interfaceMode = '';
+  /* Completes a loaded document before it is shown, on open and on every
+   * reload: the MCP server attaches the version a comparison is against. */
+  private prepare: DocumentPreparer | null = null;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -44,16 +52,25 @@ export class ViewerController {
 
   private summary(document: LoadedDocument, state: BrowserPreviewState): PreviewResponse {
     const { content: _content, baseForm: _baseForm, objectMeta: _objectMeta,
-      refMeta: _refMeta, commonCommands: _commonCommands, commonPictures: _commonPictures, ...safeDocument } = document;
+      refMeta: _refMeta, commonCommands: _commonCommands, commonPictures: _commonPictures, baseContent: _baseContent,
+      ...safeDocument } = document;
     return { document: safeDocument, state };
   }
 
-  open(inputPath: string): Promise<Visual<PreviewResponse>> {
+  private async load(inputPath: string, interfaceMode: string, prepare: DocumentPreparer | null): Promise<LoadedDocument> {
+    let document = await this.loader.load(inputPath);
+    if (prepare) document = await prepare(document);
+    return interfaceMode ? { ...document, interfaceMode } : document;
+  }
+
+  open(inputPath: string, interfaceMode = '', prepare: DocumentPreparer | null = null): Promise<Visual<PreviewResponse>> {
     return this.visual(async () => {
-      const document = await this.loader.load(inputPath);
+      const document = await this.load(inputPath, interfaceMode, prepare);
       const state = await this.browser.open(document);
       this.activePath = inputPath;
-      this.browser.setReloader(() => this.loader.load(inputPath));
+      this.interfaceMode = interfaceMode;
+      this.prepare = prepare;
+      this.browser.setReloader(() => this.load(inputPath, interfaceMode, prepare));
       return this.summary(document, state);
     });
   }
@@ -62,7 +79,7 @@ export class ViewerController {
     return this.visual(async () => {
       if (!this.activePath) throw new Error('No preview is open. Call open_preview first.');
       const previous = await this.browser.state();
-      const document = await this.loader.load(this.activePath);
+      const document = await this.load(this.activePath, this.interfaceMode, this.prepare);
       let state = await this.browser.open(document);
       const activePages = previous.tabs.filter((tab) => tab.active && typeof tab.pageId === 'string');
       for (const tab of activePages) {

@@ -3,7 +3,40 @@
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/),
 версии — [SemVer](https://semver.org/lang/ru/).
 
-## [Unreleased]
+## [0.3.0] - 2026-09-26
+
+### Added
+- Node-сервер: `open_preview` с `base_path` (другой файл) или `base_revision`
+  (тот же файл в git: HEAD, ветка, тег, коммит, `index`) показывает
+  сравнение, как нативный. Сравнение — отдельное превью рядом с обычным,
+  reload продолжает сравнивать; имя ревизии проверяется, как в `gitquery.cpp`,
+  а страница называет коммит ревизии (sha, дата, тема).
+- Node.js-вариант MCP-сервера (`src/mcp-server.ts`, запуск `npm run start:node`
+  или `node dist/mcp-server.js` после `npm run build:node`): все десять
+  инструментов нативного сервера по тому же stdio-протоколу и тем же схемам.
+  Работает на Linux, macOS и Windows: на Windows рендерит через системный Edge
+  (как раньше), на остальных платформах — через Chromium из playwright-core
+  (`npx playwright-core install chromium-headless-shell`) или браузер из
+  `ONE_C_FORM_VIEWER_CHROMIUM`. Окно для `audience="user"` открывается через
+  `xdg-open`/`open`/`start` по платформе.
+- Node-сервер поддерживает `interface_mode` (`Auto`, `Taxi`, `Version85`) в
+  `open_preview`, как нативный, и определяет вид `Form.form` и `.mxlx`.
+
+### Fixed
+- Сравнение форм раскладывается после вставки панелей в документ: раньше
+  раскладка шла на отсоединённом узле нулевой ширины и досчитывалась
+  асинхронно, из-за чего снимок мог получиться до стабилизации.
+
+### Changed
+- Общее ядро: картинки платформы 8.5 для форм с интерфейсом `Version85`
+  (как в BSLEdit и VS Code).
+- `src/browser-session.ts`: канал браузера выбирается по платформе (Edge только
+  на Windows); захват превью идёт через страничный `AgentViewer.capture` — тот
+  же растр, что отдаёт нативный сервер, без хрома вьюера в кадре.
+- Из `package.json` убрано ограничение `"os": ["win32"]`; `playwright-core`
+  перенесён в `dependencies` для Node-варианта сервера. Ограничение снято и с
+  `1c-form-viewer-vscode`: платформу расширения задаёт `vsce --target`, а поле
+  `os` лишь мешало `npm install` монорепозитория на Linux и macOS.
 
 ## [0.2.3] - 2026-09-18
 
@@ -43,7 +76,6 @@
 
 ### Added
 - Добавлен самостоятельный нативный Windows x64 MCP-сервер.
-- Добавлен строгий round-trip контрактный тест нативного STDIO-протокола.
 
 ### Changed
 - Рендереры форм и макетов переехали в общий пакет `1c-preview-core`; сервер

@@ -81,9 +81,12 @@ var STRUCTURE = {
 
 /* Which item kinds a container accepts in its ChildItems. */
 var BAR_ITEMS = { Button: 1, Popup: 1, ButtonGroup: 1 };
-function accepts(container, item) {
-    var c = container.name;
-    var k = item.name;
+/* The rule by kind alone, so a host can offer a move before asking for it:
+ * a tree with drag and drop has to know, while the pointer is still moving,
+ * which row would take the element. */
+function canContain(containerKind, itemKind) {
+    var c = containerKind;
+    var k = itemKind;
     if (k === 'Page') return c === 'Pages';
     if (c === 'Pages') return false;
     if (c === 'AutoCommandBar' || c === 'CommandBar' || c === 'Popup' || c === 'ButtonGroup' || c === 'ContextMenu') return !!BAR_ITEMS[k];
@@ -91,6 +94,10 @@ function accepts(container, item) {
     if (c === 'Table' || c === 'ColumnGroup') return k !== 'Pages' && k !== 'Table' && k !== 'UsualGroup' && k !== 'CommandBar';
     if (k === 'ColumnGroup') return false;
     return c === 'Form' || c === 'UsualGroup' || c === 'Page';
+}
+
+function accepts(container, item) {
+    return canContain(container.name, item.name);
 }
 
 function isItem(node) {
@@ -562,6 +569,113 @@ function addElement(xml, params) {
     };
 }
 
+/* Why a removed element cannot come back from a comparison baseline as a
+ * whole, or '' when it can. The subtree is copied verbatim, so its parent must
+ * exist and accept it, none of its names may already be taken and the
+ * attributes its fields show must still exist. Colliding ids are renumbered. */
+function restoreElementPlan(xml, sourceXml, name) {
+    var form = scan(xml), sourceForm = scan(sourceXml);
+    var source = collect(sourceForm)[name];
+    if (!source || !isItem(source)) return { reason: 'В эталоне нет элемента «' + name + '».' };
+    var byName = collect(form);
+    if (byName[name]) return { reason: 'Элемент «' + name + '» уже есть в форме.' };
+    var parentNode = source.parent.parent;
+    var parentName = parentNode === sourceForm ? 'Form' : parentNode.attrs.name;
+    var container = parentName === 'Form' ? form : byName[parentName];
+    if (!container) return { reason: 'Родителя «' + parentName + '» нет в текущей форме: сначала верните его.' };
+    if (!accepts(container, source)) return { reason: container.name + ' «' + parentName + '» не может содержать ' + source.name + '.' };
+    var names = [], dataPaths = [];
+    (function walk(n) {
+        if (n.attrs.name != null && n.attrs.id != null) names.push(n.attrs.name);
+        if (n.name === 'DataPath') dataPaths.push(String(n.text || '').trim());
+        n.kids.forEach(walk);
+    })(source);
+    var taken = names.filter(function (n) { return byName[n]; });
+    if (taken.length) return { reason: 'Имена уже заняты: ' + taken.join(', ') + '.' };
+    var attributes = {}, attrs = kid(form, 'Attributes');
+    if (attrs) attrs.kids.forEach(function (a) { if (a.attrs.name != null) attributes[a.attrs.name] = 1; });
+    var missing = dataPaths.filter(function (path) {
+        var head = path.split('.')[0].replace(/^~/, '');
+        return head && head !== 'Items' && !attributes[head];
+    });
+    if (missing.length) return { reason: 'Нет реквизита для пути данных: ' + missing.join(', ') + '.' };
+    return { reason: '', form: form, source: source, container: container, sourceParent: parentNode };
+}
+
+function restoreElement(xml, sourceXml, params) {
+    params = params || {};
+    var plan = restoreElementPlan(xml, sourceXml, params.element);
+    if (plan.reason) throw new Error(plan.reason);
+    var form = plan.form, source = plan.source, container = plan.container;
+    var eol = eolOf(xml);
+    var span = lineSpan(sourceXml, source);
+    var chunk = sourceXml.slice(span[0], span[1]).replace(/\r\n?/g, eol);
+    if (!/\n$/.test(chunk)) chunk += eol;
+    /* Ids collide when the current form numbered new items past the gap. */
+    var usedIds = {};
+    (function walk(n) {
+        if (n.attrs.id != null && n.attrs.name != null && !insideOf(n, ['Attributes', 'Commands', 'Parameters'])) usedIds[n.attrs.id] = 1;
+        n.kids.forEach(walk);
+    })(form);
+    var clash = false;
+    (function walk(n) {
+        if (n.attrs.name != null && n.attrs.id != null && usedIds[n.attrs.id]) clash = true;
+        n.kids.forEach(walk);
+    })(source);
+    var renumbered = 0;
+    if (clash) {
+        var next = nextId(form, 'item');
+        chunk = chunk.replace(/(<[A-Za-z_][\w.:-]*\s+name="[^"]*"\s+id=")(\d+)(")/g, function (m, a, id, b) {
+            renumbered++;
+            return a + (next++) + b;
+        });
+    }
+    /* Position: after the nearest earlier sibling that still exists, else
+     * before the nearest later one, else at the end of the container. */
+    var siblings = source.parent.kids, at = siblings.indexOf(source), byName = collect(form);
+    var anchor = null, after = true;
+    for (var i = at - 1; i >= 0 && !anchor; i--) {
+        var prev = byName[siblings[i].attrs.name];
+        if (prev && isItem(prev) && prev.parent.parent === container) anchor = prev;
+    }
+    for (var j = at + 1; j < siblings.length && !anchor; j++) {
+        var nxt = byName[siblings[j].attrs.name];
+        if (nxt && isItem(nxt) && nxt.parent.parent === container) { anchor = nxt; after = false; }
+    }
+    var childItems = kid(container, 'ChildItems');
+    var pad = anchor ? indentOf(xml, anchor) : childItems ? indentOf(xml, childItems) + '\t'
+        : (container === form ? '\t' : indentOf(xml, container) + '\t') + '\t';
+    chunk = reindent(chunk, indentOf(sourceXml, source), pad, eol);
+    var out;
+    if (anchor) {
+        var pos = after ? lineSpan(xml, anchor)[1] : lineSpan(xml, anchor)[0];
+        out = splice(xml, pos, pos, chunk);
+    } else if (childItems) {
+        var end = lineStart(xml, childItems.closeStart);
+        out = splice(xml, end, end, chunk);
+    } else {
+        var cPad = container === form ? '\t' : indentOf(xml, container) + '\t';
+        var text = cPad + '<ChildItems>' + eol + chunk + cPad + '</ChildItems>' + eol;
+        if (container.closeStart < 0) {
+            var opened = xml.slice(container.start, container.end).replace(/\s*\/>$/, '>')
+                + eol + text + indentOf(xml, container) + '</' + container.tag + '>';
+            out = splice(xml, container.start, container.end, opened);
+        } else {
+            var before = null;
+            for (var k = 0; k < container.kids.length; k++) {
+                var tag = container.kids[k].name;
+                if (container === form ? { Events: 1, Attributes: 1, Commands: 1, Parameters: 1, CommandInterface: 1, CommandSet: 1, ConditionalAppearance: 1, BaseForm: 1 }[tag]
+                    : tag === 'Events') { before = container.kids[k]; break; }
+            }
+            var e = before ? lineSpan(xml, before)[0] : lineStart(xml, container.closeStart);
+            out = splice(xml, e, e, text);
+        }
+    }
+    scan(out);
+    return { xml: out, result: { element: params.element, into: container.attrs.name || 'Form',
+        renumbered: renumbered || undefined } };
+}
+
 /* ---------- Attributes and commands ---------- */
 
 /* Child order of <Attribute> and <Command>, and the place of the sections in
@@ -952,6 +1066,45 @@ function setProperties(xml, params) {
     return { xml: xml, result: { element: params.element || 'Form', kind: kindName, changed: changed } };
 }
 
+/* Restore just one direct property node from a comparison baseline. Copying
+ * the source node preserves multilingual/complex XML without touching sibling
+ * properties edited since the comparison was opened. */
+function restoreProperty(xml, sourceXml, params) {
+    params = params || {};
+    var prop = String(params.property || '');
+    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(prop) || STRUCTURE[prop])
+        throw new Error('Это не отдельное свойство элемента формы.');
+    var currentForm = scan(xml), sourceForm = scan(sourceXml);
+    var current = findElement(currentForm, params.element);
+    var source = findElement(sourceForm, params.element);
+    if (current.name !== source.name) throw new Error('Тип элемента изменился; безопасный откат невозможен.');
+    var currentNodes = current.kids.filter(function (k) { return k.name === prop; });
+    var sourceNodes = source.kids.filter(function (k) { return k.name === prop; });
+    if (currentNodes.length > 1 || sourceNodes.length > 1) throw new Error('Свойство встречается несколько раз.');
+    var present = currentNodes[0], original = sourceNodes[0];
+    if (!present && !original) return { xml: xml, result: { changed: false } };
+    if (present && original) {
+        var span = lineSpan(xml, present), sourceSpan = lineSpan(sourceXml, original);
+        var fromPad = indentOf(sourceXml, original), toPad = indentOf(xml, present);
+        var eol = eolOf(xml), chunk = sourceXml.slice(sourceSpan[0], sourceSpan[1]);
+        chunk = chunk.replace(/\r\n?/g, eol);
+        chunk = reindent(chunk, fromPad, toPad, eol);
+        return { xml: splice(xml, span[0], span[1], chunk), result: { changed: true } };
+    }
+    if (present) {
+        var remove = lineSpan(xml, present);
+        return { xml: splice(xml, remove[0], remove[1], ''), result: { changed: true } };
+    }
+    var next = insertionPoint(xml, current, prop);
+    var at = next ? lineSpan(xml, next)[0] : lineStart(xml, current.closeStart >= 0 ? current.closeStart : current.end);
+    var parentPad = indentOf(xml, current), propertyPad = parentPad + '\t';
+    var originalSpan = lineSpan(sourceXml, original);
+    var originalChunk = sourceXml.slice(originalSpan[0], originalSpan[1]);
+    originalChunk = originalChunk.replace(/\r\n?/g, eolOf(xml));
+    originalChunk = reindent(originalChunk, indentOf(sourceXml, original), propertyPad, eolOf(xml));
+    return { xml: splice(xml, at, at, originalChunk), result: { changed: true } };
+}
+
 function moveElement(xml, params) {
     params = params || {};
     if (!params.element) throw new Error('Передайте element — имя перемещаемого элемента.');
@@ -1102,6 +1255,147 @@ function removeElement(xml, params) {
 }
 
 /* Compact outline for the agent: item tree with kinds and data paths. */
+/* What an element's properties are set to right now, for a property panel:
+ * the element's kind, every property the dictionary knows for that kind, the
+ * value written in the file (null when the file says nothing and the platform
+ * default applies) and why a property cannot be edited here.
+ *
+ * Reading mirrors setOne: a multilingual string comes out of its <item> for
+ * the current language, a complex property is reported as present but not
+ * editable, and a property written as a start-tag attribute is read from
+ * there. */
+function readProperties(xml, element) {
+    var form = scan(xml);
+    var node = findElement(form, element);
+    var looked = propertyInfo(node.name, '');
+    var known = looked && looked.kind && looked.kind.props ? looked.kind.props : {};
+    var order = looked && looked.kind && looked.kind.order ? looked.kind.order : Object.keys(known);
+    var out = [];
+    var seen = {};
+
+    function add(prop) {
+        if (seen[prop] || STRUCTURE[prop]) return;
+        seen[prop] = true;
+        var info = known[prop] || null;
+        var entry = {
+            name: prop,
+            kind: info ? info.kind : '',
+            type: info ? info.type : '',
+            /* The Designer's own Russian name for the property, so a panel can
+             * caption a row the way the configurator does. The dictionary has
+             * it for all but the composition nodes. */
+            ru: info && info.ru ? info.ru : '',
+            values: info && info.values ? info.values : null,
+            fallback: info && info.default != null ? info.default : null,
+            value: null,
+            set: false
+        };
+        if (info && info.attribute) {
+            entry.value = node.attrs[prop] != null ? node.attrs[prop] : null;
+            entry.set = entry.value != null;
+            entry.readOnly = 'Свойство записано атрибутом и так не меняется.';
+            out.push(entry);
+            return;
+        }
+        var existing = kid(node, prop);
+        var complex = complexKindOf(prop, info);
+        /* The dictionary is optional in public builds. Suffix inference is the
+         * same fallback setOne uses, so the panel still gets a typed editor. */
+        if (complex && !info) {
+            entry.kind = 'complex';
+            entry.type = complex;
+        }
+        entry.set = !!existing;
+        if (existing) entry.value = valueOf(existing, entry.kind, complex);
+        if (UNSUPPORTED_COMPLEX[prop]) {
+            entry.readOnly = 'Составное свойство этой операцией не меняется.';
+        } else if (entry.kind === 'complex' && !complexKindOf(prop, info)) {
+            entry.readOnly = 'Составное свойство этой операцией не меняется.';
+        }
+        out.push(entry);
+    }
+
+    for (var i = 0; i < order.length; i++) add(order[i]);
+    for (var prop in known) if (Object.prototype.hasOwnProperty.call(known, prop)) add(prop);
+    /* A property the file carries that the dictionary has never heard of is
+     * still shown, so nothing in the element is invisible. */
+    for (i = 0; i < node.kids.length; i++) add(node.kids[i].name);
+
+    return { element: element || 'Form', kind: node.name, properties: out };
+}
+
+/* The text a property node holds. A multilingual value comes back as
+ * { ru: ..., en: ... }; a complex one as the tag names it is built from, which
+ * is enough for a panel to say what is there without editing it. */
+function valueOf(node, kind, complex) {
+    if (complex === 'Font') {
+        var font = {};
+        if (node.attrs.ref) font.ref = node.attrs.ref;
+        if (node.attrs.faceName) font.face = node.attrs.faceName;
+        if (node.attrs.height != null && node.attrs.height !== '') font.height = Number(node.attrs.height);
+        if (node.attrs.scale != null && node.attrs.scale !== '') font.scale = Number(node.attrs.scale);
+        ['bold', 'italic', 'underline', 'strikeout'].forEach(function (flag) {
+            if (node.attrs[flag] != null) font[flag] = node.attrs[flag] === 'true';
+        });
+        return font;
+    }
+    if (complex === 'Color') return node.text;
+    var items = node.kids.filter(function (k) { return k.name === 'item'; });
+    if (items.length) {
+        var out = {};
+        items.forEach(function (item) {
+            var lang = kid(item, 'lang');
+            var content = kid(item, 'content');
+            if (lang) out[lang.text] = content ? content.text : '';
+        });
+        return out;
+    }
+    if (node.kids.length) {
+        if (kind === 'complex' || !kind) {
+            var shape = {};
+            node.kids.forEach(function (k) { shape[k.name] = k.text; });
+            return shape;
+        }
+        return null;
+    }
+    return node.text;
+}
+
+/* Containers that hang off an item instead of lying in its ChildItems. Their
+ * own ChildItems hold buttons, which do move. */
+var COMPANION_CONTAINERS = { AutoCommandBar: 1, ContextMenu: 1, SearchStringAddition: 1, ViewStatusAddition: 1, SearchControlAddition: 1 };
+
+/* Every element a move can address: the container it lies in, its place among
+ * its neighbours and its kind. A host that offers the move - arrows over a
+ * tree, drag and drop - needs the picture the engine works from and cannot
+ * take it from the rendered form: the mockup drops technical groups, and an
+ * outline lists the command bars and the search additions beside the items,
+ * though those are not ChildItems and do not move. */
+function moveTree(xml) {
+    var form = scan(xml);
+    var out = [];
+    (function walk(node, container) {
+        node.kids.forEach(function (k) {
+            if (COMPANION_CONTAINERS[k.name] && k.attrs.name != null) walk(k, { name: k.attrs.name, kind: k.name });
+        });
+        var items = kid(node, 'ChildItems');
+        if (!items) return;
+        items.kids.forEach(function (item, index) {
+            if (item.attrs.name == null) return;
+            out.push({
+                name: item.attrs.name,
+                kind: item.name,
+                container: container.name,
+                containerKind: container.kind,
+                index: index,
+                count: items.kids.length
+            });
+            walk(item, { name: item.attrs.name, kind: item.name });
+        });
+    })(form, { name: 'Form', kind: 'Form' });
+    return out;
+}
+
 function listElements(xml) {
     var form = scan(xml);
     var out = [];
@@ -1117,12 +1411,279 @@ function listElements(xml) {
     return { version: form.attrs.version, elements: out };
 }
 
+/* ---------- Events ---------- */
+
+/* The events a form item of each kind offers, in the Designer's order: the
+ * XML name, the Russian name the handler is named after and the parameters
+ * of the procedure the Designer writes. A handler runs on the client unless
+ * it says otherwise. */
+var FIELD_EVENTS = [
+    ['OnChange', 'ПриИзменении', 'Элемент'],
+    ['StartChoice', 'НачалоВыбора', 'Элемент, ДанныеВыбора, СтандартнаяОбработка'],
+    ['StartListChoice', 'НачалоВыбораИзСписка', 'Элемент, СтандартнаяОбработка'],
+    ['Clearing', 'Очистка', 'Элемент, СтандартнаяОбработка'],
+    ['Opening', 'Открытие', 'Элемент, СтандартнаяОбработка'],
+    ['ChoiceProcessing', 'ОбработкаВыбора', 'Элемент, ВыбранноеЗначение, СтандартнаяОбработка'],
+    ['AutoComplete', 'АвтоПодбор', 'Элемент, Текст, ДанныеВыбора, ПараметрыПолученияДанных, Ожидание, СтандартнаяОбработка'],
+    ['TextEditEnd', 'ОкончаниеВводаТекста', 'Элемент, Текст, ДанныеВыбора, ПараметрыПолученияДанных, СтандартнаяОбработка'],
+    ['Tuning', 'Регулирование', 'Элемент, Направление, СтандартнаяОбработка'],
+    ['EditTextChange', 'ИзменениеТекстаРедактирования', 'Элемент, Текст, СтандартнаяОбработка'],
+    ['Creating', 'Создание', 'Элемент, СтандартнаяОбработка'],
+    ['URLProcessing', 'ОбработкаНавигационнойСсылки', 'Элемент, НавигационнаяСсылкаФорматированнойСтроки, СтандартнаяОбработка'],
+    ['DragCheck', 'ПроверкаПеретаскивания', 'Элемент, ПараметрыПеретаскивания, СтандартнаяОбработка'],
+    ['Drag', 'Перетаскивание', 'Элемент, ПараметрыПеретаскивания, СтандартнаяОбработка']
+];
+var EVENT_CATALOG = {
+    InputField: FIELD_EVENTS,
+    CheckBoxField: [['OnChange', 'ПриИзменении', 'Элемент']],
+    RadioButtonField: [['OnChange', 'ПриИзменении', 'Элемент']],
+    TextDocumentField: [['OnChange', 'ПриИзменении', 'Элемент']],
+    LabelField: [
+        ['Click', 'Нажатие', 'Элемент, СтандартнаяОбработка'],
+        ['URLProcessing', 'ОбработкаНавигационнойСсылки', 'Элемент, НавигационнаяСсылкаФорматированнойСтроки, СтандартнаяОбработка']
+    ],
+    LabelDecoration: [
+        ['Click', 'Нажатие', 'Элемент'],
+        ['URLProcessing', 'ОбработкаНавигационнойСсылки', 'Элемент, НавигационнаяСсылкаФорматированнойСтроки, СтандартнаяОбработка']
+    ],
+    PictureDecoration: [['Click', 'Нажатие', 'Элемент']],
+    PictureField: [
+        ['Click', 'Нажатие', 'Элемент, СтандартнаяОбработка'],
+        ['DragCheck', 'ПроверкаПеретаскивания', 'Элемент, ПараметрыПеретаскивания, СтандартнаяОбработка'],
+        ['Drag', 'Перетаскивание', 'Элемент, ПараметрыПеретаскивания, СтандартнаяОбработка']
+    ],
+    FormattedDocumentField: [
+        ['OnChange', 'ПриИзменении', 'Элемент'],
+        ['URLProcessing', 'ОбработкаНавигационнойСсылки', 'Элемент, НавигационнаяСсылкаФорматированнойСтроки, СтандартнаяОбработка']
+    ],
+    HTMLDocumentField: [
+        ['OnClick', 'ПриНажатии', 'Элемент, ДанныеСобытия, СтандартнаяОбработка'],
+        ['DocumentComplete', 'ДокументСформирован', 'Элемент']
+    ],
+    SpreadSheetDocumentField: [
+        ['Selection', 'Выбор', 'Элемент, Область, СтандартнаяОбработка'],
+        ['DetailProcessing', 'ОбработкаРасшифровки', 'Элемент, Расшифровка, СтандартнаяОбработка'],
+        ['AdditionalDetailProcessing', 'ОбработкаДополнительнойРасшифровки', 'Элемент, Расшифровка, СтандартнаяОбработка'],
+        ['OnActivate', 'ПриАктивизации', 'Элемент'],
+        ['OnChange', 'ПриИзменении', 'Элемент'],
+        ['OnChangeAreaContent', 'ПриИзмененииСодержимогоОбласти', 'Элемент, Область']
+    ],
+    CalendarField: [
+        ['OnChange', 'ПриИзменении', 'Элемент'],
+        ['Selection', 'Выбор', 'Элемент, ВыбраннаяДата'],
+        ['OnActivateDate', 'ПриАктивизацииДаты', 'Элемент'],
+        ['OnPeriodOutput', 'ПриВыводеПериода', 'Элемент, ОформлениеПериода']
+    ],
+    Pages: [['OnCurrentPageChange', 'ПриСменеСтраницы', 'Элемент, ТекущаяСтраница']],
+    /* The form's own events: their handlers carry no element prefix. */
+    Form: [
+        ['OnCreateAtServer', 'ПриСозданииНаСервере', 'Отказ, СтандартнаяОбработка', 'НаСервере'],
+        ['OnOpen', 'ПриОткрытии', 'Отказ'],
+        ['BeforeClose', 'ПередЗакрытием', 'Отказ, ЗавершениеРаботы, ТекстПредупреждения, СтандартнаяОбработка'],
+        ['OnClose', 'ПриЗакрытии', 'ЗавершениеРаботы'],
+        ['OnReopen', 'ПриПовторномОткрытии', ''],
+        ['NotificationProcessing', 'ОбработкаОповещения', 'ИмяСобытия, Параметр, Источник'],
+        ['ChoiceProcessing', 'ОбработкаВыбора', 'ВыбранноеЗначение, ИсточникВыбора'],
+        ['OnReadAtServer', 'ПриЧтенииНаСервере', 'ТекущийОбъект', 'НаСервере'],
+        ['FillCheckProcessingAtServer', 'ОбработкаПроверкиЗаполненияНаСервере', 'Отказ, ПроверяемыеРеквизиты', 'НаСервере'],
+        ['BeforeWrite', 'ПередЗаписью', 'Отказ, ПараметрыЗаписи'],
+        ['BeforeWriteAtServer', 'ПередЗаписьюНаСервере', 'Отказ, ТекущийОбъект, ПараметрыЗаписи', 'НаСервере'],
+        ['OnWriteAtServer', 'ПриЗаписиНаСервере', 'Отказ, ТекущийОбъект, ПараметрыЗаписи', 'НаСервере'],
+        ['AfterWriteAtServer', 'ПослеЗаписиНаСервере', 'ТекущийОбъект, ПараметрыЗаписи', 'НаСервере'],
+        ['AfterWrite', 'ПослеЗаписи', 'ПараметрыЗаписи'],
+        ['NewWriteProcessing', 'ОбработкаЗаписиНового', 'НовыйОбъект, Источник, СтандартнаяОбработка'],
+        ['BeforeLoadDataFromSettingsAtServer', 'ПередЗагрузкойДанныхИзНастроекНаСервере', 'Настройки', 'НаСервере'],
+        ['OnLoadDataFromSettingsAtServer', 'ПриЗагрузкеДанныхИзНастроекНаСервере', 'Настройки', 'НаСервере'],
+        ['OnSaveDataInSettingsAtServer', 'ПриСохраненииДанныхВНастройкахНаСервере', 'Настройки', 'НаСервере'],
+        ['ExternalEvent', 'ВнешнееСобытие', 'Источник, Событие, Данные']
+    ],
+    Table: [
+        ['Selection', 'Выбор', 'Элемент, ВыбраннаяСтрока, Поле, СтандартнаяОбработка'],
+        ['ValueChoice', 'ВыборЗначения', 'Элемент, Значение, СтандартнаяОбработка'],
+        ['OnActivateRow', 'ПриАктивизацииСтроки', 'Элемент'],
+        ['OnActivateField', 'ПриАктивизацииПоля', 'Элемент'],
+        ['OnActivateCell', 'ПриАктивизацииЯчейки', 'Элемент'],
+        ['BeforeAddRow', 'ПередНачаломДобавления', 'Элемент, Отказ, Копирование, Родитель, Группа, Параметр'],
+        ['BeforeRowChange', 'ПередНачаломИзменения', 'Элемент, Отказ'],
+        ['BeforeDeleteRow', 'ПередУдалением', 'Элемент, Отказ'],
+        ['AfterDeleteRow', 'ПослеУдаления', 'Элемент'],
+        ['OnStartEdit', 'ПриНачалеРедактирования', 'Элемент, НоваяСтрока, Копирование'],
+        ['BeforeEditEnd', 'ПередОкончаниемРедактирования', 'Элемент, НоваяСтрока, ОтменаРедактирования, Отказ'],
+        ['OnEditEnd', 'ПриОкончанииРедактирования', 'Элемент, НоваяСтрока, ОтменаРедактирования'],
+        ['OnChange', 'ПриИзменении', 'Элемент'],
+        ['ChoiceProcessing', 'ОбработкаВыбора', 'Элемент, ВыбранноеЗначение, СтандартнаяОбработка'],
+        ['NewWriteProcessing', 'ОбработкаЗаписиНового', 'НовыйОбъект, Источник, СтандартнаяОбработка'],
+        ['BeforeExpand', 'ПередРазворачиванием', 'Элемент, Строка, Отказ'],
+        ['BeforeCollapse', 'ПередСворачиванием', 'Элемент, Строка, Отказ'],
+        ['OnCurrentParentChange', 'ПриСменеТекущегоРодителя', 'Элемент'],
+        ['DragStart', 'НачалоПеретаскивания', 'Элемент, ПараметрыПеретаскивания, Выполнение'],
+        ['DragCheck', 'ПроверкаПеретаскивания', 'Элемент, ПараметрыПеретаскивания, СтандартнаяОбработка, Строка, Поле'],
+        ['Drag', 'Перетаскивание', 'Элемент, ПараметрыПеретаскивания, СтандартнаяОбработка, Строка, Поле'],
+        ['OnGetDataAtServer', 'ПриПолученииДанныхНаСервере', 'ИмяЭлемента, Настройки, Строки', 'НаСервереБезКонтекста']
+    ]
+};
+
+/* The events an item kind offers: { name, title, params, directive }. */
+function eventsFor(kind) {
+    return (EVENT_CATALOG[kind] || []).map(function (e) {
+        return { name: e[0], title: e[1], params: e[2], directive: e[3] || 'НаКлиенте' };
+    });
+}
+
+/* The Designer title of an event of any kind: ПриИзменении for OnChange. */
+function eventTitle(event) {
+    for (var kind in EVENT_CATALOG) {
+        if (!Object.prototype.hasOwnProperty.call(EVENT_CATALOG, kind)) continue;
+        for (var i = 0; i < EVENT_CATALOG[kind].length; i++) {
+            if (EVENT_CATALOG[kind][i][0] === event) return EVENT_CATALOG[kind][i][1];
+        }
+    }
+    return '';
+}
+
+/* The handler name the Designer proposes: the element and the event. */
+function handlerName(element, event) {
+    if (!element || element === 'Form') {
+        var own = eventsFor('Form').filter(function (e) { return e.name === event; })[0];
+        return own ? own.title : String(event || '');
+    }
+    var list = EVENT_CATALOG;
+    for (var kind in list) {
+        if (!Object.prototype.hasOwnProperty.call(list, kind)) continue;
+        for (var i = 0; i < list[kind].length; i++) {
+            if (list[kind][i][0] === event) return String(element || '') + list[kind][i][1];
+        }
+    }
+    return String(element || '') + String(event || '');
+}
+
+/* The events of an element (an empty name or 'Form' is the form itself):
+ * every event its kind offers with the handler assigned, if any, and after
+ * them the assigned events the catalog does not know. A button has no events
+ * of its own; its action is the command it runs, reported as `command`. */
+function readEvents(xml, element) {
+    var form = scan(xml);
+    var node = findElement(form, element);
+    var kind = node === form ? 'Form' : node.name;
+    var assigned = {};
+    var order = [];
+    var events = kid(node, 'Events');
+    if (events) events.kids.forEach(function (k) {
+        if (k.name !== 'Event' || !k.attrs.name) return;
+        assigned[k.attrs.name] = k.text.trim();
+        order.push(k.attrs.name);
+    });
+    var out = eventsFor(kind).map(function (e) {
+        return { name: e.name, title: e.title, directive: e.directive, handler: assigned[e.name] || '' };
+    });
+    order.forEach(function (name) {
+        if (!out.some(function (e) { return e.name === name; }))
+            out.push({ name: name, title: name, directive: '', handler: assigned[name] });
+    });
+    var command = null;
+    var ref = kid(node, 'CommandName');
+    var m = ref && /^Form\.Command\.(.+)$/.exec(ref.text.trim());
+    if (m) {
+        command = { name: m[1], action: '', exists: false };
+        var commands = kid(form, 'Commands');
+        if (commands) commands.kids.forEach(function (c) {
+            if (c.name !== 'Command' || c.attrs.name !== m[1]) return;
+            command.exists = true;
+            var action = kid(c, 'Action');
+            command.action = action ? action.text.trim() : '';
+        });
+    }
+    return { element: node === form ? 'Form' : element, kind: kind, events: out, command: command };
+}
+
+/* The procedure the Designer writes for a new handler. */
+function handlerStub(kind, event, handler, eol) {
+    eol = eol || '\r\n';
+    var info = null;
+    eventsFor(kind).forEach(function (e) { if (e.name === event) info = e; });
+    /* A command's action takes the command. */
+    if (!event) info = { directive: 'НаКлиенте', params: 'Команда' };
+    return '&' + (info ? info.directive : 'НаКлиенте') + eol
+        + 'Процедура ' + handler + '(' + (info ? info.params : 'Элемент') + ')' + eol
+        + '\t' + eol
+        + '\t// Вставить содержимое обработчика.' + eol
+        + '\t' + eol
+        + 'КонецПроцедуры' + eol;
+}
+
+/* Assigns `handler` to `event` of an item: the <Event> is written into its
+ * <Events>, which is created in its place when the item has none. An empty
+ * handler removes the event. */
+function setEvent(xml, params) {
+    params = params || {};
+    var event = String(params.event || '');
+    var handler = String(params.handler || '').trim();
+    if (!/^[A-Za-z]+$/.test(event)) throw new Error('Не задано событие.');
+    if (handler && !/^[A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*$/.test(handler)) {
+        throw new Error('Имя обработчика должно быть идентификатором.');
+    }
+    var eol = eolOf(xml);
+    var form = scan(xml);
+    var node = findElement(form, params.element);
+    var events = kid(node, 'Events');
+    var existing = null;
+    if (events) events.kids.forEach(function (k) { if (k.name === 'Event' && k.attrs.name === event) existing = k; });
+    var pad = indentOf(xml, node) + '\t';
+    var line = pad + '\t<Event name="' + event + '">' + encodeText(handler) + '</Event>' + eol;
+    if (existing) {
+        if (handler) {
+            var tag = xml.slice(existing.start, existing.openEnd).replace(/\s*\/>$/, '>');
+            xml = splice(xml, existing.start, existing.end, tag + encodeText(handler) + '</Event>');
+        } else {
+            var only = events.kids.length === 1;
+            var span = lineSpan(xml, only ? events : existing);
+            xml = splice(xml, span[0], span[1], '');
+        }
+    } else if (!handler) {
+        return { xml: xml, result: { element: params.element || 'Form', event: event, changed: false } };
+    } else if (events && events.closeStart >= 0) {
+        var at = lineStart(xml, events.closeStart);
+        xml = splice(xml, at, at, line);
+    } else {
+        var section = pad + '<Events>' + eol + line + pad + '</Events>' + eol;
+        if (events) {
+            var old = lineSpan(xml, events);
+            xml = splice(xml, old[0], old[1], section);
+        } else if (node.closeStart < 0) {
+            xml = insertProperty(xml, node, 'Events', section, eol).xml;
+        } else {
+            /* The Designer keeps the events after the companions, just
+             * before the children. */
+            var children = kid(node, 'ChildItems');
+            var at2 = children ? lineSpan(xml, children)[0] : lineStart(xml, node.closeStart);
+            xml = splice(xml, at2, at2, section);
+        }
+    }
+    scan(xml);
+    return { xml: xml, result: { element: params.element || 'Form', event: event, handler: handler, changed: true } };
+}
+
 root.FormEdit = {
+    eventsFor: eventsFor,
+    eventTitle: eventTitle,
+    handlerName: handlerName,
+    handlerStub: handlerStub,
+    setEvent: setEvent,
+    readEvents: readEvents,
+    readProperties: readProperties,
     addElement: addElement,
     setAttribute: setAttribute,
     setCommand: setCommand,
     setProperties: setProperties,
+    restoreProperty: restoreProperty,
+    restoreElement: restoreElement,
+    restoreElementBlocked: function (xml, sourceXml, name) {
+        try { return restoreElementPlan(xml, sourceXml, name).reason; }
+        catch (e) { return e && e.message || String(e); }
+    },
     moveElement: moveElement,
+    moveTree: moveTree,
+    canContain: canContain,
     removeElement: removeElement,
     listElements: listElements,
     _scan: scan

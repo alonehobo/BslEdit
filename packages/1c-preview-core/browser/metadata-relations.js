@@ -8,10 +8,12 @@
  * class, and every descriptor of the classes that can point at this kind is
  * read cut down by the host to its link lists ('md-links').
  *
- * load() answers { root, groups: [...], predefined: [...] } or null for an
- * object outside a configuration export. Scans are kept per configuration
- * root in the cache the caller passes, so moving between objects of one
- * configuration reads each class once. */
+ * load() answers { root, groups: [...], predefined: [...], templates: {...} }
+ * (plus the files of the object's own folder some kinds are drawn from:
+ * rights, schedule, picture); outside a configuration export (an external
+ * data processor or report) only its templates, or null without them. Scans are
+ * kept per configuration root in the cache the caller passes, so moving
+ * between objects of one configuration reads each class once. */
 (function (root) {
 'use strict';
 
@@ -30,10 +32,14 @@ var DIRS = {
     CommonForm: 'CommonForms', CommonTemplate: 'CommonTemplates', CommandGroup: 'CommandGroups',
     WebService: 'WebServices', HTTPService: 'HTTPServices', SettingsStorage: 'SettingsStorages',
     FunctionalOptionsParameter: 'FunctionalOptionsParameters', ExternalDataSource: 'ExternalDataSources',
-    IntegrationService: 'IntegrationServices', WSReference: 'WSReferences'
+    IntegrationService: 'IntegrationServices', WSReference: 'WSReferences', Bot: 'Bots',
+    XDTOPackage: 'XDTOPackages', Language: 'Languages', Style: 'Styles', StyleItem: 'StyleItems',
+    PaletteColor: 'PaletteColors',
+    CommonPicture: 'CommonPictures'
 };
 
 var EXTERNAL = { ExternalDataProcessor: true, ExternalReport: true };
+var PROJ_ROOTS = {};
 
 var REFERENCE_KINDS = ['Catalog', 'Document', 'Enum', 'ChartOfCharacteristicTypes', 'ChartOfAccounts',
     'ChartOfCalculationTypes', 'BusinessProcess', 'Task', 'ExchangePlan'];
@@ -196,11 +202,90 @@ function objectPath(rootDir, ref) {
     var parts = String(ref || '').split('.');
     if (parts.length !== 2 || !DIRS[parts[0]] || !rootDir) return '';
     var sep = sepOf(rootDir);
+    if (PROJ_ROOTS[String(rootDir).toLowerCase()]) return projObjectPath(rootDir, ref);
     return rootDir + sep + DIRS[parts[0]] + sep + parts[1] + '.xml';
+}
+function projObjectPath(rootDir, ref) {
+    var parts = String(ref || '').split('.');
+    if (parts.length !== 2 || !DIRS[parts[0]] || !rootDir) return '';
+    var sep = sepOf(rootDir);
+    return rootDir + sep + DIRS[parts[0]] + sep + parts[1] + sep + parts[1] + '.mdo';
+}
+
+/* The export root an object descriptor lies in: <root>/<Dir>/<Name>.xml, and
+ * for a nested subsystem <root>/Subsystems/A/Subsystems/B.xml. '' when the
+ * path is not a descriptor of `kind` in an export. */
+function configurationRoot(filePath, kind) {
+    var folder = dirname(filePath);
+    if (!DIRS[kind]) return '';
+    var filename = basename(filePath);
+    var mdo = /\.mdo$/i.test(filename);
+    if (mdo) {
+        if (filename.slice(0, -4).toLowerCase() !== basename(folder).toLowerCase()) return '';
+        var rootDir = dirname(dirname(folder));
+        while (kind === 'Subsystem' && basename(dirname(rootDir)).toLowerCase() === 'subsystems')
+            rootDir = dirname(dirname(rootDir));
+        return rootDir;
+    }
+    if (basename(folder).toLowerCase() !== DIRS[kind].toLowerCase()) return '';
+    var rootDir = dirname(folder);
+    while (kind === 'Subsystem' && basename(dirname(rootDir)).toLowerCase() === 'subsystems') rootDir = dirname(dirname(rootDir));
+    return rootDir;
+}
+
+/* A role's Ext/Rights.xml: { roleFlags: { setForNewObjects, ... }, rights:
+ * [{ object, rights: [{ name, value, restricted }] }] } with every right
+ * written, granted or taken away. A plain tag scan, as the file can be large. */
+function parseRights(text) {
+    var flags = {};
+    ['setForNewObjects', 'setForAttributesByDefault', 'independentRightsOfChildObjects'].forEach(function (k) {
+        var m = text.match(new RegExp('<' + k + '>(\\w+)</' + k + '>'));
+        if (m) flags[k] = m[1] === 'true';
+    });
+    var out = [];
+    var at = 0;
+    while ((at = text.indexOf('<object>', at)) >= 0) {
+        var end = text.indexOf('</object>', at + 8);
+        if (end < 0) break;
+        var block = text.slice(at + 8, end);
+        at = end + 9;
+        var name = (block.match(/<name>([^<]*)<\/name>/) || [])[1];
+        if (!name) continue;
+        var rights = [];
+        var re = /<right>([\s\S]*?)<\/right>/g;
+        var m;
+        while ((m = re.exec(block))) {
+            var right = (m[1].match(/<name>([^<]*)<\/name>/) || [])[1];
+            if (!right) continue;
+            rights.push({ name: right, value: /<value>true<\/value>/.test(m[1]),
+                restricted: m[1].indexOf('<restrictionByCondition>') >= 0 });
+        }
+        if (rights.length) out.push({ object: name.trim(), rights: rights });
+    }
+    return { roleFlags: flags, rights: out };
+}
+
+var PICTURE_MIME = {
+    png: 'image/png', svg: 'image/svg+xml', gif: 'image/gif', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+    bmp: 'image/bmp', ico: 'image/x-icon', zip: 'application/zip'
+};
+
+function bytesToBase64(bytes) {
+    var s = '';
+    for (var i = 0; i < bytes.length; i += 0x8000)
+        s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+    return typeof btoa === 'function' ? btoa(s) : Buffer.from(s, 'binary').toString('base64');
 }
 
 var CHUNK = 512;
 var MAX_BYTES = 64 * 1024 * 1024;
+
+function subsystemObjectPath(rootDir, name, parent) {
+    /* A nested subsystem lives next to its parent's descriptor:
+     * Subsystems/A/A.mdo → Subsystems/A/Subsystems/B/B.mdo. */
+    var sep = sepOf(rootDir), folder = parent ? parent.replace(/[\\/][^\\/]*$/, '') + sep + 'Subsystems' + sep : rootDir + sep + 'Subsystems' + sep;
+    return folder + name + sep + name + '.mdo';
+}
 
 function create(io, cache) {
     cache = cache || {};
@@ -231,15 +316,23 @@ function create(io, cache) {
         if (!cache[key]) {
             cache[key] = { scans: {} };
             var sep = sepOf(rootDir);
-            cache[key].objects = readMany([rootDir + sep + 'Configuration.xml'], '')
-                .then(function (texts) { return texts[0] ? configurationObjects(texts[0]) : null; });
+            var xmlPath = rootDir + sep + 'Configuration.xml';
+            var mdoPath = rootDir + sep + 'Configuration' + sep + 'Configuration.mdo';
+            cache[key].objects = readMany([xmlPath], '').then(function (texts) {
+                if (texts[0]) { cache[key].proj = false; PROJ_ROOTS[key] = false; return configurationObjects(texts[0]); }
+                return readMany([mdoPath], '').then(function (mdo) {
+                    if (!mdo[0] || !root.ProjMetadataConverter) return null;
+                    var converted = root.ProjMetadataConverter.convert(mdo[0]);
+                    cache[key].proj = !!(converted && converted.ok);
+                    PROJ_ROOTS[key] = cache[key].proj;
+                    return converted && converted.ok ? configurationObjects(converted.xml) : null;
+                });
+            });
         }
         return cache[key];
     }
 
-    /* Subsystems nest: Subsystems/A.xml lists B, kept as Subsystems/A/Subsystems/B.xml. */
     function scanSubsystems(rootDir, names) {
-        var sep = sepOf(rootDir);
         var out = [];
         function level(entries) {
             if (!entries.length) return Promise.resolve();
@@ -249,16 +342,19 @@ function create(io, cache) {
                     if (texts[i] == null) return;
                     var links = parseLinks(texts[i]);
                     out.push({ ref: 'Subsystem.' + entry.name, title: entry.title, path: entry.path, links: links });
-                    var folder = entry.path.replace(/\.xml$/i, '') + sep + 'Subsystems' + sep;
                     (links.Subsystem || []).forEach(function (child) {
-                        next.push({ name: child, title: entry.title + ' / ' + child, path: folder + child + '.xml' });
+                        var path = /\.mdo$/i.test(entry.path)
+                            ? subsystemObjectPath(rootDir, child, entry.path)
+                            : entry.path.replace(/\.xml$/i, '') + sepOf(rootDir) + 'Subsystems' + sepOf(rootDir) + child + '.xml';
+                        next.push({ name: child, title: entry.title + ' / ' + child, path: path });
                     });
                 });
                 return level(next);
             });
         }
         return level(names.map(function (name) {
-            return { name: name, title: name, path: rootDir + sep + 'Subsystems' + sep + name + '.xml' };
+            var isProj = !!cache[rootDir.toLowerCase()].proj;
+            return { name: name, title: name, path: isProj ? subsystemObjectPath(rootDir, name, '') : rootDir + sepOf(rootDir) + 'Subsystems' + sepOf(rootDir) + name + '.xml' };
         })).then(function () { return out; });
     }
 
@@ -269,7 +365,7 @@ function create(io, cache) {
                 var names = (objects && objects[cls]) || [];
                 if (cls === 'Subsystem') return scanSubsystems(rootDir, names);
                 var refs = names.map(function (name) { return cls + '.' + name; });
-                var paths = refs.map(function (ref) { return objectPath(rootDir, ref); });
+                var paths = refs.map(function (ref) { return cache[rootDir.toLowerCase()].proj ? projObjectPath(rootDir, ref) : objectPath(rootDir, ref); });
                 return readMany(paths, 'md-links').then(function (texts) {
                     var out = [];
                     for (var i = 0; i < refs.length; i++) {
@@ -282,15 +378,79 @@ function create(io, cache) {
         return st.scans[cls];
     }
 
-    /* objectPath: <root>/<Dir>/<Name>.xml; kind and name come from its XML. */
-    function load(filePath, kind, name) {
-        /* An external data processor or report belongs to no configuration:
-         * nothing is read for it. */
-        if (EXTERNAL[kind]) return Promise.resolve(null);
+    /* Files of the object's own folder some kinds are drawn from: a role's
+     * rights (cut to 'rights-summary'), a scheduled job's schedule, a common
+     * picture's image. { rights | schedule | picture }, empty for other kinds;
+     * a missing file only leaves its part out. */
+    function ownFiles(folder, kind, name) {
+        var sep = sepOf(folder);
+        var ext = folder + sep + name + sep + 'Ext' + sep;
+        function text(path, filter) {
+            return readMany([path], filter).then(function (t) { return t[0]; }, function () { return null; });
+        }
+        if (kind === 'Role') {
+            /* Read whole: a role set «for new objects» lists only the
+             * rights it takes away, which the summary cut drops. */
+            return text(ext + 'Rights.xml', '').then(function (t) { return t == null ? {} : parseRights(t); });
+        }
+        if (kind === 'ScheduledJob') {
+            return text(ext + 'Schedule.xml', '').then(function (t) { return t ? { schedule: t } : {}; });
+        }
+        if (kind === 'CommonPicture') {
+            return text(ext + 'Picture.xml', '').then(function (t) {
+                var m = t && t.match(/<(?:\w+:)?Abs>([^<]+)<\//);
+                var file = m ? m[1].trim() : '';
+                var mime = PICTURE_MIME[(file.split('.').pop() || '').toLowerCase()];
+                if (!file || !mime || /[\\/]|\.\./.test(file)) return {};
+                return io.readMany([ext + 'Picture' + sep + file], MAX_BYTES, '').then(function (bytes) {
+                    return bytes[0] ? { picture: { file: file, mime: mime, data: bytesToBase64(bytes[0]) } } : {};
+                });
+            }).catch(function () { return {}; });
+        }
+        return Promise.resolve({});
+    }
+
+    /* Child Form/Template descriptors contain properties that the owner's
+     * <ChildObjects> only names. Keep their XML so the object window
+     * can show every authored property, not merely a template's type. */
+    function childDescriptors(folder, name, forms, templates) {
+        forms = forms || [];
+        templates = templates || [];
+        if (!forms.length && !templates.length) return Promise.resolve({ Form: {}, Template: {} });
+        var sep = sepOf(folder);
+        var entries = forms.map(function (n) { return ['Form', n, folder + sep + name + sep + 'Forms' + sep + n + '.xml']; })
+            .concat(templates.map(function (n) { return ['Template', n, folder + sep + name + sep + 'Templates' + sep + n + '.xml']; }));
+        return readMany(entries.map(function (e) { return e[2]; }), '').then(function (texts) {
+            var out = { Form: {}, Template: {} };
+            entries.forEach(function (e, i) { if (texts[i]) out[e[0]][e[1]] = texts[i]; });
+            return out;
+        }, function () { return { Form: {}, Template: {} }; });
+    }
+
+    function descriptorTemplateTypes(descriptors) {
+        var out = {};
+        for (var name in descriptors.Template) {
+            var match = descriptors.Template[name].match(/<TemplateType>\s*([^<\s]+)\s*</);
+            if (match) out[name] = match[1];
+        }
+        return out;
+    }
+
+    /* objectPath: <root>/<Dir>/<Name>.xml; kind and name come from its XML,
+     * templates are the names its ChildObjects list. */
+    function load(filePath, kind, name, templates, forms) {
         var folder = dirname(filePath);
-        var rootDir = dirname(folder);
-        if (!rootDir || !DIRS[kind] || basename(folder).toLowerCase() !== DIRS[kind].toLowerCase())
-            return Promise.resolve(null);
+        var descriptors = childDescriptors(folder, name, forms, templates);
+        /* An external data processor or report belongs to no configuration:
+         * only its own templates are read. */
+        var rootDir = EXTERNAL[kind] ? '' : configurationRoot(filePath, kind);
+        if (!rootDir) {
+            return descriptors.then(function (d) {
+                if (Object.keys(d.Form).length || Object.keys(d.Template).length)
+                    return { groups: [], predefined: [], templates: descriptorTemplateTypes(d), descriptors: d };
+                return null;
+            });
+        }
         var st = state(rootDir);
         var ref = kind + '.' + name;
         return st.objects.then(function (objects) {
@@ -308,7 +468,7 @@ function create(io, cache) {
                 ? readMany([folder + sepOf(folder) + name + sepOf(folder) + 'Ext' + sepOf(folder) + 'Predefined.xml'], '')
                     .then(function (texts) { return texts[0] ? parsePredefined(texts[0]) : []; }, function () { return []; })
                 : Promise.resolve([]);
-            return Promise.all([groups, predefined]).then(function (r) {
+            return Promise.all([groups, predefined, ownFiles(folder, kind, name), descriptors]).then(function (r) {
                 /* Two rules share a title (a sequence lists documents and
                  * registers): merge them. */
                 var merged = [];
@@ -317,7 +477,12 @@ function create(io, cache) {
                     if (same) { same.items = same.items.concat(g.items); same.single = same.single && g.single; }
                     else merged.push(g);
                 });
-                return { root: rootDir, groups: merged, predefined: r[1] };
+                var templateTypes = descriptorTemplateTypes(r[3]);
+                var out = { root: rootDir, proj: !!cache[rootDir.toLowerCase()].proj,
+                    groups: merged, predefined: r[1], templates: templateTypes,
+                    descriptors: r[3] };
+                for (var key in r[2]) if (Object.prototype.hasOwnProperty.call(r[2], key)) out[key] = r[2][key];
+                return out;
             });
         });
     }
@@ -331,7 +496,9 @@ function create(io, cache) {
             var sep = sepOf(rootDir);
             st.rights = st.objects.then(function (objects) {
                 var names = (objects && objects.Role) || [];
-                var paths = names.map(function (n) { return rootDir + sep + 'Roles' + sep + n + sep + 'Ext' + sep + 'Rights.xml'; });
+                var paths = names.map(function (n) { return cache[rootDir.toLowerCase()].proj
+                    ? rootDir + sep + 'Roles' + sep + n + sep + 'Rights.rights'
+                    : rootDir + sep + 'Roles' + sep + n + sep + 'Ext' + sep + 'Rights.xml'; });
                 return readMany(paths, 'rights-summary').then(function (texts) {
                     var index = {};
                     for (var i = 0; i < names.length; i++) {
@@ -355,20 +522,20 @@ function create(io, cache) {
      * rights: [{ name, restricted }] }], or null outside a configuration. */
     function loadRoles(filePath, kind, name) {
         if (EXTERNAL[kind]) return Promise.resolve(null);
-        var folder = dirname(filePath);
-        var rootDir = dirname(folder);
-        if (!rootDir || !DIRS[kind] || basename(folder).toLowerCase() !== DIRS[kind].toLowerCase())
-            return Promise.resolve(null);
+        var rootDir = configurationRoot(filePath, kind);
+        if (!rootDir) return Promise.resolve(null);
         var sep = sepOf(rootDir);
         return state(rootDir).objects.then(function (objects) {
             if (!objects) return null;
             return rightsIndex(rootDir).then(function (index) {
                 var found = index[kind + '.' + name] || [];
-                var paths = found.map(function (f) { return rootDir + sep + 'Roles' + sep + f[0] + '.xml'; });
+                var paths = found.map(function (f) { return cache[rootDir.toLowerCase()].proj
+                    ? rootDir + sep + 'Roles' + sep + f[0] + sep + f[0] + '.mdo'
+                    : rootDir + sep + 'Roles' + sep + f[0] + '.xml'; });
                 return readMany(paths, 'configuration-properties').then(function (heads) {
                     return found.map(function (f, i) {
                         return {
-                            role: f[0], title: synonymOf(heads[i]), path: paths[i],
+                            role: f[0], title: synonymOf(heads[i]) || f[0], path: paths[i],
                             rights: f[1].split(',').map(function (r) {
                                 return { name: r.replace(/\*$/, ''), restricted: /\*$/.test(r) };
                             })
@@ -386,9 +553,11 @@ root.MetadataRelations = {
     DIRS: DIRS,
     create: create,
     objectPath: objectPath,
+    typeObject: typeObject,
     _test: {
         parseLinks: parseLinks, typeObject: typeObject, configurationObjects: configurationObjects,
-        inverseOf: inverseOf, parsePredefined: parsePredefined, INVERSE: INVERSE, synonymOf: synonymOf
+        inverseOf: inverseOf, parsePredefined: parsePredefined, INVERSE: INVERSE, synonymOf: synonymOf,
+        configurationRoot: configurationRoot, parseRights: parseRights, subsystemObjectPath: subsystemObjectPath
     }
 };
 

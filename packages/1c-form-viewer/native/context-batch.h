@@ -198,6 +198,42 @@ inline std::string CommandBlocks(const std::string& text)
 /* TEXT_FILTERS['md-links'] */
 inline std::string MdLinks(const std::string& text)
 {
+    if (text.find("http://g5.1c.ru/v8/dt/metadata/mdclass") != std::string::npos) {
+        const std::pair<const char*, const char*> projTags[] = {
+            { "registerRecords", "RegisterRecords" }, { "basedOn", "BasedOn" }, { "owners", "Owners" },
+            { "content", "Content" }, { "source", "Source" }, { "registeredDocuments", "RegisteredDocuments" },
+            { "documents", "Documents" }, { "subsystems", "Subsystems" }
+        };
+        std::string out;
+        auto append = [&out](const std::string& value) { if (!out.empty()) out += '\n'; out += value; };
+        for (const auto& mapping : projTags) {
+            const std::string open = std::string("<") + mapping.first + ">";
+            const std::string close = std::string("</") + mapping.first + ">";
+            size_t at = 0;
+            while ((at = text.find(open, at)) != std::string::npos) {
+                const size_t end = text.find(close, at + open.size());
+                if (end == std::string::npos) break;
+                std::string value = text.substr(at + open.size(), end - at - open.size());
+                if (value.find('<') == std::string::npos && !value.empty()) {
+                    if (mapping.first == std::string("subsystems")) append("<Subsystem>" + value + "</Subsystem>");
+                    else append(std::string("<") + mapping.second + "><xr:Item>" + value + "</xr:Item></" + mapping.second + ">");
+                }
+                at = end + close.size();
+            }
+        }
+        const std::string typeOpen = "<types>", typeClose = "</types>";
+        size_t at = 0;
+        std::string typeItems;
+        while ((at = text.find(typeOpen, at)) != std::string::npos) {
+            const size_t end = text.find(typeClose, at + typeOpen.size());
+            if (end == std::string::npos) break;
+            std::string value = text.substr(at + typeOpen.size(), end - at - typeOpen.size());
+            if (value.find('<') == std::string::npos && !value.empty()) typeItems += "<v8:Type>" + value + "</v8:Type>";
+            at = end + typeClose.size();
+        }
+        if (!typeItems.empty()) append("<Type>" + typeItems + "</Type>");
+        return out;
+    }
     static const char* const kTags[] = { "RegisterRecords", "BasedOn", "Owners", "Content", "Source",
         "RegisteredDocuments", "Documents", "Type" };
     const size_t split = text.find("<ChildObjects>");
@@ -366,17 +402,18 @@ inline bool IsExtensionConfiguration(const std::wstring& directory, bool& extens
     return true;
 }
 
-/* io.baseConfigurations of form-context.js: the configurations an extension
- * may extend, for an export laid out in any way. From the extension root's
- * parent upwards (three levels, never a volume root) each level's
- * subdirectories are searched two deep for a Configuration.xml that is not an
- * extension; a configuration directory is not entered. The nearest level with
- * a find answers. baseConfigurations() in packages/1c-form-viewer/src/files.ts
- * is the Node twin. */
-inline std::vector<std::wstring> FindBaseConfigurations(const std::wstring& extensionRoot)
+/* io.baseConfigurations and io.extensionConfigurations of form-context.js:
+ * the configurations an extension may extend, or the extensions of a
+ * configuration, for an export laid out in any way. From the root's parent
+ * upwards (three levels, never a volume root) each level's subdirectories are
+ * searched two deep for a Configuration.xml of the wanted kind; a
+ * configuration directory is not entered. The nearest level with a find
+ * answers. findConfigurations() in packages/1c-form-viewer/src/files.ts is
+ * the Node twin. */
+inline std::vector<std::wstring> FindConfigurations(const std::wstring& fromRoot, bool wantExtension)
 {
     std::vector<std::wstring> found;
-    std::wstring root = extensionRoot;
+    std::wstring root = fromRoot;
     std::replace(root.begin(), root.end(), L'/', L'\\');
     while (root.size() > 3 && root.back() == L'\\') root.pop_back();
     size_t budget = 4096;
@@ -402,7 +439,7 @@ inline std::vector<std::wstring> FindBaseConfigurations(const std::wstring& exte
             if (_wcsicmp(child.c_str(), root.c_str()) == 0) continue;
             bool extension = false;
             if (IsExtensionConfiguration(child, extension)) {
-                if (!extension) found.push_back(child);
+                if (extension == wantExtension) found.push_back(child);
                 continue;
             }
             if (depth < 2) scan(child, depth + 1);
@@ -415,6 +452,177 @@ inline std::vector<std::wstring> FindBaseConfigurations(const std::wstring& exte
         level.resize(slash);
         scan(level, 1);
     }
+    return found;
+}
+
+inline std::vector<std::wstring> FindBaseConfigurations(const std::wstring& extensionRoot)
+{
+    return FindConfigurations(extensionRoot, false);
+}
+
+/* Enumerate source modules on demand.  This is deliberately not an index:
+ * every request walks the selected configuration root, while reparse-point
+ * directories are skipped so a junction cannot escape the root or make the
+ * traversal cyclic. */
+inline std::vector<std::wstring> FindModuleFiles(const std::wstring& root)
+{
+    std::vector<std::wstring> found;
+    size_t budget = 100000;
+    std::function<void(const std::wstring&, unsigned)> scan;
+    scan = [&](const std::wstring& directory, unsigned depth) {
+        if (!budget || depth > 32) return;
+        std::wstring mask = directory;
+        if (!mask.empty() && mask.back() != L'\\' && mask.back() != L'/') mask += L'\\';
+        mask += L'*';
+        WIN32_FIND_DATAW data;
+        HANDLE handle = FindFirstFileW(mask.c_str(), &data);
+        if (handle == INVALID_HANDLE_VALUE) return;
+        do {
+            if (!budget) break;
+            const wchar_t* name = data.cFileName;
+            if ((name[0] == L'.' && name[1] == L'\0')
+                    || (name[0] == L'.' && name[1] == L'.' && name[2] == L'\0')) continue;
+            --budget;
+            std::wstring path = directory;
+            if (!path.empty() && path.back() != L'\\' && path.back() != L'/') path += L'\\';
+            path += name;
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (!(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) scan(path, depth + 1);
+                continue;
+            }
+            size_t length = wcslen(name);
+            const wchar_t* suffix = L"Module.bsl";
+            size_t suffixLength = wcslen(suffix);
+            if (length >= suffixLength && _wcsicmp(name + length - suffixLength, suffix) == 0)
+                found.push_back(path);
+        } while (FindNextFileW(handle, &data));
+        FindClose(handle);
+    };
+    scan(root, 0);
+    std::sort(found.begin(), found.end(), [](const std::wstring& a, const std::wstring& b) {
+        return _wcsicmp(a.c_str(), b.c_str()) < 0;
+    });
+    return found;
+}
+
+inline bool CsvHas(const std::string& csv, const char* value)
+{
+    const std::string needle(value);
+    size_t start = 0;
+    while (start <= csv.size()) {
+        size_t end = csv.find(',', start);
+        if (csv.substr(start, end == std::string::npos ? std::string::npos : end - start) == needle) return true;
+        if (end == std::string::npos) break;
+        start = end + 1;
+    }
+    return false;
+}
+
+inline std::wstring LowerPath(std::wstring value)
+{
+    std::replace(value.begin(), value.end(), L'/', L'\\');
+    std::transform(value.begin(), value.end(), value.begin(), [](wchar_t c) { return (wchar_t)towlower(c); });
+    return value;
+}
+
+inline bool PathSegment(const std::wstring& lowerPath, const wchar_t* segment)
+{
+    return lowerPath.find(std::wstring(L"\\") + segment + L"\\") != std::wstring::npos;
+}
+
+inline bool EndsWithI(const std::wstring& value, const wchar_t* suffix)
+{
+    const size_t length = wcslen(suffix);
+    return value.size() >= length && _wcsicmp(value.c_str() + value.size() - length, suffix) == 0;
+}
+
+inline bool SearchFileMatches(const std::wstring& path, const std::string& categories)
+{
+    const std::wstring lower = LowerPath(path);
+    const bool module = EndsWithI(lower, L"module.bsl");
+    const bool role = PathSegment(lower, L"roles");
+    const bool form = PathSegment(lower, L"forms")
+        && (EndsWithI(lower, L"\\ext\\form.xml") || EndsWithI(lower, L"\\form.form"));
+    const bool templ = PathSegment(lower, L"templates");
+    const bool route = PathSegment(lower, L"flowcharts") || PathSegment(lower, L"routemaps")
+        || EndsWithI(lower, L"\\flowchart.xml") || EndsWithI(lower, L"\\routemap.xml");
+    const bool help = EndsWithI(lower, L"\\help.xml") || PathSegment(lower, L"help");
+    const bool xml = EndsWithI(lower, L".xml");
+    const bool mdo = EndsWithI(lower, L".mdo");
+    const bool rights = EndsWithI(lower, L".rights");
+    if (CsvHas(categories, "modules") && module) return true;
+    if (CsvHas(categories, "roles") && role && (xml || rights)) return true;
+    if (CsvHas(categories, "formElements") && form) return true;
+    if (CsvHas(categories, "templates") && templ
+            && (xml || EndsWithI(lower, L".txt") || EndsWithI(lower, L".html") || EndsWithI(lower, L".htm"))) return true;
+    if (CsvHas(categories, "routeMaps") && route && xml) return true;
+    if (CsvHas(categories, "help") && help
+            && (xml || EndsWithI(lower, L".html") || EndsWithI(lower, L".htm") || EndsWithI(lower, L".txt"))) return true;
+    if (CsvHas(categories, "properties") && (xml || mdo) && !role && !form && !templ && !route && !help) return true;
+    return false;
+}
+
+inline std::vector<std::wstring> RelatedSearchRoots(const std::wstring& configurationRoot, const std::string& scopes)
+{
+    std::wstring root = configurationRoot;
+    std::replace(root.begin(), root.end(), L'/', L'\\');
+    while (root.size() > 3 && root.back() == L'\\') root.pop_back();
+    std::wstring source;
+    for (std::wstring scope = root; !scope.empty();) {
+        size_t slash = scope.find_last_of(L'\\');
+        std::wstring leaf = slash == std::wstring::npos ? scope : scope.substr(slash + 1);
+        if (_wcsicmp(leaf.c_str(), L"cf") == 0 || _wcsicmp(leaf.c_str(), L"cfe") == 0
+                || _wcsicmp(leaf.c_str(), L"epf") == 0 || _wcsicmp(leaf.c_str(), L"erf") == 0) {
+            source = slash == std::wstring::npos ? std::wstring() : scope.substr(0, slash);
+            break;
+        }
+        if (slash == std::wstring::npos || slash < 3) break;
+        scope.resize(slash);
+    }
+    const bool conventional = !source.empty();
+    std::vector<std::wstring> roots;
+    static const struct { const char* key; const wchar_t* name; } known[] = {
+        { "cf", L"cf" }, { "cfe", L"cfe" }, { "epf", L"epf" }, { "erf", L"erf" }
+    };
+    for (const auto& item : known) {
+        if (!CsvHas(scopes, item.key)) continue;
+        std::wstring candidate = conventional ? source + L"\\" + item.name : root;
+        DWORD attributes = GetFileAttributesW(candidate.c_str());
+        if (attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY)) roots.push_back(candidate);
+        if (!conventional) break;
+    }
+    return roots;
+}
+
+inline std::vector<std::wstring> FindSearchFiles(const std::vector<std::wstring>& roots, const std::string& categories)
+{
+    std::vector<std::wstring> found;
+    size_t budget = 300000;
+    std::function<void(const std::wstring&, unsigned)> scan;
+    scan = [&](const std::wstring& directory, unsigned depth) {
+        if (!budget || depth > 40) return;
+        WIN32_FIND_DATAW data;
+        HANDLE handle = FindFirstFileW((directory + L"\\*").c_str(), &data);
+        if (handle == INVALID_HANDLE_VALUE) return;
+        do {
+            if (!budget) break;
+            const wchar_t* name = data.cFileName;
+            if ((name[0] == L'.' && name[1] == L'\0') || (name[0] == L'.' && name[1] == L'.' && name[2] == L'\0')) continue;
+            --budget;
+            std::wstring path = directory + L"\\" + name;
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (!(data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT)) scan(path, depth + 1);
+            } else if (SearchFileMatches(path, categories)) found.push_back(path);
+        } while (FindNextFileW(handle, &data));
+        FindClose(handle);
+    };
+    for (const std::wstring& root : roots) scan(root, 0);
+    std::sort(found.begin(), found.end(), [](const std::wstring& a, const std::wstring& b) {
+        return _wcsicmp(a.c_str(), b.c_str()) < 0;
+    });
+    found.erase(std::unique(found.begin(), found.end(), [](const std::wstring& a, const std::wstring& b) {
+        return _wcsicmp(a.c_str(), b.c_str()) == 0;
+    }), found.end());
     return found;
 }
 
@@ -517,14 +725,58 @@ inline ContextBatchResult HandleContextBatch(const std::string& body, const Cont
         return result;
     }
 
-    if (verb == "base-configurations") {
+    if (verb == "base-configurations" || verb == "extension-configurations") {
         std::wstring root = Wide(rest);
         result.contentType = "text/plain; charset=utf-8";
         if (root.empty() || !access.directory || !access.directory(root)) return result;
-        for (const std::wstring& directory : FindBaseConfigurations(root)) {
+        for (const std::wstring& directory : FindConfigurations(root, verb == "extension-configurations")) {
             if (!access.directory(directory)) continue;
             if (!result.body.empty()) result.body += '\n';
             result.body += Utf8(directory);
+        }
+        return result;
+    }
+
+    if (verb == "module-files") {
+        std::wstring root = Wide(rest);
+        result.contentType = "text/plain; charset=utf-8";
+        if (root.empty() || !access.directory || !access.directory(root)) return result;
+        for (const std::wstring& path : FindModuleFiles(root)) {
+            if (!access.file || !access.file(path)) continue;
+            if (!result.body.empty()) result.body += '\n';
+            result.body += Utf8(path);
+        }
+        return result;
+    }
+
+    if (verb == "search-files") {
+        std::vector<std::string> parts = SplitLines(rest, 3);
+        if (parts.size() < 3) { result.status = 400; result.body = "Bad request"; return result; }
+        const std::wstring current = Wide(parts[2]);
+        result.contentType = "text/plain; charset=utf-8";
+        if (current.empty() || !access.directory || !access.directory(current)) return result;
+        std::vector<std::wstring> roots = RelatedSearchRoots(current, parts[1]);
+        roots.erase(std::remove_if(roots.begin(), roots.end(), [&](const std::wstring& root) {
+            return !access.directory(root);
+        }), roots.end());
+        for (const std::wstring& path : FindSearchFiles(roots, parts[0])) {
+            if (!access.file || !access.file(path)) continue;
+            if (!result.body.empty()) result.body += '\n';
+            result.body += Utf8(path);
+        }
+        return result;
+    }
+
+    if (verb == "search-object-files") {
+        std::vector<std::string> parts = SplitLines(rest, 2);
+        if (parts.size() < 2) { result.status = 400; result.body = "Bad request"; return result; }
+        const std::wstring root = Wide(parts[1]);
+        result.contentType = "text/plain; charset=utf-8";
+        if (root.empty() || !access.directory || !access.directory(root)) return result;
+        for (const std::wstring& path : FindSearchFiles(std::vector<std::wstring>{ root }, parts[0])) {
+            if (!access.file || !access.file(path)) continue;
+            if (!result.body.empty()) result.body += '\n';
+            result.body += Utf8(path);
         }
         return result;
     }

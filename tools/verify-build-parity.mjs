@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 /* Checks that every shipped build renders from the same shared core:
  *
- *   web/                                   BSLView.wlx / BSLEdit.exe (web\ beside the binary)
+ *   web/                                   BSLView.wlx / BSLEdit.exe source tree
  *   packages/1c-form-viewer/build/web      native MCP build output
- *   releases/Last version/MCP/app/web      installed stable MCP
- *   releases/Last version/*.vsix           VS Code extension (extension/mcp/app/web)
+ *   releases/Last version/MCP/*.exe        installed stable MCP
+ *   releases/Last version/*.vsix           VS Code extension (extension/mcp/*.exe)
+ *
+ * The shipped binaries carry the interface inside them (embedded-assets.h),
+ * so the last two are read out of the executable itself rather than off a
+ * directory beside it: a stale pack is exactly the drift this check exists
+ * to catch, and nothing else proves what a released .exe would render.
  *
  * Each shared file (renderers, viewer.css, platform icons, std-pictures) must be
  * byte-identical to packages/1c-preview-core/browser. A host shell must not
@@ -18,6 +23,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import { browserPath, platformIcons, scripts, stdPictures, styles } from '../packages/1c-preview-core/manifest.mjs';
+import { readAssetPackFromBinary } from './pack-assets.mjs';
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
@@ -79,9 +85,30 @@ function checkDir(label, dir) {
   });
 }
 
+/* A binary that ships: what it renders is whatever its embedded pack holds. */
+function checkBinary(label, read) {
+  let pack;
+  try {
+    const image = read();
+    if (!image) throw new Error('not built');
+    pack = readAssetPackFromBinary(image);
+  } catch (error) {
+    (allowMissing || error.message === 'not built' ? notes : problems).push(`${label}: ${error.message}`);
+    return;
+  }
+  checkTarget(label, (name) => pack.get(name) ?? null);
+}
+
 checkDir('BSLView/BSLEdit web', path.join(repo, 'web'));
 checkDir('MCP build/web', path.join(repo, 'packages', '1c-form-viewer', 'build', 'web'));
-checkDir('Last version MCP', path.join(repo, 'releases', 'Last version', 'MCP', 'app', 'web'));
+for (const [label, file] of [
+  ['BSLEdit.exe', path.join(repo, 'BSLEdit.exe')],
+  ['BSLView.wlx64', path.join(repo, 'BSLView.wlx64')],
+  ['BSLView.wlx', path.join(repo, 'BSLView.wlx')],
+  ['Last version MCP', path.join(repo, 'releases', 'Last version', 'MCP', '1c-form-viewer.exe')],
+]) {
+  checkBinary(label, () => (existsSync(file) ? readFileSync(file) : null));
+}
 
 const latestDir = path.join(repo, 'releases', 'Last version');
 const vsix = vsixArg || (existsSync(latestDir)
@@ -97,8 +124,8 @@ if (!vsix || !existsSync(vsix)) {
     try { decoded = decodeURIComponent(name); } catch { /* keep raw */ }
     byName.set(decoded, get);
   }
-  checkTarget(`VSIX ${path.basename(vsix)}`, (name) => {
-    const get = byName.get(`extension/mcp/app/web/${name}`);
+  checkBinary(`VSIX ${path.basename(vsix)}`, () => {
+    const get = byName.get('extension/mcp/1c-form-viewer.exe');
     return get ? get() : null;
   });
 }
@@ -106,6 +133,7 @@ if (!vsix || !existsSync(vsix)) {
 /* Shell stylesheets that sit next to the shared viewer.css in one host only. */
 const shellCss = [
   path.join(repo, 'web', 'form-workbench.css'),
+  path.join(repo, 'web', 'epf-unpack.css'),
   path.join(repo, 'packages', '1c-form-viewer', 'ui', 'agent-viewer.css'),
 ];
 for (const file of shellCss) {

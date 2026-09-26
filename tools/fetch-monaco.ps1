@@ -21,7 +21,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $webDir   = Join-Path $repoRoot 'web'
 $vsDir    = Join-Path $webDir 'vs'
 $stampFile = Join-Path $vsDir '.version'
-$stamp = "monaco=$MonacoVersion marked=$MarkedVersion turndown=$TurndownVersion"
+$stamp = "monaco=$MonacoVersion nls=ru marked=$MarkedVersion turndown=$TurndownVersion"
 
 if (-not $Force -and (Test-Path $stampFile) -and ((Get-Content $stampFile -Raw).Trim() -eq $stamp)) {
     Write-Host "Monaco $MonacoVersion already present in web\vs (use -Force to refresh)."
@@ -50,8 +50,9 @@ try {
         $p = Join-Path $src $drop
         if (Test-Path $p) { Remove-Item $p -Recurse -Force }
     }
-    # Localisation bundles are only fetched when a locale is configured; we never do.
-    Get-ChildItem $src -Filter 'nls.messages.*.js' -File | Remove-Item -Force
+    # viewer.js loads the Russian bundle before editor.main; other locales are unused.
+    Get-ChildItem $src -Filter 'nls.messages.*.js' -File |
+        Where-Object { $_.Name -ne 'nls.messages.ru.js' } | Remove-Item -Force
 
     if (Test-Path $vsDir) { Remove-Item $vsDir -Recurse -Force }
     New-Item -ItemType Directory -Path $webDir -Force | Out-Null

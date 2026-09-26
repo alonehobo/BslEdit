@@ -8,6 +8,25 @@ html.theme-dark #form-workbench-tabs button { color:#ccc; }
 html.theme-dark #form-workbench-tabs button:hover { background:#333; }
 html.theme-dark #form-workbench-tabs button.active { background:#1e1e1e; border-color:#555; color:#fff; }
 
+/* The page's own context menu (viewer.js, wireContextMenu). */
+.ctx-menu { position:fixed; z-index:10000; min-width:180px; max-width:420px; padding:3px 0; background:#fff; border:1px solid #c8c8c8; box-shadow:0 3px 10px rgba(0,0,0,.18); font:12px 'Segoe UI',Arial,sans-serif; color:#222; user-select:none; }
+.ctx-menu[hidden] { display:none; }
+.ctx-submenu { max-height:calc(100vh - 8px); overflow-y:auto; }
+.ctx-item { display:flex; gap:24px; justify-content:space-between; padding:4px 14px 4px 24px; white-space:nowrap; cursor:default; }
+.ctx-item:hover { background:#e5f1fb; }
+.ctx-label { overflow:hidden; text-overflow:ellipsis; }
+.ctx-label.ctx-link { color:#0066cc; text-decoration:underline; }
+.ctx-hint { color:#888; }
+.ctx-disabled { color:#aaa; }
+.ctx-disabled:hover { background:transparent; }
+.ctx-sep { height:1px; margin:3px 8px; background:#e2e2e2; }
+html.theme-dark .ctx-menu { background:#252526; border-color:#454545; color:#ddd; box-shadow:0 3px 10px rgba(0,0,0,.5); }
+html.theme-dark .ctx-item:hover { background:#094771; }
+html.theme-dark .ctx-hint { color:#999; }
+html.theme-dark .ctx-disabled { color:#6b6b6b; }
+html.theme-dark .ctx-sep { background:#454545; }
+
 @media print {
   #form-workbench-tabs { display:none !important; }
+  .ctx-menu { display:none !important; }
 }

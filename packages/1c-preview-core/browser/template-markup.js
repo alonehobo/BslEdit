@@ -110,7 +110,7 @@ function localizedText(tl, lang) {
 /* Element order inside <format>, derived from templates the configurator wrote. */
 var FORMAT_ORDER = ['font', 'leftBorder', 'topBorder', 'rightBorder', 'bottomBorder', 'border', 'borderColor', 'height', 'width',
     'widthWeightFactor', 'horizontalAlignment', 'drawingBorder', 'verticalAlignment', 'textColor', 'backColor', 'patternColor',
-    'pattern', 'textPlacement', 'fillType', 'protection', 'textOrientation', 'detailsUse', 'bySelectedColumns', 'markNegatives',
+    'pattern', 'textPlacement', 'fillType', 'protection', 'hidden', 'textOrientation', 'detailsUse', 'bySelectedColumns', 'markNegatives',
     'containsValue', 'valueType', 'format', 'hyperLink', 'picIndex', 'controlType', 'autoMarkIncomplete', 'markIncomplete',
     'indent', 'autoIndent', 'editFormat', 'columnSizeChange', 'mask', 'pictureSizeMode', 'picHorizontalAlignment',
     'picVerticalAlignment', 'textPosition', 'leftMargin', 'topMargin', 'rightMargin', 'bottomMargin'];
@@ -223,6 +223,20 @@ function cellContent(group) {
         group.kids.push(c);
         return c;
     })();
+}
+
+/* The column set an element (row, area) is laid out in: its columnsID, or
+ * the first set when it names none — the way validateTemplate reads it. */
+function columnSetFor(doc, el) {
+    var sets = kids(doc, 'columns');
+    var id = el && kid(el, 'columnsID') ? kid(el, 'columnsID').text : '';
+    if (!id) return sets[0] || null;
+    return sets.filter(function (s) { return kid(s, 'id') && kid(s, 'id').text === id; })[0] || null;
+}
+
+function growColumns(set, cols) {
+    var size = set && kid(set, 'size');
+    if (size && intOf(size, 0) < cols) size.text = String(cols);
 }
 
 function columnCount(doc) {
@@ -572,6 +586,7 @@ function setArea(xml, args) {
     item.attrs.push(['xsi:type', 'NamedItemCells']);
     insertAfterLast(doc, item, ['namedItem', 'merge', 'verticalUnmerge'], ['line', 'font', 'format', 'picture']);
     if (hasRows) growHeight(doc, er + 1);
+    if (hasCols) growColumns(columnSetFor(doc, null), ec + 1);
     var entry = { name: name, type: type };
     if (hasRows) { entry.beginRow = br + 1; entry.endRow = er + 1; }
     if (hasCols) { entry.beginColumn = bc + 1; entry.endColumn = ec + 1; }
@@ -581,23 +596,44 @@ function setArea(xml, args) {
 /* setParameter(xml, { row, column, name, template, text, detail })
  * - name: the cell becomes a parameter (its text is dropped);
  * - template: the cell shows the text with [Имя] parameters inside;
- * - text: the cell becomes plain text again (name and template omitted). */
+ * - text: the cell becomes plain text again (name and template omitted).
+ *
+ * An empty `name` or `template` is a kind too, not a missing argument: the
+ * Designer lets a cell be a parameter before it has a name — the sheet draws
+ * «<>» there — and a template before anything is written into it. The fill
+ * type is a property of the cell, and it is set by the argument that names it,
+ * so a template without a single [Имя] is legal: it prints its own text. */
+/* Items of a <tl> with the template's language set to value. The other
+ * languages are translations of the same cell and stay as they were, like
+ * the Designer keeps them when one language is edited. */
+function withTranslation(tl, lang, value) {
+    var items = tl ? kids(tl, 'item') : [];
+    var replaced = false;
+    var out = items.map(function (it) {
+        if (replaced || !kid(it, 'lang') || kid(it, 'lang').text !== lang) return it;
+        replaced = true;
+        return node('v8:item', null, [node('v8:lang', lang), node('v8:content', value)]);
+    });
+    if (!replaced) out.unshift(node('v8:item', null, [node('v8:lang', lang), node('v8:content', value)]));
+    return out;
+}
+
 function setParameter(xml, args) {
     var doc = parse(xml);
     var r = requirePosition(args.row, 'row') - 1;
     var c = requirePosition(args.column, 'column') - 1;
-    var name = args.name != null ? String(args.name).trim() : '';
+    var hasName = args.name != null;
+    var name = hasName ? String(args.name).trim() : '';
     var hasTemplate = args.template != null;
     var hasText = args.text != null;
     var hasDetail = args.detail != null;
     var detail = hasDetail ? String(args.detail).trim() : '';
-    var kinds = [!!name, hasTemplate, hasText].filter(Boolean).length;
+    var kinds = [hasName, hasTemplate, hasText].filter(Boolean).length;
     if (kinds > 1 || (kinds === 0 && !hasDetail)) {
         throw new Error('Передайте одно из: name (параметр), template (шаблон с [Имя]) или text (обычный текст); detail можно задать вместе с ними или отдельно.');
     }
     if (name && !validName(name)) throw new Error('Имя параметра должно быть идентификатором 1С: «' + name + '».');
     if (detail && !validName(detail)) throw new Error('Имя параметра расшифровки должно быть идентификатором 1С: «' + detail + '».');
-    if (hasTemplate && !/\[[^\[\]]+\]/.test(String(args.template))) throw new Error('В шаблоне нет ни одного [Имя].');
 
     var row = rowFor(doc, r);
     var cells = rowCells(row);
@@ -617,12 +653,12 @@ function setParameter(xml, args) {
     var fill;
     var head;
     if (kinds) {
-        fill = name ? 'Parameter' : hasTemplate ? 'Template' : '';
+        fill = hasName ? 'Parameter' : hasTemplate ? 'Template' : '';
         head = [node('f', formatWithFill(doc, fEl ? intOf(fEl, 0) : 0, fill))];
-        if (name) head.push(node('parameter', name));
+        if (hasName) { if (name) head.push(node('parameter', name)); }
         else {
             var value = hasTemplate ? String(args.template) : String(args.text);
-            if (value !== '') head.push(node('tl', null, [node('v8:item', null, [node('v8:lang', lang), node('v8:content', value)])]));
+            if (value !== '') head.push(node('tl', null, withTranslation(kid(content, 'tl'), lang, value)));
         }
     } else {
         /* detail only: the cell keeps what it shows. */
@@ -636,10 +672,7 @@ function setParameter(xml, args) {
         : content.kids.filter(function (k) { return k.name === 'detailParameter'; });
     content.kids = head.concat(detailEl, keep);
     writeRowCells(row, cells);
-    if (c + 1 > columnCount(doc)) {
-        var set = kids(doc, 'columns')[0];
-        if (set && kid(set, 'size')) kid(set, 'size').text = String(c + 1);
-    }
+    growColumns(columnSetFor(doc, row), c + 1);
     return {
         xml: toXml(doc, xml),
         result: { row: r + 1, column: c + 1, fillType: fill || 'Text', parameter: name || undefined,
@@ -674,6 +707,21 @@ function setHeight(doc, rows) {
 
 /* Break every rowsItem range that straddles `at`, so rows before and from `at`
  * live in separate items. */
+/* A rowsItem copy that keeps only how its cells look: each cell keeps its
+ * <f>, cells without one are dropped. */
+function blankCopy(item) {
+    var row = kid(item, 'row');
+    if (!row) return item;
+    var cells = rowCells(row).filter(function (cell) {
+        var f = kid(cellContent(cell.group), 'f');
+        if (!f || intOf(f, 0) <= 0) return false;
+        cell.group.kids = [node('c', null, [node('f', f.text)])];
+        return true;
+    });
+    writeRowCells(row, cells);
+    return item;
+}
+
 function splitRangeAt(doc, at) {
     kids(doc, 'rowsItem').forEach(function (item) {
         var from = intOf(kid(item, 'index'), 0);
@@ -719,12 +767,26 @@ function shiftRows(xml, args, insert) {
     var count = requireCount(args.count);
     var height = documentHeight(doc);
     if (!insert && at >= height) throw new Error('В макете ' + height + ' строк: удалять нечего.');
+    /* Past the last row an insert appends: the sheet has no gap to keep. */
+    if (insert && at > height) at = height;
     if (!insert) count = Math.min(count, height - at);
     var delta = insert ? count : -count;
     var report = { removedAreas: [], removedMerges: 0, removedDrawings: 0 };
 
     splitRangeAt(doc, at);
     if (!insert) splitRangeAt(doc, at + count);
+    /* Like a column, a new row copies the format of the row it is inserted
+     * before (the last row when appending): height, row format, column set
+     * and cell formats, without content. */
+    var source = insert && height ? Math.min(at, height - 1) : -1;
+    var sourceItem = null;
+    kids(doc, 'rowsItem').forEach(function (item) {
+        var from = intOf(kid(item, 'index'), 0);
+        var to = kid(item, 'indexTo') ? intOf(kid(item, 'indexTo'), from) : from;
+        if (source >= from && source <= to) sourceItem = item;
+    });
+    var copies = [];
+    for (var k = 0; sourceItem && k < count; k++) copies.push(blankCopy(rangeItem(sourceItem, at + k, at + k)));
     kids(doc, 'rowsItem').forEach(function (item) {
         var from = intOf(kid(item, 'index'), 0);
         var toEl = kid(item, 'indexTo');
@@ -734,6 +796,10 @@ function shiftRows(xml, args, insert) {
         setInt(item, 'index', from + delta);
         if (toEl) toEl.text = String(to + delta);
     });
+    if (copies.length) {
+        var pos = doc.kids.indexOf(sourceItem) + (source < at ? 1 : 0);
+        doc.kids.splice.apply(doc.kids, [pos, 0].concat(copies));
+    }
 
     ['merge', 'verticalUnmerge'].forEach(function (name) {
         kids(doc, name).forEach(function (m) {
@@ -799,22 +865,40 @@ function shiftColumns(xml, args, insert) {
     var doc = parse(xml);
     var set = columnSet(doc, args.columnsId);
     var setId = kid(set, 'id') ? kid(set, 'id').text : '';
-    var isDefault = set === kids(doc, 'columns')[0] && !setId;
+    /* Elements without columnsID belong to the first set, whatever its id. */
+    var isDefault = set === kids(doc, 'columns')[0];
     var at = requirePosition(args.at, 'at') - 1;
     var count = requireCount(args.count);
     var size = intOf(kid(set, 'size'), 0);
     if (!insert && at >= size) throw new Error('В наборе ' + size + ' колонок: удалять нечего.');
+    if (insert && at > size) at = size;
     if (!insert) count = Math.min(count, size - at);
     var delta = insert ? count : -count;
     var report = { removedAreas: [], removedMerges: 0, removedDrawings: 0 };
 
+    /* A new column looks like the one it is inserted before (the last one
+     * when appending), as in the Designer: same width and the same cell
+     * formats down the sheet, but no content. */
+    var source = insert && size ? Math.min(at, size - 1) : -1;
+    var sourceItem = null;
     setInt(set, 'size', size + delta);
     kids(set, 'columnsItem').forEach(function (item) {
         var i = intOf(kid(item, 'index'), 0);
+        if (i === source) sourceItem = item;
         if (i < at) return;
         if (!insert && i < at + count) { removeKid(set, item); return; }
         setInt(item, 'index', i + delta);
     });
+    if (sourceItem) {
+        var pos = set.kids.indexOf(sourceItem) + (source < at ? 1 : 0);
+        var copies = [];
+        for (var k = 0; k < count; k++) {
+            var copy = JSON.parse(JSON.stringify(sourceItem));
+            setInt(copy, 'index', at + k);
+            copies.push(copy);
+        }
+        set.kids.splice.apply(set.kids, [pos, 0].concat(copies));
+    }
     kids(doc, 'rowsItem').forEach(function (item) {
         var row = kid(item, 'row');
         if (!row || !rowUsesSet(row, set, doc)) return;
@@ -822,6 +906,12 @@ function shiftColumns(xml, args, insert) {
         if (!cells.length) return;
         var kept = [];
         cells.forEach(function (cell) {
+            if (cell.col === source) {
+                var f = kid(cellContent(cell.group), 'f');
+                for (var n = 0; f && intOf(f, 0) > 0 && n < count; n++) {
+                    kept.push({ col: at + n, group: node('c', null, [node('c', null, [node('f', f.text)])]) });
+                }
+            }
             if (cell.col < at) kept.push(cell);
             else if (insert) kept.push({ col: cell.col + count, group: cell.group });
             else if (cell.col >= at + count) kept.push({ col: cell.col - count, group: cell.group });
@@ -866,6 +956,93 @@ function shiftColumns(xml, args, insert) {
     return { xml: toXml(doc, xml), result: report };
 }
 
+/* Restore deleted grid bands from a baseline. The inverse is intentionally
+ * conservative: format indices must still refer to identical tables and the
+ * document must not contain coordinate metadata that would need a semantic
+ * merge (merged cells, named areas, drawings or print areas). */
+function sameNamedNodes(a, b, name) {
+    var aa = kids(a, name), bb = kids(b, name);
+    return aa.length === bb.length && aa.every(function (item, i) {
+        return serialize(item, 0, '\n') === serialize(bb[i], 0, '\n');
+    });
+}
+function assertRestoreCompatible(current, source) {
+    ['font', 'line', 'format'].forEach(function (name) {
+        if (!sameNamedNodes(current, source, name))
+            throw new Error('Таблицы ' + name + ' отличаются от эталона; структуру нельзя восстановить безопасно.');
+    });
+    ['merge', 'verticalUnmerge', 'namedItem', 'drawing', 'printArea'].forEach(function (name) {
+        if (kids(current, name).length || kids(source, name).length)
+            throw new Error('В документе есть ' + name + '; безопасное восстановление строки/колонки не подтверждено.');
+    });
+}
+function cloneNode(el) { return JSON.parse(JSON.stringify(el)); }
+
+function restoreRows(xml, sourceXml, args) {
+    var at = requirePosition(args.at, 'at') - 1;
+    var sourceAt = requirePosition(args.sourceAt, 'source_at') - 1;
+    var count = requireCount(args.count);
+    var current = parse(xml), source = parse(sourceXml);
+    assertRestoreCompatible(current, source);
+    if (!sameNamedNodes(current, source, 'columns'))
+        throw new Error('Наборы колонок изменились; строку нельзя восстановить без риска.');
+    var inserted = shiftRows(xml, { at: at + 1, count: count }, true);
+    current = parse(inserted.xml);
+    for (var i = 0; i < count; i++) {
+        var originalRow = rowFor(source, sourceAt + i);
+        var targetRow = rowFor(current, at + i);
+        targetRow.attrs = cloneNode(originalRow.attrs);
+        targetRow.kids = cloneNode(originalRow.kids);
+        targetRow.text = originalRow.text;
+    }
+    return { xml: toXml(current, inserted.xml), result: { restored: { at: at + 1, count: count } } };
+}
+
+function restoreColumns(xml, sourceXml, args) {
+    var at = requirePosition(args.at, 'at') - 1;
+    var sourceAt = requirePosition(args.sourceAt, 'source_at') - 1;
+    var count = requireCount(args.count);
+    var current = parse(xml), source = parse(sourceXml);
+    assertRestoreCompatible(current, source);
+    var currentSets = kids(current, 'columns'), sourceSets = kids(source, 'columns');
+    if (currentSets.length !== 1 || sourceSets.length !== 1
+        || (kid(currentSets[0], 'id') && kid(currentSets[0], 'id').text)
+        || (kid(sourceSets[0], 'id') && kid(sourceSets[0], 'id').text))
+        throw new Error('Восстановление поддерживает только один набор колонок по умолчанию.');
+    if (documentHeight(current) !== documentHeight(source))
+        throw new Error('Число строк изменилось; колонку нельзя сопоставить без риска.');
+    var inserted = shiftColumns(xml, { at: at + 1, count: count }, true);
+    current = parse(inserted.xml);
+    var destSet = kids(current, 'columns')[0], srcSet = kids(source, 'columns')[0];
+    var sourceItems = kids(srcSet, 'columnsItem');
+    var destItems = kids(destSet, 'columnsItem');
+    for (var c = 0; c < count; c++) {
+        var sourceItem = sourceItems.filter(function (item) { return intOf(kid(item, 'index'), -1) === sourceAt + c; })[0];
+        var destItem = destItems.filter(function (item) { return intOf(kid(item, 'index'), -1) === at + c; })[0];
+        if (destItem) removeKid(destSet, destItem);
+        if (sourceItem) {
+            var copy = cloneNode(sourceItem);
+            setInt(copy, 'index', at + c);
+            var position = destSet.kids.length;
+            for (var p = 0; p < destSet.kids.length; p++) {
+                if (destSet.kids[p].name === 'columnsItem' && intOf(kid(destSet.kids[p], 'index'), -1) > at + c) { position = p; break; }
+            }
+            destSet.kids.splice(position, 0, copy);
+        }
+    }
+    for (var r = 0; r < documentHeight(source); r++) {
+        var sourceRow = rowFor(source, r), targetRow = rowFor(current, r);
+        var sourceCells = rowCells(sourceRow), targetCells = rowCells(targetRow);
+        for (c = 0; c < count; c++) {
+            var sourceCell = sourceCells.filter(function (cell) { return cell.col === sourceAt + c; })[0];
+            targetCells = targetCells.filter(function (cell) { return cell.col !== at + c; });
+            if (sourceCell) targetCells.push({ col: at + c, group: cloneNode(sourceCell.group) });
+        }
+        writeRowCells(targetRow, targetCells);
+    }
+    return { xml: toXml(current, inserted.xml), result: { restored: { at: at + 1, count: count } } };
+}
+
 /* ---------- structure: merges and sizes ---------- */
 
 function mergeRect(m) {
@@ -906,16 +1083,23 @@ function mergeCells(xml, args) {
     return { xml: toXml(doc, xml), result: { merged: { row: r + 1, column: c + 1, rows: h + 1, columns: w + 1 } } };
 }
 
-/* setSize: { column, width } in the template's width units (as the
- * configurator shows them), or { row, height } in points. Ranges through
- * toColumn / toRow; height 0 removes a fixed height (auto). */
+/* setSize: { column, width, hidden } in the template's width units (as the
+ * configurator shows them), or { row, height, hidden } in points. Ranges
+ * through toColumn / toRow; height 0 removes a fixed height (auto); hidden
+ * true/false sets or clears the hidden flag independently of width/height —
+ * at least one of width/height and hidden must be given. */
 function setSize(xml, args) {
     var doc = parse(xml);
     var changed = [];
+    var hasHidden = Object.prototype.hasOwnProperty.call(args, 'hidden');
     if (args.column != null) {
-        if (args.width == null) throw new Error('Для колонки укажите width.');
-        var width = Number(args.width);
-        if (!(width >= 0)) throw new Error('width должен быть числом от 0.');
+        var hasWidth = args.width != null;
+        if (!hasWidth && !hasHidden) throw new Error('Для колонки укажите width и/или hidden.');
+        var width;
+        if (hasWidth) {
+            width = Number(args.width);
+            if (!(width >= 0)) throw new Error('width должен быть числом от 0.');
+        }
         var set = columnSet(doc, args.columnsId);
         var from = requirePosition(args.column, 'column') - 1;
         var to = args.toColumn != null ? requirePosition(args.toColumn, 'to_column') - 1 : from;
@@ -931,37 +1115,57 @@ function setSize(xml, args) {
             }
             var column = kid(item, 'column') || (function () { var x = node('column', null, []); item.kids.push(x); return x; })();
             var fEl = kid(column, 'formatIndex');
-            var idx = formatWith(doc, fEl ? intOf(fEl, 0) : 0, { width: Math.round(width) });
+            var colChanges = {};
+            if (hasWidth) colChanges.width = Math.round(width);
+            if (hasHidden) colChanges.hidden = args.hidden ? 'true' : null;
+            var idx = formatWith(doc, fEl ? intOf(fEl, 0) : 0, colChanges);
             if (fEl) fEl.text = String(idx); else column.kids.unshift(node('formatIndex', idx));
-            changed.push({ column: c + 1, width: Math.round(width) });
+            var colEntry = { column: c + 1 };
+            if (hasWidth) colEntry.width = Math.round(width);
+            if (hasHidden) colEntry.hidden = !!args.hidden;
+            changed.push(colEntry);
         }
         if (to + 1 > intOf(kid(set, 'size'), 0)) setInt(set, 'size', to + 1);
     } else if (args.row != null) {
-        if (args.height == null) throw new Error('Для строки укажите height (пункты; 0 — автовысота).');
-        var pt = Number(args.height);
-        if (!(pt >= 0)) throw new Error('height должен быть числом от 0.');
+        var hasHeight = args.height != null;
+        if (!hasHeight && !hasHidden) throw new Error('Для строки укажите height и/или hidden (height 0 — автовысота).');
+        var pt;
+        if (hasHeight) {
+            pt = Number(args.height);
+            if (!(pt >= 0)) throw new Error('height должен быть числом от 0.');
+        }
         var rFrom = requirePosition(args.row, 'row') - 1;
         var rTo = args.toRow != null ? requirePosition(args.toRow, 'to_row') - 1 : rFrom;
         for (var r = rFrom; r <= rTo; r++) {
             var row = rowFor(doc, r);
             var rf = kid(row, 'formatIndex');
-            var rIdx = formatWith(doc, rf ? intOf(rf, 0) : 0, { height: pt ? Math.round(pt * 4) : null });
+            var rowChanges = {};
+            if (hasHeight) rowChanges.height = pt ? Math.round(pt * 4) : null;
+            if (hasHidden) rowChanges.hidden = args.hidden ? 'true' : null;
+            var rIdx = formatWith(doc, rf ? intOf(rf, 0) : 0, rowChanges);
             if (rf) rf.text = String(rIdx);
             else {
                 var pos = kid(row, 'columnsID') ? 1 : 0;
                 row.kids.splice(pos, 0, node('formatIndex', rIdx));
             }
-            changed.push({ row: r + 1, height: pt || 'auto' });
+            var rowEntry = { row: r + 1 };
+            if (hasHeight) rowEntry.height = pt || 'auto';
+            if (hasHidden) rowEntry.hidden = !!args.hidden;
+            changed.push(rowEntry);
         }
     } else {
-        throw new Error('Укажите column и width или row и height.');
+        throw new Error('Укажите column (и width и/или hidden) или row (и height и/или hidden).');
     }
     return { xml: toXml(doc, xml), result: { changed: changed } };
 }
 
 /* ---------- cell format ---------- */
 
-var LINE_STYLES = ['None', 'Solid', 'Dotted', 'Dashed', 'DashDotted', 'DashDottedDotted', 'ThinDashed', 'LargeDashed', 'ThickDashed', 'Double'];
+/* The platform's cell line types, in its own order: None, Solid, Dotted,
+ * Double, ThinDashed, ThickDashed, LargeDashed — «Нет линии», «Сплошная»,
+ * «Точечная», «Двойная», «Редкий пунктир», «Частый пунктир», «Большой
+ * пунктир». A cell has no dash-dot line; that belongs to drawings. */
+var LINE_STYLES = ['None', 'Solid', 'Dotted', 'Double', 'ThinDashed', 'ThickDashed', 'LargeDashed'];
 var H_ALIGNS = ['Left', 'Center', 'Right', 'Justify', 'Auto'];
 var V_ALIGNS = ['Top', 'Center', 'Bottom'];
 var PLACEMENTS = ['Auto', 'Wrap', 'Cut', 'Block'];
@@ -984,6 +1188,32 @@ function attr(el, name) {
     return null;
 }
 
+/* The 0-based <font> a cell shows now, resolved like the preview does: the
+ * cell's own format, then its row, its column and the sheet default. -1 when
+ * none of them names a font. Starting a font change anywhere else turns
+ * «make it bold» into a different face or size too. */
+function inheritedFont(doc, row, col, cellFmt) {
+    var list = formats(doc);
+    function fontOf(fmt) { return fmt && kid(fmt, 'font') ? intOf(kid(fmt, 'font'), -1) : -1; }
+    function byIndex(el) { var i = el ? intOf(el, 0) : 0; return i > 0 ? list[i - 1] : null; }
+    var set = null;
+    var id = kid(row, 'columnsID') ? kid(row, 'columnsID').text : '';
+    kids(doc, 'columns').forEach(function (s) {
+        if (!set && (kid(s, 'id') ? kid(s, 'id').text : '') === id) set = s;
+    });
+    if (!set && !id) set = kids(doc, 'columns')[0] || null;
+    var colFmt = null;
+    kids(set, 'columnsItem').forEach(function (item) {
+        if (intOf(kid(item, 'index'), -1) === col) colFmt = byIndex(kid(kid(item, 'column'), 'formatIndex'));
+    });
+    var chain = [cellFmt, byIndex(kid(row, 'formatIndex')), colFmt, byIndex(kid(doc, 'defaultFormatIndex'))];
+    for (var i = 0; i < chain.length; i++) {
+        var f = fontOf(chain[i]);
+        if (f >= 0) return f;
+    }
+    return -1;
+}
+
 /* The index of a doc-level <font> equal to base + changes, added when new. */
 function fontIndex(doc, baseIndex, changes) {
     var fonts = kids(doc, 'font');
@@ -1002,6 +1232,10 @@ function fontIndex(doc, baseIndex, changes) {
     if (changes.size != null) {
         if (!(Number(changes.size) > 0)) throw new Error('font.size должен быть положительным числом.');
         props.height = String(Number(changes.size));
+    }
+    if (changes.scale != null) {
+        if (!(Number(changes.scale) > 0)) throw new Error('font.scale должен быть положительным числом.');
+        props.scale = String(Number(changes.scale));
     }
     ['bold', 'italic', 'underline', 'strikeout'].forEach(function (k) {
         if (changes[k] != null) props[k] = changes[k] ? 'true' : 'false';
@@ -1040,8 +1274,9 @@ function lineIndex(doc, spec) {
 
 /* setFormat: { row, column, toRow, toColumn, font{...}, horizontalAlignment,
  * verticalAlignment, textPlacement, indent, textColor, backColor, border,
- * leftBorder, topBorder, rightBorder, bottomBorder, borderColor, format,
- * protection }. A property set to null goes back to the inherited value. */
+ * leftBorder, topBorder, rightBorder, bottomBorder, borderColor, drawingBorder,
+ * format, protection, mask, editFormat, autoIndent, widthWeightFactor,
+ * patternColor }. A property set to null goes back to the inherited value. */
 function setFormat(xml, args) {
     var doc = parse(xml);
     var r0 = requirePosition(args.row, 'row') - 1;
@@ -1050,7 +1285,8 @@ function setFormat(xml, args) {
     var c1 = args.toColumn != null ? requirePosition(args.toColumn, 'to_column') - 1 : c0;
     if (r1 < r0 || c1 < c0) throw new Error('to_row/to_column меньше row/column.');
     var keys = ['font', 'horizontalAlignment', 'verticalAlignment', 'textPlacement', 'indent', 'textColor', 'backColor',
-        'border', 'leftBorder', 'topBorder', 'rightBorder', 'bottomBorder', 'borderColor', 'format', 'protection'];
+        'border', 'leftBorder', 'topBorder', 'rightBorder', 'bottomBorder', 'borderColor', 'drawingBorder', 'format',
+        'protection', 'mask', 'editFormat', 'autoIndent', 'widthWeightFactor', 'patternColor'];
     var given = keys.filter(function (k) { return Object.prototype.hasOwnProperty.call(args, k); });
     if (!given.length) throw new Error('Не задано ни одного свойства оформления.');
 
@@ -1062,13 +1298,21 @@ function setFormat(xml, args) {
         if (k === 'horizontalAlignment') fixed[k] = pickEnum(v, H_ALIGNS, 'horizontal_alignment');
         else if (k === 'verticalAlignment') fixed[k] = pickEnum(v, V_ALIGNS, 'vertical_alignment');
         else if (k === 'textPlacement') fixed[k] = pickEnum(v, PLACEMENTS, 'text_placement');
-        else if (k === 'textColor' || k === 'backColor' || k === 'borderColor') fixed[k] = colorValue(v, k);
+        else if (k === 'textColor' || k === 'backColor' || k === 'borderColor' || k === 'patternColor') fixed[k] = colorValue(v, k);
         else if (k === 'indent') {
             if (!(Number.isInteger(Number(v)) && Number(v) >= 0)) throw new Error('indent: целое число от 0.');
             fixed[k] = Number(v) || null;
-        } else if (k === 'protection') fixed[k] = v ? 'true' : null;
+        } else if (k === 'protection' || k === 'autoIndent') fixed[k] = v ? 'true' : null;
         else if (k === 'format') fixed[k] = String(v) || null;
-        else fixed[k] = v;
+        else if (k === 'mask' || k === 'editFormat') {
+            var s = String(v).trim();
+            if (!s) throw new Error(k + ': непустая строка.');
+            fixed[k] = s;
+        } else if (k === 'widthWeightFactor') {
+            var factor = Number(v);
+            if (!(factor > 0)) throw new Error('width_weight_factor должен быть положительным числом.');
+            fixed[k] = factor;
+        } else fixed[k] = v;
     });
     if (fixed.font && typeof fixed.font !== 'object') throw new Error('font: объект { face, size, bold, italic, underline, strikeout }.');
     var lang = languageOf(doc);
@@ -1092,8 +1336,7 @@ function setFormat(xml, args) {
                 var v = fixed[k];
                 if (k === 'font') {
                     if (v == null) { changes.font = null; return; }
-                    var baseFont = baseFmt && kid(baseFmt, 'font') ? intOf(kid(baseFmt, 'font'), 0) : 0;
-                    changes.font = fontIndex(doc, baseFont, v);
+                    changes.font = fontIndex(doc, inheritedFont(doc, row, c, baseFmt), v);
                 } else if (k === 'border' || /Border$/.test(k) && k !== 'borderColor') {
                     var sides = k === 'border' ? ['leftBorder', 'topBorder', 'rightBorder', 'bottomBorder'] : [k];
                     if (k === 'border') changes.border = null;
@@ -1111,9 +1354,8 @@ function setFormat(xml, args) {
             touched++;
         }
         writeRowCells(row, cells);
+        growColumns(columnSetFor(doc, row), c1 + 1);
     }
-    var set = kids(doc, 'columns')[0];
-    if (set && kid(set, 'size') && c1 + 1 > intOf(kid(set, 'size'), 0)) kid(set, 'size').text = String(c1 + 1);
     return { xml: toXml(doc, xml), result: { cells: touched, properties: given } };
 }
 
@@ -1265,8 +1507,10 @@ root.TemplateMarkup = {
     setParameter: setParameter,
     insertRows: function (xml, args) { return shiftRows(xml, args, true); },
     deleteRows: function (xml, args) { return shiftRows(xml, args, false); },
+    restoreRows: restoreRows,
     insertColumns: function (xml, args) { return shiftColumns(xml, args, true); },
     deleteColumns: function (xml, args) { return shiftColumns(xml, args, false); },
+    restoreColumns: restoreColumns,
     mergeCells: mergeCells,
     validateTemplate: validateTemplate,
     setSize: setSize,

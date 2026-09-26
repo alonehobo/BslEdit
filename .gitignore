@@ -14,8 +14,10 @@
 obj32/
 obj64/
 objexe/
+objgen/
 objtest/
 bin/
+dist/
 artifacts/
 releases/
 build.log
@@ -31,19 +33,25 @@ web/turndown.min.js
 # Generated copies of packages/1c-preview-core: edit the core, never the copy.
 # `npm run sync` regenerates them.
 /web/xml-util.js
-/web/form-preview.js
 /web/form-context.js
-/web/form-edit.js
-/web/form-validate.js
-/web/form-item-properties.js
+/web/form-preview.js
 /web/template-preview.js
-/web/template-markup.js
-/web/xlsx-template.js
 /web/mxl-preview.js
 /web/metadata-preview.js
 /web/metadata-relations.js
+/web/configuration-preview.js
+/web/dcs-preview.js
+/web/xlsx-template.js
+/web/template-markup.js
+/web/form-edit.js
+/web/form-validate.js
 /web/providers.js
+/web/session-annotations.js
+/web/session-annotations.css
 /web/viewer.css
+/web/form-item-properties.js
+/web/bsl-platform-names.js
+/web/platform-85-assets.js
 /web/std-pictures/
 packages/1c-form-viewer-vscode/core/
 packages/1c-form-viewer-vscode/media/
@@ -53,6 +61,7 @@ packages/1c-form-viewer/build/
 
 # Derived from 1C products; built locally, never published
 packages/1c-preview-core/browser/form-item-properties.js
+packages/1c-preview-core/browser/platform-85-assets.js
 
 # Literal %VAR% directories left by build scripts under a non-cmd shell
 %TEMP%/

@@ -13,7 +13,9 @@
   <button id="outline-toggle" type="button" aria-expanded="false" title="Показать панель элементов">☰</button>
   <strong id="agent-format">1C Form Viewer</strong>
   <span id="agent-path">Файл не открыт</span>
+  <button id="annotation-toggle" type="button" title="Аннотация к выделенному элементу формы (Alt+A)">✎ Аннотация</button>
   <button id="reload-preview" type="button" title="Перечитать файл с диска">⟳ Обновить</button>
+  <button id="open-editor" type="button" title="Открыть этот файл в BSLEdit; после сохранения превью обновится само">Открыть в BSLEdit</button>
 </header>
 <main id="agent-main">
   <aside id="outline-pane" aria-label="Элементы формы">
@@ -23,6 +25,15 @@
   <section id="agent-preview-pane">
     <div id="agent-empty">Вызовите MCP-инструмент open_preview.</div>
     <div id="preview" hidden></div>
+    <form id="annotation-editor" hidden aria-label="Новая аннотация">
+      <strong id="annotation-target"></strong>
+      <textarea id="annotation-text" rows="3" placeholder="Опишите замечание" aria-label="Текст аннотации"></textarea>
+      <div class="annotation-actions"><button type="button" id="annotation-cancel">Отмена</button><button type="submit">Добавить</button></div>
+    </form>
+    <aside id="annotation-tray" hidden aria-label="Аннотации формы">
+      <button id="annotation-tray-toggle" type="button" aria-expanded="true"></button>
+      <ol id="annotation-list"></ol>
+    </aside>
   </section>
 </main>
 <!-- CORE_SCRIPTS -->

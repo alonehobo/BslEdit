@@ -8,6 +8,10 @@ MXL, видит, как они выглядят, делает снимки и п
 
 Сервер — один `exe` для Windows x64. Node.js, npm и 1С не нужны.
 
+На Linux и macOS работает Node.js-вариант того же сервера: те же инструменты
+и тот же протокол, запуск из исходников репозитория — см.
+[README пакета](../packages/1c-form-viewer/README.md#nodejs-сервер-linux-macos-windows).
+
 ## Установка
 
 1. Скачайте `1c-form-viewer-native-<версия>-win-x64.zip` со страницы

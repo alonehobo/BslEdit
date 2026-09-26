@@ -1,45 +1,744 @@
-/* BSL formatter adapted from salexdv/bsl_console (MIT). */
+/* BSL formatter in the style of the 1C Configurator.
+ *
+ * Ported from bsl-analyzer (crates/ide/src/formatting/configurator.rs,
+ * alonehobo/bsl-analyzer@feat/configurator-style-formatter). The defining
+ * property: after this formatter the Configurator's own formatting changes
+ * nothing, and a second run changes nothing either. Therefore a line's indent
+ * is only its block nesting level, counted over the token stream the way the
+ * Configurator counts it — no extra shift for statement continuations, call
+ * arguments or the lines of a multi-line literal. Counting over tokens (not
+ * over a tree) also keeps the deleted code of #Удаление in the block structure.
+ *
+ * Methods annotated &ИзменениеИКонтроль are copied byte for byte: the platform
+ * compares their text with the method of the base configuration, so any change
+ * breaks the extension.
+ */
 (function (global) {
 'use strict';
-const START_WORDS = [
-    'если', 'для', 'пока', 'функция', 'процедура', 'попытка',
-    'if', 'for', 'while', 'function', 'procedure', 'try'
-];
 
-const STOP_WORDS = [
-    'конецесли', 'конеццикла', 'конецфункции', 'конецпроцедуры', 'конецпопытки',
-    'endif', 'enddo', 'endfunction', 'endprocedure', 'endtry'
-];
+const MAX_BLANK_LINES = 1;
 
-const COMPLEX_WORDS = [
-    'исключение', 'иначе', 'иначеесли',
-    'except', 'else', 'elseif', 'elsif'
-];
-
-const CONTROL_FLOW_MARKERS = {
-    'если': 'тогда',
-    'иначеесли': 'тогда',
-    'if': 'then',
-    'elseif': 'then',
-    'elsif': 'then',
-    'пока': 'цикл',
-    'для': 'цикл',
-    'while': 'do',
-    'for': 'do'
+/* Canonical spellings; check() keeps the language the word is written in. */
+const KEYWORDS = {
+    procedure: ['Процедура', 'Procedure'],
+    endprocedure: ['КонецПроцедуры', 'EndProcedure'],
+    function: ['Функция', 'Function'],
+    endfunction: ['КонецФункции', 'EndFunction'],
+    export: ['Экспорт', 'Export'],
+    val: ['Знач', 'Val'],
+    if: ['Если', 'If'],
+    then: ['Тогда', 'Then'],
+    elsif: ['ИначеЕсли', 'ElsIf'],
+    else: ['Иначе', 'Else'],
+    endif: ['КонецЕсли', 'EndIf'],
+    for: ['Для', 'For'],
+    each: ['Каждого', 'каждого', 'Each', 'each'],
+    in: ['Из', 'In'],
+    to: ['По', 'To'],
+    while: ['Пока', 'While'],
+    do: ['Цикл', 'Do'],
+    enddo: ['КонецЦикла', 'EndDo'],
+    return: ['Возврат', 'Return'],
+    continue: ['Продолжить', 'Continue'],
+    break: ['Прервать', 'Break'],
+    goto: ['Перейти', 'Goto'],
+    try: ['Попытка', 'Try'],
+    except: ['Исключение', 'Except'],
+    endtry: ['КонецПопытки', 'EndTry'],
+    raise: ['ВызватьИсключение', 'Raise'],
+    var: ['Перем', 'Var'],
+    new: ['Новый', 'New'],
+    execute: ['Выполнить', 'Execute'],
+    addhandler: ['ДобавитьОбработчик', 'AddHandler'],
+    removehandler: ['УдалитьОбработчик', 'RemoveHandler'],
+    async: ['Асинх', 'Async'],
+    await: ['Ждать', 'Await'],
+    and: ['И', 'And', 'AND'],
+    or: ['Или', 'ИЛИ', 'Or', 'OR'],
+    not: ['Не', 'НЕ', 'Not', 'NOT'],
+    true: ['Истина', 'True'],
+    false: ['Ложь', 'False'],
+    undefined: ['Неопределено', 'Undefined'],
+    null: ['NULL', 'Null']
 };
 
-const CONTROL_FLOW_END_WORDS = ['конецесли', 'endif', 'конеццикла', 'enddo'];
+const KEYWORD_BY_WORD = {};
+Object.keys(KEYWORDS).forEach(id => {
+    KEYWORDS[id].forEach(form => { KEYWORD_BY_WORD[form.toLowerCase()] = id; });
+});
 
-const BLOCK_MARKER_WORDS = CONTROL_FLOW_MARKERS;
-
-const BLOCK_DECLARATION_WORDS = ['функция', 'процедура', 'function', 'procedure'];
-const BLOCK_SIMPLE_WORDS = ['иначе', 'else', 'попытка', 'try', 'исключение', 'except'];
-const BLOCK_END_WORDS = [
-    'конецфункции', 'конецпроцедуры', 'endfunction', 'endprocedure',
-    'конеццикла', 'enddo', 'конецесли', 'endif', 'конецпопытки', 'endtry'
+/* Directives keep the rest of their line verbatim; only the leading word has a
+ * canonical spelling. */
+const DIRECTIVES = [
+    ['#Если', '#If'], ['#ИначеЕсли', '#ElsIf'], ['#Иначе', '#Else'], ['#КонецЕсли', '#EndIf'],
+    ['#Область', '#Region'], ['#КонецОбласти', '#EndRegion'],
+    ['#Вставка', '#Insert'], ['#КонецВставки', '#EndInsert'],
+    ['#Удаление', '#Delete'], ['#КонецУдаления', '#EndDelete'],
+    ['#Использовать', '#Use']
 ];
-const BLOCK_BOUNDARY_WORDS = Object.keys(BLOCK_MARKER_WORDS)
-    .concat(BLOCK_DECLARATION_WORDS, BLOCK_SIMPLE_WORDS, BLOCK_END_WORDS);
+
+const DIRECTIVE_BY_WORD = {};
+DIRECTIVES.forEach(forms => {
+    forms.forEach(form => { DIRECTIVE_BY_WORD[form.toLowerCase()] = forms; });
+});
+
+const ANNOTATIONS = [
+    ['&НаКлиенте', '&AtClient'],
+    ['&НаСервере', '&AtServer'],
+    ['&НаСервереБезКонтекста', '&AtServerNoContext'],
+    ['&НаКлиентеНаСервере', '&AtClientAtServer'],
+    ['&НаКлиентеНаСервереБезКонтекста', '&AtClientAtServerNoContext'],
+    ['&Перед', '&Before'], ['&После', '&After'], ['&Вместо', '&Around'],
+    ['&ИзменениеИКонтроль', '&ChangeAndValidate']
+];
+
+const ANNOTATION_BY_WORD = {};
+ANNOTATIONS.forEach(forms => {
+    forms.forEach(form => { ANNOTATION_BY_WORD[form.toLowerCase()] = forms; });
+});
+
+const PROTECTED_ANNOTATIONS = ['&изменениеиконтроль', '&changeandvalidate'];
+const DELETE_OPEN = ['#удаление', '#delete'];
+const DELETE_CLOSE = ['#конецудаления', '#enddelete'];
+
+const OPENS_BLOCK = ['procedure', 'function', 'if', 'elsif', 'else', 'for', 'while', 'try', 'except'];
+const CLOSES_BLOCK = ['endprocedure', 'endfunction', 'endif', 'enddo', 'endtry', 'elsif', 'else', 'except'];
+
+/* A method header may start with a comment, an annotation, Асинх or
+ * Процедура/Функция — these get the blank line that separates methods. */
+const METHOD_HEADER_KEYWORDS = ['procedure', 'function', 'async'];
+
+const BINARY_OPS = ['+', '-', '*', '/', '%', '<', '<=', '>', '>=', '<>'];
+const UNARY_AFTER_OPS = ['(', '[', ',', '=', '+', '-', '*', '/', '<', '<=', '>', '>=', '<>'];
+const UNARY_AFTER_KEYWORDS = ['return', 'and', 'or', 'not'];
+const SPACE_AFTER_KEYWORDS = ['if', 'elsif', 'while', 'for', 'return', 'var', 'new', 'not', 'in', 'to', 'each', 'and', 'or'];
+const NO_SPACE_BEFORE_OPS = [',', ';', ')', ']', '.', '['];
+const NO_SPACE_AFTER_OPS = ['(', '[', '.', '~'];
+const NO_SPACE_BEFORE_PAREN_OPS = [')', ']'];
+
+const WORD_START = /[A-Za-zА-Яа-яЁё_]/;
+const WORD_PART = /[A-Za-zА-Яа-яЁё_0-9]/;
+
+// --- tokens ----------------------------------------------------------------
+
+/* Atoms are everything but whitespace; gaps are the whitespace between them,
+ * one more gap than atoms (before the first and after the last atom). */
+function tokenize(text) {
+    const atoms = [];
+    const gaps = [];
+    let index = 0;
+    let gapStart = 0;
+
+    if (text.charCodeAt(0) === 0xFEFF) {
+        gaps.push({ text: '' });
+        atoms.push({ kind: 'bom', text: text[0] });
+        index = 1;
+        gapStart = 1;
+    }
+
+    while (index < text.length) {
+        if (/[ \t\r\n]/.test(text[index])) {
+            index++;
+            continue;
+        }
+
+        gaps.push({ text: text.substring(gapStart, index) });
+        const atom = readAtom(text, index);
+        atoms.push(atom);
+        index = atom.end;
+        gapStart = index;
+    }
+
+    gaps.push({ text: text.substring(gapStart) });
+    return { atoms: atoms, gaps: gaps };
+}
+
+function readAtom(text, start) {
+    const character = text[start];
+
+    if (character == '/' && text[start + 1] == '/')
+        return finish('comment', text, start, lineEnd(text, start));
+
+    if (character == '"')
+        return finish('string', text, start, stringEnd(text, start));
+
+    if (character == '\'')
+        return finish('date', text, start, quotedEnd(text, start));
+
+    if (character == '#') {
+        const end = trimmedEnd(text, start, Math.min(lineEnd(text, start), commentStart(text, start)));
+        return finish('preproc', text, start, end);
+    }
+
+    if (character == '&') {
+        let end = start + 1;
+        while (end < text.length && WORD_PART.test(text[end]))
+            end++;
+        return finish('annotation', text, start, end);
+    }
+
+    if (/[0-9]/.test(character)) {
+        let end = start;
+        while (end < text.length && /[0-9.]/.test(text[end]))
+            end++;
+        return finish('number', text, start, end);
+    }
+
+    if (WORD_START.test(character)) {
+        let end = start;
+        while (end < text.length && WORD_PART.test(text[end]))
+            end++;
+        const atom = finish('ident', text, start, end);
+        const id = KEYWORD_BY_WORD[atom.text.toLowerCase()];
+        if (id) {
+            atom.kind = 'kw';
+            atom.id = id;
+        }
+        return atom;
+    }
+
+    const pair = text.substr(start, 2);
+    const end = (pair == '<=' || pair == '>=' || pair == '<>') ? start + 2 : start + 1;
+    const atom = finish('op', text, start, end);
+    atom.op = atom.text;
+    return atom;
+}
+
+function finish(kind, text, start, end) {
+    return { kind: kind, text: text.substring(start, end), start: start, end: end };
+}
+
+function lineEnd(text, start) {
+    const index = text.indexOf('\n', start);
+    if (index < 0)
+        return text.length;
+    return text[index - 1] == '\r' ? index - 1 : index;
+}
+
+function commentStart(text, start) {
+    const index = text.indexOf('//', start);
+    return index < 0 ? text.length : index;
+}
+
+function trimmedEnd(text, start, end) {
+    while (start < end && /[ \t]/.test(text[end - 1]))
+        end--;
+    return end;
+}
+
+/* A string literal may span lines: every continuation line starts with `|`, and
+ * a comment line is allowed between them. */
+function stringEnd(text, start) {
+    let index = start + 1;
+    while (index < text.length) {
+        const character = text[index];
+        if (character == '"') {
+            if (text[index + 1] == '"') {
+                index += 2;
+                continue;
+            }
+            return index + 1;
+        }
+        if (character == '\n') {
+            index++;
+            while (index < text.length && /[ \t\r]/.test(text[index]))
+                index++;
+            if (text[index] == '/' && text[index + 1] == '/')
+                index = lineEnd(text, index);
+            continue;
+        }
+        index++;
+    }
+    return text.length;
+}
+
+function quotedEnd(text, start) {
+    const index = text.indexOf('\'', start + 1);
+    if (index < 0)
+        return lineEnd(text, start);
+    return Math.min(index + 1, lineEnd(text, start));
+}
+
+// --- canonical spelling ----------------------------------------------------
+
+function isCyrillic(text) {
+    return /[Ѐ-ӿ]/.test(text);
+}
+
+function canonicalForm(written, forms) {
+    if (forms.indexOf(written) >= 0)
+        return written;
+    const cyrillic = isCyrillic(written);
+    for (let index = 0; index < forms.length; index++) {
+        if (isCyrillic(forms[index]) == cyrillic)
+            return forms[index];
+    }
+    return forms[0];
+}
+
+function buildNameMap(names) {
+    const map = {};
+    (names || []).forEach(name => {
+        const key = String(name).toLowerCase();
+        if (!(key in map))
+            map[key] = String(name);
+    });
+    return map;
+}
+
+function buildPlatformNames(source) {
+    source = source || {};
+    return {
+        types: buildNameMap(source.types),
+        methods: buildNameMap(source.methods),
+        globalFunctions: buildNameMap(source.globalFunctions)
+    };
+}
+
+let defaultPlatformNames = null;
+
+function resolvePlatformNames(options) {
+    if (options.platformNames)
+        return options.platformNames;
+    if (!defaultPlatformNames)
+        defaultPlatformNames = buildPlatformNames(global.BslPlatformNames);
+    return defaultPlatformNames;
+}
+
+// --- layout ----------------------------------------------------------------
+
+function Layout(text, options) {
+    const tokens = tokenize(text);
+    this.atoms = tokens.atoms;
+    this.gaps = tokens.gaps;
+    this.options = options;
+    this.platformNames = options.canonicalNames ? resolvePlatformNames(options) : null;
+
+    const count = this.atoms.length;
+    this.afterDot = new Array(count);
+    this.lineLevel = new Array(count);
+    this.levelAfter = new Array(count);
+    this.inDelete = new Array(count);
+    this.protectedAtom = new Array(count);
+    this.protectedRanges = [];
+
+    for (let index = 0; index < count; index++) {
+        this.afterDot[index] = index > 0 && this.atoms[index - 1].op == '.';
+        this.protectedAtom[index] = false;
+    }
+
+    this.markDeleted();
+    this.markAnnotationParts();
+    this.findProtectedMethods();
+    this.computeLevels(options.initialLevel || 0);
+}
+
+Layout.prototype.keywordId = function (index) {
+    const atom = this.atoms[index];
+    return atom.kind == 'kw' && !this.afterDot[index] ? atom.id : null;
+};
+
+Layout.prototype.isMethodEnd = function (index) {
+    const id = this.keywordId(index);
+    return id == 'endprocedure' || id == 'endfunction';
+};
+
+Layout.prototype.markDeleted = function () {
+    let depth = 0;
+    for (let index = 0; index < this.atoms.length; index++) {
+        const atom = this.atoms[index];
+        const word = atom.kind == 'preproc' ? directiveWord(atom.text).toLowerCase() : '';
+        if (DELETE_OPEN.indexOf(word) >= 0)
+            depth++;
+        this.inDelete[index] = depth > 0;
+        if (DELETE_CLOSE.indexOf(word) >= 0)
+            depth = Math.max(0, depth - 1);
+    }
+};
+
+/* An annotation owns its parenthesised argument list, so a method protected by
+ * &ИзменениеИКонтроль starts at the first atom of its first annotation. */
+Layout.prototype.markAnnotationParts = function () {
+    const count = this.atoms.length;
+    this.annotationPart = new Array(count).fill(false);
+
+    for (let index = 0; index < count; index++) {
+        if (this.atoms[index].kind != 'annotation')
+            continue;
+        this.annotationPart[index] = true;
+        if (index + 1 >= count || this.atoms[index + 1].op != '(')
+            continue;
+
+        let depth = 0;
+        for (let scan = index + 1; scan < count; scan++) {
+            this.annotationPart[scan] = true;
+            if (this.atoms[scan].op == '(')
+                depth++;
+            else if (this.atoms[scan].op == ')') {
+                depth--;
+                if (depth == 0)
+                    break;
+            }
+        }
+    }
+};
+
+Layout.prototype.findProtectedMethods = function () {
+    const count = this.atoms.length;
+    let index = 0;
+
+    while (index < count) {
+        const atom = this.atoms[index];
+        if (atom.kind != 'annotation' || PROTECTED_ANNOTATIONS.indexOf(atom.text.toLowerCase()) < 0) {
+            index++;
+            continue;
+        }
+
+        let first = index;
+        while (first > 0 && this.annotationPart[first - 1])
+            first--;
+
+        let last = count - 1;
+        for (let scan = index; scan < count; scan++) {
+            if (this.isMethodEnd(scan)) {
+                last = scan;
+                break;
+            }
+        }
+        // The tail of the method's last line (a comment) is untouchable too.
+        while (last + 1 < count && this.gaps[last + 1].text.indexOf('\n') < 0)
+            last++;
+
+        this.protectedRanges.push({ first: first, last: last });
+        for (let mark = first; mark <= last; mark++)
+            this.protectedAtom[mark] = true;
+        index = last + 1;
+    }
+};
+
+Layout.prototype.gapIsProtected = function (gap) {
+    return this.protectedRanges.some(range => range.first < gap && gap <= range.last);
+};
+
+Layout.prototype.computeLevels = function (initialLevel) {
+    let level = Math.max(0, initialLevel);
+    let saved = null;
+
+    for (let index = 0; index < this.atoms.length; index++) {
+        if (this.protectedRanges.some(range => range.first == index))
+            saved = level;
+
+        const id = this.keywordId(index);
+        if (id && CLOSES_BLOCK.indexOf(id) >= 0)
+            level = Math.max(0, level - 1);
+        this.lineLevel[index] = level;
+        if (id && OPENS_BLOCK.indexOf(id) >= 0)
+            level++;
+
+        if (this.protectedRanges.some(range => range.last == index)) {
+            // Unbalanced code inside a protected method must not shift the rest.
+            if (saved !== null) {
+                level = saved;
+                saved = null;
+            }
+        }
+        this.levelAfter[index] = level;
+    }
+};
+
+Layout.prototype.levelBefore = function (index) {
+    return index == 0 ? (this.options.initialLevel || 0) : this.levelAfter[index - 1];
+};
+
+Layout.prototype.indent = function (level) {
+    const options = this.options;
+    return options.useTabs === false
+        ? ' '.repeat(Math.max(0, level) * (options.indentSize || 4))
+        : '\t'.repeat(Math.max(0, level));
+};
+
+// --- rendering -------------------------------------------------------------
+
+Layout.prototype.newlineGap = function (index, forceBlank) {
+    const text = this.gaps[index].text;
+    const count = this.atoms.length;
+    const eol = this.options.eol;
+    const newlines = (text.match(/\n/g) || []).length;
+    let out = '';
+
+    // The tail of a protected or deleted line stays as it was written.
+    if (index > 0 && (this.protectedAtom[index - 1] || this.inDelete[index - 1])) {
+        const stop = text.indexOf('\n');
+        out += (stop < 0 ? text : text.substring(0, stop)).replace(/\r$/, '');
+    }
+
+    if (index == count) {
+        // Last gap: no trailing blank lines at the end of a module.
+        return out + eol;
+    }
+
+    const blankIndent = this.options.trimTrailingWhitespace ? '' : this.indent(this.levelBefore(index));
+    let blanks = Math.min(index == 0 ? newlines : newlines - 1, MAX_BLANK_LINES);
+    if (forceBlank)
+        blanks = MAX_BLANK_LINES;
+
+    if (index == 0) {
+        // An empty first line of the module is kept, and has no indent.
+        return out + eol.repeat(blanks);
+    }
+    if (index == 1 && this.atoms[0].kind == 'bom') {
+        // The BOM line is itself the empty first line; another one would be a second.
+        blanks = 0;
+    }
+    for (let blank = 0; blank < blanks; blank++)
+        out += eol + blankIndent;
+
+    return out + eol + this.indent(this.lineLevel[index]);
+};
+
+Layout.prototype.inlineGap = function (index, prevWasUnary) {
+    const text = this.gaps[index].text;
+    const count = this.atoms.length;
+
+    if (index == 0) {
+        /* A fragment formatted on its own starts at a known block level, and its
+         * first line carries the indent the whole range is missing. */
+        return this.options.indentFirstLine && this.atoms[0].kind != 'bom'
+            ? this.indent(this.lineLevel[0])
+            : '';
+    }
+    if (index == count)
+        return this.protectedAtom[count - 1] ? text : '';
+    if (this.inDelete[index - 1] && this.inDelete[index])
+        return text;
+
+    const prev = this.atoms[index - 1];
+    const next = this.atoms[index];
+    if (next.op == '(' && prev.kind == 'annotation')
+        return '';
+    if (next.op == ':')
+        return '';
+
+    return decideInlineGap(prev, next, prevWasUnary, text);
+};
+
+function decideInlineGap(prev, next, prevWasUnary, text) {
+    if (prevWasUnary)
+        return '';
+    if (prev.kind == 'bom')
+        return '';
+    if (next.kind == 'comment')
+        return ' ';
+
+    /* The Configurator only requires whitespace before assignment. Keep the
+     * user's existing horizontal gap instead of collapsing deliberate extra
+     * spacing to one character. */
+    if (next.op == '=')
+        return /[ \t]/.test(text) ? text : ' ';
+
+    const commaAfterComma = prev.op == ',' && next.op == ',';
+    if (!commaAfterComma && next.op && NO_SPACE_BEFORE_OPS.indexOf(next.op) >= 0)
+        return '';
+    if (next.op == '(' && forbidsSpaceBeforeParen(prev))
+        return '';
+    if (prev.op && NO_SPACE_AFTER_OPS.indexOf(prev.op) >= 0)
+        return '';
+
+    if (isLikelyUnary(next, prev))
+        return needsSpaceAfter(prev) ? ' ' : '';
+
+    if (needsSpaceBefore(next) || needsSpaceAfter(prev))
+        return ' ';
+
+    return text;
+}
+
+function forbidsSpaceBeforeParen(prev) {
+    if (prev.kind == 'ident')
+        return true;
+    if (prev.kind == 'kw')
+        return prev.id == 'new' || prev.id == 'execute';
+    return prev.op && NO_SPACE_BEFORE_PAREN_OPS.indexOf(prev.op) >= 0;
+}
+
+function needsSpaceBefore(atom) {
+    if (atom.kind == 'kw')
+        return atom.id == 'and' || atom.id == 'or';
+    return Boolean(atom.op) && (atom.op == '=' || BINARY_OPS.indexOf(atom.op) >= 0);
+}
+
+function needsSpaceAfter(atom) {
+    if (atom.kind == 'kw')
+        return SPACE_AFTER_KEYWORDS.indexOf(atom.id) >= 0;
+    if (!atom.op)
+        return false;
+    return atom.op == ',' || atom.op == '=' || BINARY_OPS.indexOf(atom.op) >= 0;
+}
+
+function isLikelyUnary(atom, prev) {
+    if (!atom.op || (atom.op != '-' && atom.op != '+'))
+        return false;
+    if (!prev)
+        return true;
+    if (prev.kind == 'kw')
+        return UNARY_AFTER_KEYWORDS.indexOf(prev.id) >= 0;
+    return Boolean(prev.op) && UNARY_AFTER_OPS.indexOf(prev.op) >= 0;
+}
+
+function normalizeCommentSpacing(raw) {
+    if (raw.substring(0, 2) != '//')
+        return raw;
+    const rest = raw.substring(2);
+    if (!rest || /^\s/.test(rest))
+        return raw;
+    return '// ' + rest;
+}
+
+function directiveWord(text) {
+    let end = 1;
+    while (end < text.length && WORD_PART.test(text[end]))
+        end++;
+    return text.substring(0, end);
+}
+
+Layout.prototype.renderAtom = function (index) {
+    const atom = this.atoms[index];
+    if (this.protectedAtom[index] || this.inDelete[index])
+        return atom.text;
+
+    if (atom.kind == 'comment')
+        return normalizeCommentSpacing(atom.text.replace(/[ \t]+$/, ''));
+
+    if (atom.kind == 'string' && atom.text.indexOf('\n') >= 0)
+        return this.reindentLiteral(atom.text, this.lineLevel[index]);
+
+    if (!this.options.canonicalNames)
+        return atom.text;
+
+    return this.canonicalName(index) || atom.text;
+};
+
+/* The lines of a multi-line literal (`|…`, and comments between them) get the
+ * block's indent; their text, trailing spaces included, is part of the value. */
+Layout.prototype.reindentLiteral = function (text, level) {
+    const indent = this.indent(level);
+    const lines = text.split('\n');
+    let out = lines[0];
+
+    for (let index = 1; index < lines.length; index++) {
+        const content = lines[index].replace(/^[ \t]+/, '');
+        out += '\n';
+        if (content.replace(/\r$/, '') === '') {
+            if (!this.options.trimTrailingWhitespace)
+                out += indent;
+        }
+        else {
+            out += indent;
+        }
+        out += content;
+    }
+
+    return out;
+};
+
+Layout.prototype.nextMeaningful = function (index) {
+    for (let scan = index + 1; scan < this.atoms.length; scan++) {
+        if (this.atoms[scan].kind != 'comment')
+            return this.atoms[scan];
+    }
+    return null;
+};
+
+Layout.prototype.canonicalName = function (index) {
+    const atom = this.atoms[index];
+    const text = atom.text;
+    const prev = index > 0 ? this.atoms[index - 1] : null;
+    const next = this.nextMeaningful(index);
+    const names = this.platformNames;
+    let canonical = null;
+
+    if (prev && prev.op == '.') {
+        // A keyword after a dot is a property or method name (Обработчик.Процедура).
+        if (names && next && next.op == '(')
+            canonical = names.methods[text.toLowerCase()];
+    }
+    else if (atom.kind == 'ident') {
+        if (!names)
+            canonical = null;
+        else if (prev && prev.kind == 'kw' && prev.id == 'new')
+            canonical = names.types[text.toLowerCase()];
+        else if (prev && prev.kind == 'kw' && (prev.id == 'procedure' || prev.id == 'function'))
+            canonical = null;
+        else if (next && next.op == '(')
+            canonical = names.globalFunctions[text.toLowerCase()];
+    }
+    else if (atom.kind == 'kw') {
+        canonical = canonicalForm(text, KEYWORDS[atom.id]);
+    }
+    else if (atom.kind == 'annotation') {
+        const forms = ANNOTATION_BY_WORD[text.toLowerCase()];
+        canonical = forms ? canonicalForm(text, forms) : null;
+    }
+    else if (atom.kind == 'preproc') {
+        const word = directiveWord(text);
+        const forms = DIRECTIVE_BY_WORD[word.toLowerCase()];
+        canonical = forms ? canonicalForm(word, forms) + text.substring(word.length) : null;
+    }
+
+    return canonical && canonical != text ? canonical : null;
+};
+
+function isMethodHeaderStart(atom) {
+    if (atom.kind == 'annotation' || atom.kind == 'comment')
+        return true;
+    return atom.kind == 'kw' && METHOD_HEADER_KEYWORDS.indexOf(atom.id) >= 0;
+}
+
+Layout.prototype.render = function () {
+    const count = this.atoms.length;
+    if (!count)
+        return null;
+
+    let out = '';
+    let prevWasUnary = false;
+    let methodJustEnded = false;
+
+    for (let index = 0; index <= count; index++) {
+        const gap = this.gaps[index];
+        let rendered;
+
+        if (this.gapIsProtected(index)) {
+            rendered = gap.text;
+        }
+        else if (gap.text.indexOf('\n') >= 0) {
+            const forceBlank = methodJustEnded && index < count && isMethodHeaderStart(this.atoms[index]);
+            methodJustEnded = false;
+            rendered = this.newlineGap(index, forceBlank);
+        }
+        else {
+            rendered = this.inlineGap(index, prevWasUnary);
+        }
+
+        if (index == count) {
+            if (this.options.insertFinalNewline !== false && !/\n$/.test(rendered))
+                rendered += this.options.eol;
+            out += rendered;
+            break;
+        }
+
+        out += rendered + this.renderAtom(index);
+
+        if (this.isMethodEnd(index))
+            methodJustEnded = true;
+        const crossedLine = gap.text.indexOf('\n') >= 0;
+        const prev = (index == 0 || crossedLine) ? null : this.atoms[index - 1];
+        prevWasUnary = isLikelyUnary(this.atoms[index], prev);
+    }
+
+    return out;
+};
+
+// --- line state (incremental helpers used by the editor) -------------------
 
 function createState(source) {
     source = source || {};
@@ -50,48 +749,28 @@ function createState(source) {
     };
 }
 
-function isWordStart(character) {
-    return /[A-Za-zА-Яа-яЁё_]/.test(character || '');
-}
-
-function isWordPart(character) {
-    return /[A-Za-zА-Яа-яЁё_0-9]/.test(character || '');
-}
-
 function scanLine(line, initialState) {
     const state = createState(initialState);
-    const startState = createState(state);
-    const mask = new Array(line.length).fill(false);
-    let commentStart = -1;
 
     for (let index = 0; index < line.length; index++) {
         const character = line[index];
 
         if (state.inString) {
             if (character == '"') {
-                if (line[index + 1] == '"') {
+                if (line[index + 1] == '"')
                     index++;
-                }
-                else {
+                else
                     state.inString = false;
-                }
             }
             continue;
         }
 
-        if (character == '/' && line[index + 1] == '/') {
-            commentStart = index;
+        if (character == '/' && line[index + 1] == '/')
             break;
-        }
 
-        if (character == '"') {
+        if (character == '"')
             state.inString = true;
-            continue;
-        }
-
-        mask[index] = true;
-
-        if (character == '(')
+        else if (character == '(')
             state.parenthesisDepth++;
         else if (character == ')')
             state.parenthesisDepth = Math.max(0, state.parenthesisDepth - 1);
@@ -101,899 +780,54 @@ function scanLine(line, initialState) {
             state.bracketDepth = Math.max(0, state.bracketDepth - 1);
     }
 
-    return { mask: mask, state: state, startState: startState, commentStart: commentStart };
+    return state;
 }
 
-function scanLines(lines, initialState) {
-    let state = createState(initialState);
-    const result = [];
-
-    lines.forEach(line => {
-        const analysis = scanLine(line, state);
-        result.push({
-            line: line,
-            mask: analysis.mask,
-            commentStart: analysis.commentStart,
-            startState: createState(state),
-            endState: createState(analysis.state)
-        });
-        state = analysis.state;
-    });
-
-    return { lines: result, state: state };
-}
-
-function getWords(line, mask) {
-    const words = [];
-    let index = 0;
-
-    while (index < line.length) {
-        if (!mask[index] || !isWordStart(line[index])) {
-            index++;
-            continue;
-        }
-
-        const start = index;
-        index++;
-        while (index < line.length && mask[index] && isWordPart(line[index]))
-            index++;
-
-        words.push({ start: start, end: index, value: line.substring(start, index) });
-    }
-
-    return words;
-}
-
-function getStructuralWords(line, mask) {
-    const words = getWords(line, mask).map(word => word.value.toLowerCase());
-    const trimmed = line.trimStart();
-
-    if (trimmed[0] == '#' && words.length)
-        words[0] = '#' + words[0];
-
-    return words;
-}
-
-function getStructureChange(line, mask) {
-    // Preprocessor lines (#Если, #Область, #Вставка, …) do not create indent levels.
-    if ((line.trimStart()[0] || '') == '#')
-        return { before: 0, after: 0 };
-
-    const words = getStructuralWords(line, mask);
-    const firstWord = words.length ? words[0] : '';
-    const closes = STOP_WORDS.includes(firstWord);
-    const complex = COMPLEX_WORDS.includes(firstWord);
-    const opens = words.some(word => START_WORDS.includes(word));
-
+function resolveOptions(text, options) {
+    options = options || {};
+    const eolMatch = text.match(/\r\n|\n/);
     return {
-        before: closes || complex ? -1 : 0,
-        after: complex || (opens && !closes) ? 1 : 0
+        eol: options.eol || (eolMatch ? eolMatch[0] : '\n'),
+        useTabs: options.useTabs !== false,
+        indentSize: options.indentSize || 4,
+        trimTrailingWhitespace: Boolean(options.trimTrailingWhitespace),
+        canonicalNames: options.canonicalNames !== false,
+        insertFinalNewline: options.insertFinalNewline !== false,
+        initialLevel: Math.max(0, options.initialLevel || 0),
+        indentFirstLine: Boolean(options.indentFirstLine),
+        platformNames: options.platformNames || null
     };
-}
-
-function getCodeText(line, mask) {
-    let result = '';
-    for (let index = 0; index < line.length; index++)
-        result += mask[index] ? line[index] : ' ';
-    return result;
-}
-
-function buildCanonicalMap(values) {
-    const result = {};
-    (values || []).forEach(value => {
-        if (value)
-            result[String(value).toLowerCase()] = String(value);
-    });
-    return result;
-}
-
-function addNamedEntry(map, key, value) {
-    const canonicalName = value && value.name ? value.name : key;
-    if (canonicalName)
-        map[String(key).toLowerCase()] = canonicalName;
-    if (value && value.name)
-        map[String(value.name).toLowerCase()] = value.name;
-    if (value && value.name_en)
-        map[String(value.name_en).toLowerCase()] = value.name_en;
-}
-
-function buildPlatformNameMaps(globals) {
-    const result = { globalFunctions: {}, classes: {}, methods: {} };
-    if (!globals)
-        return result;
-
-    Object.entries(globals.globalfunctions || {}).forEach(([key, value]) => {
-        addNamedEntry(result.globalFunctions, key, value);
-    });
-
-    Object.entries(globals.classes || {}).forEach(([key, value]) => {
-        addNamedEntry(result.classes, key, value);
-        Object.entries((value && value.methods) || {}).forEach(([methodKey, method]) => {
-            addNamedEntry(result.methods, methodKey, method);
-        });
-    });
-
-    return result;
-}
-
-function previousNonWhitespaceIndex(line, mask, index) {
-    index--;
-    while (0 <= index) {
-        if (mask[index] && !/\s/.test(line[index]))
-            return index;
-        index--;
-    }
-    return -1;
-}
-
-function nextNonWhitespaceIndex(line, mask, index) {
-    while (index < line.length) {
-        if (mask[index] && !/\s/.test(line[index]))
-            return index;
-        if (!mask[index] && !/\s/.test(line[index]))
-            return index;
-        index++;
-    }
-    return -1;
-}
-
-function previousWord(line, mask, index) {
-    let end = previousNonWhitespaceIndex(line, mask, index);
-    if (end < 0 || !isWordPart(line[end]))
-        return '';
-
-    let start = end;
-    while (0 < start && mask[start - 1] && isWordPart(line[start - 1]))
-        start--;
-    return line.substring(start, end + 1);
-}
-
-function canonicalizeLine(line, analysis, options, keywordMap) {
-    const platformNames = options.platformNames;
-    const replacements = [];
-
-    getWords(line, analysis.mask).forEach(word => {
-        const lowerWord = word.value.toLowerCase();
-        let replacement = keywordMap[lowerWord];
-
-        if (!replacement && platformNames) {
-            const previousIndex = previousNonWhitespaceIndex(line, analysis.mask, word.start);
-            const nextIndex = nextNonWhitespaceIndex(line, analysis.mask, word.end);
-            const previousToken = previousWord(line, analysis.mask, word.start).toLowerCase();
-
-            if ((options.formatCanonicalKeywords || options.formatCanonicalPlatformNames)
-                && (previousToken == 'новый' || previousToken == 'new'))
-                replacement = platformNames.classes[lowerWord];
-            else if (options.formatCanonicalPlatformNames
-                && 0 <= previousIndex && line[previousIndex] == '.' && 0 <= nextIndex && line[nextIndex] == '(')
-                replacement = platformNames.methods[lowerWord];
-            else if (options.formatCanonicalPlatformNames
-                && 0 <= nextIndex && line[nextIndex] == '(' && (previousIndex < 0 || line[previousIndex] != '.'))
-                replacement = platformNames.globalFunctions[lowerWord];
-        }
-
-        if (replacement && replacement != word.value)
-            replacements.push({ start: word.start, end: word.end, text: replacement });
-    });
-
-    for (let index = replacements.length - 1; 0 <= index; index--) {
-        const replacement = replacements[index];
-        line = line.substring(0, replacement.start) + replacement.text + line.substring(replacement.end);
-    }
-
-    return line;
-}
-
-function addSpaceAfterCommas(line, analysis) {
-    let result = '';
-
-    for (let index = 0; index < line.length; index++) {
-        if (!analysis.mask[index] || line[index] != ',') {
-            result += line[index];
-            continue;
-        }
-
-        result = result.replace(/[ \t]+$/, '') + ',';
-        let nextIndex = index + 1;
-        while (nextIndex < line.length && analysis.mask[nextIndex] && /[ \t]/.test(line[nextIndex]))
-            nextIndex++;
-
-        if (nextIndex < line.length && line[nextIndex] != ')' && line[nextIndex] != ']')
-            result += ' ';
-
-        index = nextIndex - 1;
-    }
-
-    return result;
-}
-
-function transformNamesAndCommas(lines, initialState, options) {
-    let state = createState(initialState);
-    const keywordMap = options.formatCanonicalKeywords ? buildCanonicalMap(options.keywords) : {};
-
-    return lines.map(line => {
-        let analysis = scanLine(line, state);
-        let result = canonicalizeLine(line, analysis, options, keywordMap);
-        analysis = scanLine(result, state);
-        if (options.formatSpaceAfterComma)
-            result = addSpaceAfterCommas(result, analysis);
-        state = scanLine(result, state).state;
-        return result;
-    });
-}
-
-function splitStatements(lines, initialState) {
-    let state = createState(initialState);
-    const result = [];
-
-    lines.forEach(line => {
-        const analysis = scanLine(line, state);
-        const splitPositions = [];
-        let parenthesisDepth = state.parenthesisDepth;
-        let bracketDepth = state.bracketDepth;
-
-        for (let index = 0; index < line.length; index++) {
-            if (!analysis.mask[index])
-                continue;
-
-            const character = line[index];
-            if (character == '(')
-                parenthesisDepth++;
-            else if (character == ')')
-                parenthesisDepth = Math.max(0, parenthesisDepth - 1);
-            else if (character == '[')
-                bracketDepth++;
-            else if (character == ']')
-                bracketDepth = Math.max(0, bracketDepth - 1);
-            else if (character == ';' && parenthesisDepth == 0 && bracketDepth == 0) {
-                let nextIndex = index + 1;
-                while (nextIndex < line.length && (!analysis.mask[nextIndex] || /\s/.test(line[nextIndex])))
-                    nextIndex++;
-                if (nextIndex < line.length)
-                    splitPositions.push(index + 1);
-            }
-        }
-
-        if (!splitPositions.length) {
-            result.push(line);
-        }
-        else {
-            const indent = (line.match(/^[ \t]*/) || [''])[0];
-            let start = 0;
-            splitPositions.forEach(position => {
-                result.push((start == 0 ? '' : indent) + line.substring(start, position).trimStart());
-                start = position;
-            });
-            result.push(indent + line.substring(start).trimStart());
-        }
-
-        state = analysis.state;
-    });
-
-    return result;
-}
-
-function isControlFlowEnding(code) {
-    const words = code.trim().replace(/;\s*$/, '').trim().split(/\s+/);
-    return words.length == 1 && CONTROL_FLOW_END_WORDS.includes(words[0].toLowerCase());
-}
-
-function splitControlFlowEndings(line, analysis) {
-    let parenthesisDepth = analysis.startState.parenthesisDepth;
-    let bracketDepth = analysis.startState.bracketDepth;
-    const segments = [];
-    let start = 0;
-    let segmentTopLevel = parenthesisDepth == 0 && bracketDepth == 0 && !analysis.startState.inString;
-
-    for (let index = 0; index < line.length; index++) {
-        if (!analysis.mask[index])
-            continue;
-
-        const character = line[index];
-        if (character == '(')
-            parenthesisDepth++;
-        else if (character == ')')
-            parenthesisDepth = Math.max(0, parenthesisDepth - 1);
-        else if (character == '[')
-            bracketDepth++;
-        else if (character == ']')
-            bracketDepth = Math.max(0, bracketDepth - 1);
-        else if (character == ';' && parenthesisDepth == 0 && bracketDepth == 0) {
-            segments.push({
-                text: line.substring(start, index + 1),
-                code: getCodeText(line.substring(start, index + 1), analysis.mask.slice(start, index + 1)),
-                topLevel: segmentTopLevel
-            });
-            start = index + 1;
-            segmentTopLevel = true;
-        }
-    }
-
-    if (start < line.length) {
-        const tail = {
-            text: line.substring(start),
-            code: getCodeText(line.substring(start), analysis.mask.slice(start)),
-            topLevel: segmentTopLevel
-        };
-        if (!tail.code.trim() && segments.length)
-            segments[segments.length - 1].text += tail.text;
-        else
-            segments.push(tail);
-    }
-
-    if (!segments.some(segment => segment.topLevel && isControlFlowEnding(segment.code)))
-        return [line];
-
-    const result = [];
-    let ordinary = '';
-
-    segments.forEach(segment => {
-        if (segment.topLevel && isControlFlowEnding(segment.code)) {
-            if (ordinary.trim())
-                result.push(ordinary.trimEnd());
-            ordinary = '';
-            result.push(segment.text.trim());
-        }
-        else {
-            ordinary += segment.text;
-        }
-    });
-
-    if (ordinary.trim())
-        result.push(ordinary.trim());
-
-    return result;
-}
-
-function isolateControlFlowEndings(lines, initialState) {
-    let state = createState(initialState);
-    const result = [];
-
-    lines.forEach(line => {
-        const analysis = scanLine(line, state);
-        result.push.apply(result, splitControlFlowEndings(line, analysis));
-        state = analysis.state;
-    });
-
-    return result;
-}
-
-function joinControlFlowMarkers(lines, initialState) {
-    const analyses = scanLines(lines, initialState).lines;
-    const result = [];
-
-    for (let index = 0; index < lines.length; index++) {
-        const current = analyses[index];
-        const currentCode = getCodeText(current.line, current.mask).trim();
-        const marker = currentCode.toLowerCase();
-        const isMarker = ['тогда', 'then', 'цикл', 'do'].includes(marker);
-
-        if (isMarker && current.commentStart < 0 && result.length && index > 0) {
-            const previous = analyses[index - 1];
-            const previousCode = getCodeText(previous.line, previous.mask).trim();
-            const previousWords = getWords(previous.line, previous.mask);
-            const firstWord = previousWords.length ? previousWords[0].value.toLowerCase() : '';
-            const expectedMarker = CONTROL_FLOW_MARKERS[firstWord];
-            const alreadyHasMarker = previousWords.some(word => word.value.toLowerCase() == marker);
-            const balanced = previous.startState.parenthesisDepth == previous.endState.parenthesisDepth
-                && previous.startState.bracketDepth == previous.endState.bracketDepth
-                && !previous.endState.inString;
-
-            if (expectedMarker == marker && !alreadyHasMarker && previous.commentStart < 0
-                && balanced && previousCode) {
-                result[result.length - 1] = result[result.length - 1].trimEnd() + ' ' + currentCode;
-                continue;
-            }
-        }
-
-        result.push(lines[index]);
-    }
-
-    return result;
-}
-
-function formatControlFlow(lines, initialState) {
-    return joinControlFlowMarkers(isolateControlFlowEndings(lines, initialState), initialState);
-}
-
-function getTopLevelSegments(line, analysis) {
-    let parenthesisDepth = analysis.startState.parenthesisDepth;
-    let bracketDepth = analysis.startState.bracketDepth;
-    const segments = [];
-    let start = 0;
-    let segmentTopLevel = parenthesisDepth == 0 && bracketDepth == 0 && !analysis.startState.inString;
-
-    for (let index = 0; index < line.length; index++) {
-        if (!analysis.mask[index])
-            continue;
-
-        const character = line[index];
-        if (character == '(')
-            parenthesisDepth++;
-        else if (character == ')')
-            parenthesisDepth = Math.max(0, parenthesisDepth - 1);
-        else if (character == '[')
-            bracketDepth++;
-        else if (character == ']')
-            bracketDepth = Math.max(0, bracketDepth - 1);
-        else if (character == ';' && parenthesisDepth == 0 && bracketDepth == 0) {
-            segments.push({ start: start, end: index + 1, topLevel: segmentTopLevel });
-            start = index + 1;
-            segmentTopLevel = true;
-        }
-    }
-
-    if (start < line.length) {
-        if (segments.length && !getCodeText(line.substring(start), analysis.mask.slice(start)).trim())
-            segments[segments.length - 1].end = line.length;
-        else
-            segments.push({ start: start, end: line.length, topLevel: segmentTopLevel });
-    }
-
-    return segments;
-}
-
-function getBoundaryWord(line, mask) {
-    const words = getWords(line, mask);
-    if (!words.length || line.trimStart()[0] == '#')
-        return '';
-    return words[0].value.toLowerCase();
-}
-
-function getMarkerEnd(words, marker) {
-    for (let index = 1; index < words.length; index++) {
-        if (words[index].value.toLowerCase() == marker)
-            return words[index].end;
-    }
-    return -1;
-}
-
-function getDeclarationEnd(line, mask) {
-    let depth = 0;
-    let opened = false;
-    let end = -1;
-
-    for (let index = 0; index < line.length; index++) {
-        if (!mask[index])
-            continue;
-        if (line[index] == '(') {
-            depth++;
-            opened = true;
-        }
-        else if (line[index] == ')' && opened) {
-            depth = Math.max(0, depth - 1);
-            if (depth == 0) {
-                end = index + 1;
-                break;
-            }
-        }
-    }
-
-    if (end < 0)
-        return -1;
-
-    const tailWords = getWords(line.substring(end), mask.slice(end));
-    if (tailWords.length && ['экспорт', 'export'].includes(tailWords[0].value.toLowerCase()))
-        end += tailWords[0].end;
-    return end;
-}
-
-function splitBoundarySegment(text, mask) {
-    const boundaryWord = getBoundaryWord(text, mask);
-    if (!BLOCK_BOUNDARY_WORDS.includes(boundaryWord))
-        return null;
-
-    let boundaryEnd = text.length;
-    const words = getWords(text, mask);
-    if (BLOCK_MARKER_WORDS[boundaryWord]) {
-        const markerEnd = getMarkerEnd(words, BLOCK_MARKER_WORDS[boundaryWord]);
-        if (0 < markerEnd)
-            boundaryEnd = markerEnd;
-        else if (/;\s*$/.test(getCodeText(text, mask).trim()))
-            return null;
-    }
-    else if (BLOCK_SIMPLE_WORDS.includes(boundaryWord)) {
-        boundaryEnd = words[0].end;
-    }
-    else if (BLOCK_END_WORDS.includes(boundaryWord)) {
-        boundaryEnd = words[0].end;
-        while (boundaryEnd < text.length && /\s/.test(text[boundaryEnd]))
-            boundaryEnd++;
-        if (text[boundaryEnd] == ';')
-            boundaryEnd++;
-    }
-    else if (BLOCK_DECLARATION_WORDS.includes(boundaryWord)) {
-        const declarationEnd = getDeclarationEnd(text, mask);
-        if (0 < declarationEnd)
-            boundaryEnd = declarationEnd;
-        else if (/;\s*$/.test(getCodeText(text, mask).trim()))
-            return null;
-    }
-
-    const tailCode = getCodeText(text.substring(boundaryEnd), mask.slice(boundaryEnd)).trim();
-    if (!tailCode)
-        return { boundary: text.trim(), tail: '' };
-
-    if (BLOCK_END_WORDS.includes(boundaryWord))
-        return null;
-
-    if (boundaryEnd == text.length)
-        return { boundary: text.trim(), tail: '' };
-
-    return {
-        boundary: text.substring(0, boundaryEnd).trim(),
-        tail: text.substring(boundaryEnd).trimStart()
-    };
-}
-
-function splitBlockBoundaryLine(line, analysis) {
-    const segments = getTopLevelSegments(line, analysis);
-    const result = [];
-    let ordinary = '';
-    let foundBoundary = false;
-
-    segments.forEach(segment => {
-        const text = line.substring(segment.start, segment.end);
-        const mask = analysis.mask.slice(segment.start, segment.end);
-        const split = segment.topLevel ? splitBoundarySegment(text, mask) : null;
-
-        if (!split) {
-            ordinary += text;
-            return;
-        }
-
-        foundBoundary = true;
-        if (ordinary.trim())
-            result.push(ordinary.trim());
-        ordinary = '';
-        result.push(split.boundary);
-        if (split.tail)
-            ordinary = split.tail;
-    });
-
-    if (ordinary.trim())
-        result.push(ordinary.trim());
-
-    return foundBoundary ? result : [line];
-}
-
-function isolateBlockBoundaries(lines, initialState) {
-    let state = createState(initialState);
-    const result = [];
-
-    lines.forEach(line => {
-        const analysis = scanLine(line, state);
-        result.push.apply(result, splitBlockBoundaryLine(line, analysis));
-        state = analysis.state;
-    });
-
-    return result;
-}
-
-function hasStandaloneMarker(line, analysis, marker) {
-    const code = getCodeText(line, analysis.mask).trim().replace(/;\s*$/, '').trim();
-    return code.toLowerCase() == marker;
-}
-
-function hasMarkerAtEnd(line, analysis, marker) {
-    const words = getWords(line, analysis.mask);
-    for (let index = 0; index < words.length; index++) {
-        if (words[index].value.toLowerCase() != marker)
-            continue;
-        const tail = getCodeText(line.substring(words[index].end), analysis.mask.slice(words[index].end)).trim();
-        if (!tail)
-            return true;
-    }
-    return false;
-}
-
-function isValidBoundaryLine(line, analysis, boundaryWord) {
-    const code = getCodeText(line, analysis.mask).trim();
-    const words = getWords(line, analysis.mask);
-
-    if (BLOCK_END_WORDS.includes(boundaryWord))
-        return words.length == 1
-            && code.replace(/;\s*$/, '').trim().toLowerCase() == boundaryWord;
-
-    if (BLOCK_MARKER_WORDS[boundaryWord]
-        && getMarkerEnd(words, BLOCK_MARKER_WORDS[boundaryWord]) < 0
-        && /;\s*$/.test(code))
-        return false;
-
-    if (BLOCK_DECLARATION_WORDS.includes(boundaryWord)
-        && getDeclarationEnd(line, analysis.mask) < 0
-        && /;\s*$/.test(code))
-        return false;
-
-    return true;
-}
-
-function getBoundaryRanges(lines, initialState) {
-    const analyses = scanLines(lines, initialState).lines;
-    const ranges = [];
-
-    for (let index = 0; index < lines.length; index++) {
-        const analysis = analyses[index];
-        if (analysis.startState.inString || analysis.startState.parenthesisDepth || analysis.startState.bracketDepth)
-            continue;
-
-        const boundaryWord = getBoundaryWord(lines[index], analysis.mask);
-        if (!BLOCK_BOUNDARY_WORDS.includes(boundaryWord)
-            || !isValidBoundaryLine(lines[index], analysis, boundaryWord))
-            continue;
-
-        let end = index;
-        const marker = BLOCK_MARKER_WORDS[boundaryWord];
-        const words = getWords(lines[index], analysis.mask);
-
-        if (marker && getMarkerEnd(words, marker) < 0) {
-            for (let markerIndex = index + 1; markerIndex < lines.length; markerIndex++) {
-                const markerAnalysis = analyses[markerIndex];
-                if (hasStandaloneMarker(lines[markerIndex], markerAnalysis, marker)
-                    || hasMarkerAtEnd(lines[markerIndex], markerAnalysis, marker)) {
-                    end = markerIndex;
-                    break;
-                }
-
-                const code = getCodeText(lines[markerIndex], markerAnalysis.mask).trim();
-                const nextBoundary = getBoundaryWord(lines[markerIndex], markerAnalysis.mask);
-                if (code && BLOCK_BOUNDARY_WORDS.includes(nextBoundary))
-                    break;
-                if (code && /;\s*$/.test(code))
-                    break;
-            }
-        }
-        else if (BLOCK_DECLARATION_WORDS.includes(boundaryWord)) {
-            const baseParenthesisDepth = analysis.startState.parenthesisDepth;
-            const baseBracketDepth = analysis.startState.bracketDepth;
-            while (end + 1 < lines.length && (analyses[end].endState.inString
-                || analyses[end].endState.parenthesisDepth != baseParenthesisDepth
-                || analyses[end].endState.bracketDepth != baseBracketDepth))
-                end++;
-        }
-
-        let start = index;
-        if (BLOCK_DECLARATION_WORDS.includes(boundaryWord)) {
-            while (0 < start && lines[start - 1].trim()
-                && (/^\s*\/\//.test(lines[start - 1]) || /^\s*&/.test(lines[start - 1])))
-                start--;
-        }
-
-        ranges.push({ start: start, end: end });
-        index = end;
-    }
-
-    return ranges;
-}
-
-function formatBlockSpacing(lines, initialState) {
-    lines = isolateBlockBoundaries(lines, initialState);
-    const ranges = getBoundaryRanges(lines, initialState);
-    const starts = {};
-    const ends = {};
-    const rangeByLine = {};
-
-    ranges.forEach((range, rangeIndex) => {
-        starts[range.start] = true;
-        ends[range.end] = true;
-        for (let index = range.start; index <= range.end; index++)
-            rangeByLine[index] = rangeIndex;
-    });
-
-    const result = [];
-    let index = 0;
-    while (index < lines.length) {
-        if (!lines[index].trim()) {
-            result.push(lines[index]);
-            index++;
-            continue;
-        }
-
-        result.push(lines[index]);
-        let next = index + 1;
-        while (next < lines.length && !lines[next].trim())
-            next++;
-
-        if (next < lines.length) {
-            const sameBoundary = rangeByLine[index] !== undefined
-                && rangeByLine[index] == rangeByLine[next];
-            const needsBlankLine = !sameBoundary && (ends[index] || starts[next]);
-
-            if (needsBlankLine)
-                result.push('');
-            else if (!sameBoundary)
-                for (let blank = index + 1; blank < next; blank++)
-                    result.push(lines[blank]);
-        }
-        else {
-            for (let blank = index + 1; blank < next; blank++)
-                result.push(lines[blank]);
-        }
-
-        index = next;
-    }
-
-    return result;
-}
-
-function formatIndentation(lines, initialState, initialIndent) {
-    let state = createState(initialState);
-    let indent = Math.max(0, initialIndent || 0);
-
-    return lines.map(line => {
-        const analysis = scanLine(line, state);
-        const change = getStructureChange(line, analysis.mask);
-        indent = Math.max(0, indent + change.before);
-
-        const touchesString = analysis.startState.inString || analysis.state.inString;
-        var content = line.replace(/^[\t ]+/, '');
-        if (!touchesString) content = content.trimEnd();
-        const result = content ? '\t'.repeat(indent) + content : (touchesString ? line : '');
-
-        indent = Math.max(0, indent + change.after);
-        state = analysis.state;
-        return touchesString ? result : result.trimEnd();
-    });
-}
-
-function collapseExtraBlankLines(lines, initialState) {
-    let state = createState(initialState);
-    const result = [];
-    let lastWasBlank = false;
-
-    lines.forEach(line => {
-        const analysis = scanLine(line, state);
-        const isBlank = !analysis.startState.inString && !line.trim();
-        if (isBlank) {
-            if (!lastWasBlank)
-                result.push('');
-            lastWasBlank = true;
-        }
-        else {
-            result.push(line);
-            lastWasBlank = false;
-        }
-        state = analysis.state;
-    });
-
-    return result;
-}
-
-function getSimpleAssignment(line, analysis) {
-    if (!line.trim() || 0 <= analysis.commentStart || analysis.startState.inString
-        || analysis.startState.parenthesisDepth || analysis.startState.bracketDepth)
-        return null;
-
-    let parenthesisDepth = 0;
-    let bracketDepth = 0;
-    const equals = [];
-
-    for (let index = 0; index < line.length; index++) {
-        if (!analysis.mask[index])
-            continue;
-
-        const character = line[index];
-        if (character == '(')
-            parenthesisDepth++;
-        else if (character == ')')
-            parenthesisDepth = Math.max(0, parenthesisDepth - 1);
-        else if (character == '[')
-            bracketDepth++;
-        else if (character == ']')
-            bracketDepth = Math.max(0, bracketDepth - 1);
-        else if (character == '=' && parenthesisDepth == 0 && bracketDepth == 0)
-            equals.push(index);
-    }
-
-    if (equals.length != 1)
-        return null;
-
-    const equalIndex = equals[0];
-    const indent = (line.match(/^[ \t]*/) || [''])[0];
-    const left = line.substring(indent.length, equalIndex).trim();
-    const right = line.substring(equalIndex + 1).trim();
-
-    if (!/^[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё_0-9]*(?:\.[A-Za-zА-Яа-яЁё_][A-Za-zА-Яа-яЁё_0-9]*)*$/.test(left) || !right)
-        return null;
-
-    return { indent: indent, left: left, right: right };
-}
-
-function alignAssignments(lines, initialState) {
-    const analyses = scanLines(lines, initialState).lines;
-    const result = lines.slice();
-    let index = 0;
-
-    while (index < lines.length) {
-        const first = getSimpleAssignment(lines[index], analyses[index]);
-        if (!first) {
-            index++;
-            continue;
-        }
-
-        const group = [{ index: index, assignment: first }];
-        let nextIndex = index + 1;
-        while (nextIndex < lines.length) {
-            const assignment = getSimpleAssignment(lines[nextIndex], analyses[nextIndex]);
-            if (!assignment || assignment.indent != first.indent)
-                break;
-            group.push({ index: nextIndex, assignment: assignment });
-            nextIndex++;
-        }
-
-        if (1 < group.length) {
-            const width = Math.max.apply(null, group.map(item => item.assignment.left.length));
-            group.forEach(item => {
-                result[item.index] = item.assignment.indent
-                    + item.assignment.left
-                    + ' '.repeat(width - item.assignment.left.length)
-                    + ' = '
-                    + item.assignment.right;
-            });
-        }
-
-        index = nextIndex;
-    }
-
-    return result;
 }
 
 class BslFormatter {
 
-    static buildPlatformNameMaps(globals) {
-        return buildPlatformNameMaps(globals);
+    /** Lower-cased lookup maps from {types, methods, globalFunctions} name lists. */
+    static buildPlatformNames(source) {
+        return buildPlatformNames(source);
     }
 
     static getState(text, initialState) {
         const lines = String(text || '').split(/\r?\n/);
-        return scanLines(lines, initialState).state;
+        let state = createState(initialState);
+        lines.forEach(line => { state = scanLine(line, state); });
+        return state;
     }
 
-    static getIndentLevel(text, initialState) {
-        const lines = String(text || '').split(/\r?\n/);
-        let state = createState(initialState);
-        let indent = 0;
-
-        lines.forEach(line => {
-            const analysis = scanLine(line, state);
-            const change = getStructureChange(line, analysis.mask);
-            indent = Math.max(0, indent + change.before + change.after);
-            state = analysis.state;
-        });
-
-        return indent;
+    /** Block nesting level after `text` — the indent of the line that follows it. */
+    static getIndentLevel(text, initialLevel) {
+        const layout = new Layout(String(text || ''), resolveOptions('', { initialLevel: initialLevel }));
+        const count = layout.atoms.length;
+        return count ? layout.levelAfter[count - 1] : Math.max(0, initialLevel || 0);
     }
 
     static format(text, range, options) {
-        options = options || {};
         text = String(text || '');
-        const eolMatch = text.match(/\r\n|\n/);
-        const eol = options.eol || (eolMatch ? eolMatch[0] : '\n');
-        let lines = text.split(/\r?\n/);
-        const initialState = createState(options.initialState);
-
-        if (options.formatSplitStatements)
-            lines = splitStatements(lines, initialState);
-
-        lines = transformNamesAndCommas(lines, initialState, options);
-
-        if (options.formatJoinThen)
-            lines = formatControlFlow(lines, initialState);
-
-        if (options.formatBlankLinesAroundBlocks)
-            lines = formatBlockSpacing(lines, initialState);
-
-        lines = formatIndentation(lines, initialState, options.initialIndent);
-
-        if (options.formatAlignAssignments)
-            lines = alignAssignments(lines, initialState);
-
-        lines = collapseExtraBlankLines(lines, initialState);
-
-        return [{ text: lines.join(eol), range: range }];
+        const resolved = resolveOptions(text, options);
+        const layout = new Layout(text, resolved);
+        const formatted = layout.render();
+        return [{ text: formatted === null ? text : formatted, range: range }];
     }
 }
-
 
 global.BslFormatter = BslFormatter;
 })(window);

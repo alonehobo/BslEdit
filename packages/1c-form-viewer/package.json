@@ -1,8 +1,8 @@
 {
   "name": "1c-form-viewer",
   "private": true,
-  "version": "0.2.3",
-  "description": "Native Windows MCP server for visually inspecting 1C managed forms and spreadsheet templates",
+  "version": "0.3.0",
+  "description": "MCP server for visually inspecting 1C managed forms and spreadsheet templates — native Windows exe and the cross-platform Node.js server",
   "author": {
     "name": "Sergey Martemyanov",
     "email": "sergey.martemyanov@gmail.com",
@@ -16,27 +16,28 @@
   "homepage": "https://github.com/alonehobo/BslEdit/tree/main/packages/1c-form-viewer",
   "type": "module",
   "license": "MIT",
-  "os": [
-    "win32"
-  ],
   "engines": {
     "node": ">=20"
+  },
+  "bin": {
+    "1c-form-viewer-node": "dist/mcp-server.js"
   },
   "scripts": {
     "clean": "node scripts/clean.mjs",
     "build": "npm run build:native",
     "build:assets": "npm run clean && npm run sync && node scripts/copy-assets.mjs && npm run verify:assets",
     "build:native": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-native.ps1",
-    "test": "npm run build:assets && npm run test:unit && npm run test:e2e",
-    "test:unit": "tsx --test tests/files.test.ts tests/native-contract.test.ts tests/native-only.test.ts tests/static-server.test.ts",
-    "test:e2e": "tsx --test tests/*.e2e.test.ts",
+    "build:node": "tsc -p tsconfig.json",
+    "start:node": "npm run build:assets && npm run build:node && node dist/mcp-server.js",
     "verify:assets": "node ../1c-preview-core/scripts/verify.mjs && node scripts/verify-assets.mjs",
     "sync": "node ../1c-preview-core/scripts/sync.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.55.0"
   },
   "devDependencies": {
     "1c-preview-core": "*",
     "@types/node": "^24.0.0",
-    "playwright-core": "^1.55.0",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }

@@ -4,7 +4,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { browserAssets, browserPath, platformIcons, readSprite, stdPictures } from '1c-preview-core/manifest.mjs';
+import { browserAssets, browserPath, platformIcons, readSprite, stdPictures } from '../../1c-preview-core/manifest.mjs';
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const targetWeb = path.join(packageDir, 'build', 'web');

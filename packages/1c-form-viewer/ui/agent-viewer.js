@@ -2,12 +2,20 @@
 'use strict';
 
 var host = document.getElementById('preview');
+var previewPane = document.getElementById('agent-preview-pane');
 var empty = document.getElementById('agent-empty');
 var pathLabel = document.getElementById('agent-path');
 var formatLabel = document.getElementById('agent-format');
 var outline = document.getElementById('outline');
 var outlineToggle = document.getElementById('outline-toggle');
 var current = null;
+var lastRevision = -1;
+var lastAnnotationVersion = -1;
+var sessionAnnotations = root.SessionAnnotations(host, previewPane, function (id) {
+    var item = byId(id);
+    /* Spreadsheet cells are not in the outline; they are never missing. */
+    return { id: id, name: item && item.name || id, title: titleOf(item || { name: id }), missing: !item && !/^r\d+c\d+$/.test(id) };
+});
 var internalMode = new URLSearchParams(window.location.search).get('internal') === '1';
 /* The native server's hidden renderer: nobody looks at this page, so the form
  * gets the whole window without the header and the element outline. */
@@ -67,10 +75,45 @@ function renderOutline() {
     });
 }
 
+/* open_preview base_path: the diff views BSLEdit shows for a file against
+ * its git revision, here against another file. Read-only: nothing offers to
+ * restore a value, the agent edits with edit_form/edit_template. */
+function shortPath(path) {
+    return String(path || '').split(/[\\/]/).filter(Boolean).slice(-4).join('/');
+}
+
+var COMPARABLE = { form: 'FormDiff', template: 'TemplateDiff', dcs: 'DcsDiff' };
+
+function renderComparison(entry) {
+    if (current.diffView && current.diffView.destroy) current.diffView.destroy();
+    var baseName = current.baseRevision
+        ? (current.baseRevision === 'index' ? 'git: индекс'
+            : 'git: ' + current.baseRevision + (current.baseDescription ? ' — ' + current.baseDescription : ''))
+        : shortPath(current.basePath);
+    var left = { model: current.baseModel, label: 'было: ' + baseName };
+    var right = { model: current.model, label: 'стало: ' + shortPath(current.path) };
+    if (current.format === 'form') {
+        current.diffView = root.FormDiffView.render(document, host, {
+            diff: root.FormDiff.compareXml(current.baseContent, current.content), left: left, right: right });
+    } else if (current.format === 'template') {
+        current.diffView = root.TemplateDiffView.render(document, host, {
+            diff: root.TemplateDiff.compare(current.baseModel, current.model), left: left, right: right });
+    } else {
+        current.diffView = root.DcsDiffView.render(document, host, {
+            diff: root.DcsDiff.compareXml(current.baseContent, current.content),
+            leftLabel: left.label, rightLabel: right.label });
+    }
+    formatLabel.textContent = entry.label + ' — сравнение';
+    pathLabel.textContent = (current.baseRevision ? baseName : current.basePath) + ' → ' + current.path;
+    pathLabel.title = pathLabel.textContent;
+}
+
 function renderCurrent() {
     var entry = providerFor(current.format);
     host.hidden = false;
     empty.hidden = true;
+    host.classList.toggle('agent-diff', !!current.basePath);
+    if (current.basePath) { renderComparison(entry); return; }
     Providers.view(entry).render(current.model, host, {
         onSelect: function (item) {
             current.selectedId = itemId(item);
@@ -82,6 +125,7 @@ function renderCurrent() {
     pathLabel.title = current.path;
     renderOutline();
     selectOutlineRow(current.selectedId);
+    sessionAnnotations.updatePositions();
 }
 
 /* The native MCP server sends only the file and asks the page to resolve its
@@ -89,21 +133,32 @@ function renderCurrent() {
  * the session's roots. The Node server passes a resolved context directly. */
 var CONTEXT_MAX_BYTES = 64 * 1024 * 1024;
 var contextCache = {};
+
+/* Metadata resolved for the previous revision of the file - object properties,
+ * the base form, style items. Anything that re-reads the file must drop it,
+ * not only the refresh button: a save in BSLEdit may have changed exactly what
+ * is cached here. */
+function resetContextCache() {
+    Object.keys(contextCache).forEach(function (key) { delete contextCache[key]; });
+}
 var contextToken = 0;
 
 /* Lookups go out in batches to context-batch; see FormContext.createHttpIo. */
 var contextIo = root.FormContext ? root.FormContext.createHttpIo('context-file', 'context-batch') : null;
 
 function load(input) {
-    if (!input || !input.resolveContext || !root.FormContext) return loadResolved(input);
     var token = ++contextToken;
+    if (!input || !input.resolveContext || !root.FormContext) return loadResolved(input);
     return root.FormContext.createResolver(contextIo, { maxBytes: CONTEXT_MAX_BYTES, cache: contextCache })
         .resolve(input.path, input.content || '')
         .then(function (context) {
             if (token !== contextToken) return state();
             var resolved = {};
             Object.keys(input).forEach(function (key) { resolved[key] = input[key]; });
-            Object.keys(context).forEach(function (key) { resolved[key] = context[key]; });
+            Object.keys(context).forEach(function (key) {
+                if (key === 'interfaceMode' && input.interfaceMode && input.interfaceMode !== 'Any') return;
+                resolved[key] = context[key];
+            });
             return loadResolved(resolved);
         });
 }
@@ -111,31 +166,61 @@ function load(input) {
 function loadResolved(input) {
     var entry = Providers.detect(input.content, {});
     if (!entry) fail(Providers.unsupportedMessage);
-    var sameDocument = !!(current && current.path === input.path);
+    var sameDocument = !!(current && current.path === input.path && current.basePath === (input.basePath || '')
+        && current.baseRevision === (input.baseRevision || ''));
     var savedScrolls = sameDocument ? scrolls() : [];
     /* reload_preview re-loads the file that is already open and has to keep the
      * view the agent navigated to; a different file starts clean. */
-    if (!current || current.path !== input.path) Providers.resetViewState();
+    if (!sameDocument) Providers.resetViewState();
     var parsed = Providers.parse(entry, input.content, {
         baseForm: input.baseForm || '',
         objectMeta: input.objectMeta,
+        interfaceMode: input.interfaceMode || 'Any',
+        configInterfaceMode: input.configInterfaceMode || '',
         commonCommands: input.commonCommands || {},
         commonPictures: input.commonPictures || {},
         styleItems: input.styleItems || {},
         refMeta: input.refMeta || {}
     });
     if (!parsed || parsed.error || !parsed.model) fail((parsed && parsed.error) || 'The renderer did not produce a model.');
+    var baseModel = null;
+    if (input.basePath) {
+        var module = COMPARABLE[entry.id];
+        if (!module || !root[module] || !root[module + 'View'])
+            fail('base_path: comparison is supported for managed forms, Template.xml and data composition schemas, not ' + entry.label + '.');
+        var baseEntry = Providers.detect(input.baseContent || '', {});
+        if (!baseEntry || baseEntry.id !== entry.id)
+            fail('base_path is not the same kind of document as path (' + (baseEntry ? baseEntry.label : 'not recognised') + ' vs ' + entry.label + ').');
+        /* Both versions describe the same object: the context resolved for
+         * path (object metadata, base form, styles) serves the earlier one. */
+        var baseParsed = Providers.parse(entry, input.baseContent, {
+            baseForm: input.baseForm || '', objectMeta: input.objectMeta,
+            interfaceMode: input.interfaceMode || 'Any', commonCommands: input.commonCommands || {},
+            commonPictures: input.commonPictures || {}, styleItems: input.styleItems || {}, refMeta: input.refMeta || {}
+        });
+        if (!baseParsed || baseParsed.error || !baseParsed.model)
+            fail('base_path could not be parsed: ' + ((baseParsed && baseParsed.error) || 'no model'));
+        baseModel = baseParsed.model;
+    }
+    if (current && current.diffView && current.diffView.destroy) current.diffView.destroy();
     current = {
         format: entry.id,
         path: input.path,
         content: input.content,
         baseForm: input.baseForm || '',
         objectMeta: input.objectMeta || '',
+        interfaceMode: input.interfaceMode || 'Any',
         refMeta: input.refMeta || {},
         commonCommands: input.commonCommands || {},
         commonPictures: input.commonPictures || {},
         styleItems: input.styleItems || {},
         model: parsed.model,
+        basePath: input.basePath || '',
+        baseContent: input.baseContent || '',
+        baseRevision: input.baseRevision || '',
+        baseDescription: input.baseDescription || '',
+        baseModel: baseModel,
+        diffView: null,
         outline: Providers.view(entry).outline(parsed.model, input.content) || [],
         selectedId: ''
     };
@@ -314,6 +399,7 @@ function selectElement(id) {
     var hit = view.highlight(host, String(id));
     current.selectedId = String(id);
     selectOutlineRow(id);
+    sessionAnnotations.updatePositions();
     return { found: !!hit, element: item, state: state() };
 }
 
@@ -332,6 +418,7 @@ function switchTab(pageId, pagesId) {
     if (matches.length > 1) fail('page_id is ambiguous; provide pages_id. Candidates: ' + matches.map(function (m) { return m.pagesId; }).join(', '));
     root.FormPreview.highlight(host, String(pageId));
     current.selectedId = String(pageId);
+    sessionAnnotations.updatePositions();
     return state();
 }
 
@@ -670,6 +757,12 @@ function whenPicturesDecoded(timeoutMs) {
     });
 }
 
+function reflow() {
+    if (current && current.format === 'form' && root.FormPreview && root.FormPreview.reflow)
+        root.FormPreview.reflow(host);
+    return state();
+}
+
 function capture(scope, elementId) {
     if (scope === 'element' && !elementId) fail('element_id is required when scope is element.');
     return whenPicturesDecoded(3000).then(function () {
@@ -679,7 +772,7 @@ function capture(scope, elementId) {
             root.TemplatePreview.sync(sheet._tpModel ? sheet : host);
         }
         if (scope === 'element') return captureNode(findDom(elementId), false);
-        var sheetScroll = current && current.format !== 'form' ? host.querySelector('.tp-scroll') : null;
+        var sheetScroll = current && current.format !== 'form' && !current.basePath ? host.querySelector('.tp-scroll') : null;
         if (internalMode && scope === 'document' && sheetScroll) return captureTemplateDocument(sheetScroll);
         if (internalMode) return captureNode(host, scope === 'document');
         return captureNode(scope === 'document' ? document.body : document.documentElement, scope === 'document');
@@ -694,6 +787,7 @@ root.AgentViewer = {
     selectElement: selectElement,
     switchTab: switchTab,
     scroll: scroll,
+    reflow: reflow,
     elementSelector: elementSelector,
     capture: capture
 };
@@ -724,7 +818,6 @@ if (internalMode && !bareMode) {
  * `command` endpoint. So the poll stops itself the first time the endpoint is
  * absent rather than issuing a 404 five times a second forever. */
 if (internalMode) {
-    var lastRevision = -1;
     var commandBusy = false;
     var commandTimer = 0;
 
@@ -813,15 +906,23 @@ if (internalMode) {
      * one load instead of restarting (and discarding) it on every poll. */
     var loadingRevision = -1;
     var loadingPromise = null;
+    var loadingToken = 0;
 
     function loadRevision(input) {
+        if (input.revision < lastRevision) return Promise.resolve();
         if (input.revision === loadingRevision && loadingPromise) return loadingPromise;
         loadingRevision = input.revision;
+        var token = ++loadingToken;
+        var available = Array.isArray(input.annotations);
         loadingPromise = Promise.resolve(root.AgentViewer.load(input)).then(function () {
+            if (token !== loadingToken) return;
+            sessionAnnotations.snapshot(available ? input.annotations : [], input.revision, available && /^(form|template|mxl)$/.test(current.format));
             lastRevision = input.revision;
         }, function (error) {
-            loadingRevision = -1;
-            loadingPromise = null;
+            if (token === loadingToken) {
+                loadingRevision = -1;
+                loadingPromise = null;
+            }
             throw error;
         });
         return loadingPromise;
@@ -867,7 +968,24 @@ if (internalMode) {
         fetch('state-meta.json', { cache: 'no-store' })
             .then(function (response) { return response.ok ? response.json() : null; })
             .then(function (meta) {
-                if (!meta || !meta.available || meta.revision === lastRevision) return null;
+                if (editorButton) editorButton.classList.toggle('available', !!(meta && meta.editor));
+                if (!meta || !meta.available) return null;
+                if (meta.revision === lastRevision) {
+                    /* Same file, changed list: the agent resolved a note. */
+                    if (meta.annotationVersion === undefined || meta.annotationVersion === lastAnnotationVersion
+                        || sessionAnnotations.busy()) return null;
+                    var version = meta.annotationVersion;
+                    return fetch('annotations', { cache: 'no-store' })
+                        .then(function (response) { return response.ok ? response.json() : null; })
+                        .then(function (data) {
+                            if (!data || data.revision !== lastRevision || sessionAnnotations.busy()) return;
+                            lastAnnotationVersion = version;
+                            sessionAnnotations.snapshot(data.annotations || [], data.revision, /^(form|template|mxl)$/.test(current.format));
+                        });
+                }
+                /* A newer revision is a different file on disk: the user saved
+                 * in BSLEdit, or an agent tool wrote it. */
+                resetContextCache();
                 return fetch('state.json', { cache: 'no-store' })
                     .then(function (response) { return response.ok ? response.json() : null; })
                     .then(function (input) {
@@ -880,16 +998,32 @@ if (internalMode) {
     /* Re-read the open file (and drop cached metadata) so an agent's edit on
      * disk shows without reopening the preview. Only the native server serves
      * `reload`; elsewhere the button reports that and stays usable. */
+    /* Hand the open file to BSLEdit. Nothing comes back through this page:
+     * the user edits and saves there, the server notices the file changed and
+     * the preview above reloads itself. Unsaved edits change nothing here. */
+    var editorButton = document.getElementById('open-editor');
+    if (editorButton) editorButton.addEventListener('click', function () {
+        editorButton.disabled = true;
+        fetch('open-editor', { method: 'POST', cache: 'no-store' })
+            .then(function (response) {
+                if (!response.ok) return response.text().then(function (text) { throw new Error(text || ('HTTP ' + response.status)); });
+                return null;
+            })
+            .catch(function (error) { window.alert('Не удалось открыть BSLEdit: ' + (error && error.message || error)); })
+            .finally(function () { editorButton.disabled = false; });
+    });
+
     var reloadButton = document.getElementById('reload-preview');
     if (reloadButton) reloadButton.addEventListener('click', function () {
         reloadButton.disabled = true;
         fetch('reload', { method: 'POST', cache: 'no-store' })
             .then(function (response) {
                 if (!response.ok) return response.text().then(function (text) { throw new Error(text || ('HTTP ' + response.status)); });
-                Object.keys(contextCache).forEach(function (key) { delete contextCache[key]; });
+                resetContextCache();
                 lastRevision = -1;
                 loadingRevision = -1;
                 loadingPromise = null;
+                ++loadingToken;
                 refreshState();
             })
             .catch(function (error) { window.alert('Не удалось обновить: ' + (error && error.message || error)); })

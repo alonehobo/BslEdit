@@ -29,6 +29,7 @@ var monacoReady = false;
 var editor = null;
 var model = null;
 var formModuleModel = null;
+
 var state = {
     mdRelations: null,
     /* The Roles tab of an object: null until opened, then 'loading', the
@@ -54,8 +55,19 @@ var state = {
     /* Unsaved edits of the form module, saved alongside the layout. */
     moduleDirty: false,
     minimap: readStoredBool('bsl.minimap', true),
+    /* Пробелы, табуляции и управляющие символы видимы — выбор
+     * пользователя, который держится между файлами и сессиями. */
+    whitespace: readStoredBool('bsl.whitespace', false),
+    /* Расположение исходника и просмотра для markdown и HTML:
+     * 'source', 'split' или 'preview'. Держится между файлами и сессиями. */
+    textLayout: readStoredText('bsl.textLayout', ['source', 'split', 'preview'], 'split'),
     bigFile: false,
     previewId: '',
+    /* The kind of root this document is, when it is one that the unpacking
+     * panel works with: 'external' for an external data processor or report,
+     * 'config' for the root of a configuration or an extension. Empty for
+     * everything else, and the toolbar button to the panel follows it. */
+    epfRoot: '',
     formSelectedId: '',
     outlineKind: 'elements',
     selectedAttributeId: '',
@@ -70,6 +82,9 @@ var state = {
     sarifSelectedId: '',
     baseForm: '',
     objectMeta: '',
+    interfaceMode: 'Any',
+    contextInterfaceMode: 'Any',
+    formInterfaceMode: 'Auto',
     refMeta: {},
     formTitle: '',
     commonCommands: {},
@@ -87,6 +102,14 @@ var formHandlers = {};
 var formFitToken = 0;
 var baselineContent = '';
 var moduleBaselineContent = '';
+/* Номер состояния Monaco, в котором документ дословно совпадает с эталоном,
+ * или -1, когда такого состояния нет (сохранён снимок, снятый до текущих
+ * правок). Пока номер известен, «есть ли несохранённые правки» — сравнение
+ * двух чисел, а не пересборка всего текста на каждое нажатие: Monaco
+ * возвращает прежний номер, когда отмена приводит документ в прежний вид.
+ * Считается там же, где меняется эталон, — см. markBaseline(). */
+var baselineVersion = -1;
+var moduleBaselineVersion = -1;
 var suppressDirty = false;
 var pendingLeaveEdit = false;
 var pendingClose = false;
@@ -115,6 +138,38 @@ function readStoredBool(key, fallback) {
 
 function writeStoredBool(key, on) {
     try { localStorage.setItem(key, on ? '1' : '0'); } catch (e) { /* ignore */ }
+}
+
+/* Такой же ящик для настроек, у которых не два состояния, а несколько. */
+function readStoredText(key, allowed, fallback) {
+    try {
+        var v = localStorage.getItem(key);
+        if (v && allowed.indexOf(v) >= 0) return v;
+    } catch (e) { /* private mode / file:// */ }
+    return fallback;
+}
+
+function writeStoredText(key, value) {
+    try { localStorage.setItem(key, value); } catch (e) { /* ignore */ }
+}
+
+function formInterfaceModeKey(filePath) {
+    return '1cFormViewer.interfaceMode.' + encodeURIComponent(String(filePath || '').replace(/\\/g, '/').toLowerCase());
+}
+
+function storedFormInterfaceMode(filePath) {
+    try {
+        var value = localStorage.getItem(formInterfaceModeKey(filePath));
+        return value === 'Taxi' || value === 'Version85' ? value : '';
+    } catch (e) { return ''; }
+}
+
+function saveFormInterfaceMode(filePath, mode) {
+    try {
+        var key = formInterfaceModeKey(filePath);
+        if (mode === 'Taxi' || mode === 'Version85') localStorage.setItem(key, mode);
+        else localStorage.removeItem(key);
+    } catch (e) { /* storage may be disabled */ }
 }
 
 var formFitWidth = readStoredBool('1cFormViewer.fitWidth', false);
@@ -151,12 +206,13 @@ var parseMemo = null;
 function parseWithProvider(p, content) {
     var m = parseMemo;
     if (m && m.p === p && m.content === content && m.baseForm === state.baseForm
-        && m.objectMeta === state.objectMeta && m.commonCommands === state.commonCommands
+        && m.objectMeta === state.objectMeta && m.interfaceMode === state.interfaceMode && m.commonCommands === state.commonCommands
         && m.commonPictures === state.commonPictures && m.styleItems === state.styleItems
         && m.refMeta === state.refMeta && m.mdRelations === state.mdRelations) return m.result;
     var result = parseWithProviderUncached(p, content);
     parseMemo = {
         p: p, content: content, result: result, baseForm: state.baseForm, objectMeta: state.objectMeta,
+        interfaceMode: state.interfaceMode,
         commonCommands: state.commonCommands, commonPictures: state.commonPictures,
         styleItems: state.styleItems, refMeta: state.refMeta, mdRelations: state.mdRelations
     };
@@ -166,6 +222,7 @@ function parseWithProvider(p, content) {
 function parseWithProviderUncached(p, content) {
     return PreviewProviders.parse(p, content, {
         baseForm: state.baseForm, objectMeta: state.objectMeta,
+        interfaceMode: state.interfaceMode,
         commonCommands: state.commonCommands, commonPictures: state.commonPictures,
         styleItems: state.styleItems, refMeta: state.refMeta, relations: state.mdRelations
     });
@@ -198,12 +255,25 @@ function anyDirty() {
  * than split with the preview iframe. */
 function isDocPreview() { return !!currentProvider(); }
 
-/* A managed form or spreadsheet preview is a read-only representation.  The
- * standalone editor may still be in its global editing session underneath,
- * but saving is allowed only after the user switches back to the XML/source. */
+/* True when it is Monaco that is being edited. A visual preview hides the
+ * source, so editing it is not editing the source; a preview that is edited
+ * where it is drawn saves through previewEditingActive instead. */
 function sourceEditingActive() {
     return !!(!state.sarifMode && state.isEditing
         && (!(state.previewMode && isDocPreview()) || formModuleOpen()));
+}
+
+/* A preview that is edited where it is drawn rather than through its XML: the
+ * pencil turns editing on and the picture stays. */
+function previewEditable() {
+    var provider = currentProvider();
+    return !!(provider && provider.editable && state.previewMode && !state.readOnly && !state.sarifMode);
+}
+
+/* Editing is on and it is the picture that is being edited, so saving means
+ * saving the document the picture was built from. */
+function previewEditingActive() {
+    return !!(state.isEditing && previewEditable());
 }
 
 function languageForPath(path) {
@@ -211,8 +281,8 @@ function languageForPath(path) {
     if (ext === 'bsl' || ext === 'os') return 'bsl';
     if (ext === 'sdbl' || ext === 'query') return 'bsl_query';
     if (ext === 'json' || ext === 'sarif') return 'json';
-    if (ext === 'xml') return 'xml';
-    if (ext === 'md' || ext === 'markdown') return 'markdown';
+    if (ext === 'xml' || ext === 'mxlx') return 'xml';
+    if (ext === 'md' || ext === 'markdown' || ext === 'mdc') return 'markdown';
     if (ext === 'ps1' || ext === 'psm1' || ext === 'psd1') return 'powershell';
     if (ext === 'html' || ext === 'htm') return 'html';
     return 'plaintext';
@@ -359,6 +429,119 @@ function loadThemeClass(req) {
     return provider && provider.lightChrome ? 'theme-light' : 'theme-dark';
 }
 
+// ------------------------------------------------ MCP preview annotations
+
+/* A window the form viewer MCP server opened (--editor) carries that
+ * preview's base URL. While the same form is shown, its form view offers the
+ * annotations of the MCP preview page, kept in that session where the agent
+ * reads them with preview(operation="annotations"). */
+var previewSession = null;       // { path, url }
+var sessionAnnotations = null;
+var annotationRevision = null;
+var annotationVersion = null;
+var annotationPollTimer = null;
+var annotationFetching = false;
+
+function annotationSessionActive() {
+    var provider = currentProvider();
+    return !!(previewSession && sessionAnnotations && provider && /^(form|template|mxl)$/.test(provider.id)
+        && String(state.filePath || '').toLowerCase() === previewSession.path.toLowerCase());
+}
+
+function withdrawSessionAnnotations() {
+    if (annotationRevision === null) return;
+    annotationRevision = null;
+    sessionAnnotations.snapshot([], -1, false);
+}
+
+function syncSessionAnnotations() {
+    if (!sessionAnnotations) return;
+    if (!annotationSessionActive()) { withdrawSessionAnnotations(); return; }
+    if (annotationFetching) return;
+    annotationFetching = true;
+    var session = previewSession;
+    fetch(session.url + 'annotations', { cache: 'no-store' }).then(function (response) {
+        /* A closed preview is gone for good; a busy server is asked again. */
+        if (response.status === 404) {
+            if (previewSession === session) { previewSession = null; withdrawSessionAnnotations(); }
+            return null;
+        }
+        return response.ok ? response.json() : null;
+    }).then(function (data) {
+        if (!data || previewSession !== session || !annotationSessionActive()) return;
+        /* A poll notices a reload of the file on the server (a new revision,
+         * cleared list) and a change to the list made elsewhere, such as the
+         * agent resolving a note (a new version); an edit
+         * in progress waits for the next one. */
+        if (data.revision === annotationRevision && data.version === annotationVersion || sessionAnnotations.busy()) return;
+        annotationRevision = data.revision;
+        annotationVersion = data.version;
+        sessionAnnotations.snapshot(data.annotations || [], data.revision, true);
+        placeAnnotationTray();
+    }).catch(function () {}).then(function () { annotationFetching = false; });
+}
+
+function initSessionAnnotations() {
+    var formEl = formPreviewEl();
+    if (!window.SessionAnnotations || !formEl || !document.getElementById('annotation-toggle')) return;
+    sessionAnnotations = SessionAnnotations(formEl, document.getElementById('workspace'), function (id) {
+        var index = formElementIndex(id);
+        var entry = index >= 0 ? formElementItems[index] : null;
+        var name = entry && entry.name || id;
+        return { id: id, name: name, title: entry && entry.title && entry.title !== name ? entry.title + ' (' + name + ')' : name,
+            /* Spreadsheet cells are not in the element list; they are never missing. */
+            missing: formElementItems.length > 0 && !entry && !/^r\d+c\d+$/.test(id) };
+    }, { baseUrl: previewSession ? previewSession.url : '', selectedId: function () { return state.formSelectedId || ''; },
+        reveal: revealAnnotation });
+    /* The form is redrawn on every edit, mode switch and fit; the markers
+     * follow the elements. */
+    var scheduled = false;
+    new MutationObserver(function () {
+        if (scheduled) return;
+        scheduled = true;
+        requestAnimationFrame(function () { scheduled = false; placeAnnotationTray(); sessionAnnotations.updatePositions(); });
+    }).observe(formEl, { childList: true, subtree: true, attributes: true, attributeFilter: ['hidden', 'style', 'class'] });
+    /* Dragging the element panel wider changes the form's width alone. */
+    if (window.ResizeObserver) new ResizeObserver(placeAnnotationTray).observe(formEl);
+}
+
+/* A spreadsheet note selects its cells rNcM (to endElementId for a range) by
+ * id, since the agent may name them freely; notes saved before the range was
+ * kept fall back to the R1C1:R2C2 name. A form note selects its element. */
+function revealAnnotation(entry) {
+    var cell = /^r(\d+)c(\d+)$/;
+    var from = cell.exec(String(entry.elementId || ''));
+    var to = cell.exec(String(entry.endElementId || ''));
+    var named = /^R(\d+)C(\d+)(?::R(\d+)C(\d+))?$/.exec(String(entry.elementName || ''));
+    if (from && templateSession) {
+        var r0 = +from[1], c0 = +from[2], r1 = r0, c1 = c0;
+        if (to) { r1 = +to[1]; c1 = +to[2]; }
+        else if (named && named[3]) { r0 = +named[1] - 1; c0 = +named[2] - 1; r1 = +named[3] - 1; c1 = +named[4] - 1; }
+        templateSession.select({ mode: 'cells', anchor: { row: r0, col: c0 }, focus: { row: r1, col: c1 } });
+        var cell = formPreviewEl().querySelector('[data-id="r' + r0 + 'c' + c0 + '"]');
+        if (cell && cell.scrollIntoView) cell.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return;
+    }
+    selectFormElement(entry.elementId);
+}
+
+/* The list stays over the form, not over the element panel beside it. */
+function placeAnnotationTray() {
+    var tray = document.getElementById('annotation-tray');
+    var formEl = formPreviewEl();
+    var workspace = document.getElementById('workspace');
+    if (!tray || !formEl || !workspace || formEl.hidden || tray.hasAttribute('data-moved')) return;
+    var gap = workspace.getBoundingClientRect().right - formEl.getBoundingClientRect().right;
+    tray.style.right = Math.max(0, gap) + 8 + 'px';
+}
+
+function setPreviewSession(req) {
+    if (!req.previewSession) return;
+    previewSession = { path: String(req.path || ''), url: String(req.previewSession).replace(/\/?$/, '/') };
+    if (sessionAnnotations) sessionAnnotations.setBaseUrl(previewSession.url);
+    if (!annotationPollTimer) annotationPollTimer = setInterval(syncSessionAnnotations, 2000);
+}
+
 function onHostMessage(ev) {
     var d = ev.data;
     if (!d || typeof d !== 'object') return;
@@ -367,11 +550,24 @@ function onHostMessage(ev) {
             /* Paint the page chrome before Monaco finishes so a dark WebView2
              * surface is not left empty while the bundle parses. */
             document.documentElement.className = loadThemeClass(d);
+            /* Настройки есть только у отдельного окна BSLEdit, не у Lister. */
+            var settingsBtn = document.getElementById('btn-settings');
+            if (settingsBtn) settingsBtn.style.display = d.settings ? '' : 'none';
+            /* An .epf/.erf opens on its unpacking panel, which needs no Monaco. */
+            if (d.language === 'epf') { showEpf(d); break; }
+            if (d.language === 'pack') { showPack(d); break; }
             /* Fetch the markdown renderer in parallel with Monaco, not after it. */
             if (d.language === 'markdown') loadMarked();
+            setPreviewSession(d);
             if (monacoReady) applyLoad(d); else pending = d;
             break;
         case 'find':    doFind(d); break;
+        case 'focusEditor':
+            if (editor) {
+                editor.focus();
+                setTimeout(function () { if (editor) editor.focus(); }, 0);
+            }
+            break;
         case 'copy':    if (editor) editor.trigger('host', 'editor.action.clipboardCopyAction', null); break;
         case 'selectAll':
             if (editor && editor.getModel()) {
@@ -384,12 +580,23 @@ function onHostMessage(ev) {
         case 'park':    parkEditor(); break;
         case 'saved':   onSaveResult(d.ok, d.saveId, d.conflict, d.target); break;
         case 'reverted': onReverted(d); break;
+        case 'externalChange': onExternalChange(d); break;
+        case 'gitInfo':
+        case 'gitContent':
+        case 'gitCommitPlan':
+        case 'gitCommitted': onGitMessage(d); break;
         case 'sourceContent': onSarifSourceContent(d); break;
         case 'rootChosen': onSarifRootChosen(d); break;
-        case 'pdfDone': clearPrintContent(); break;
         case 'screenshotDone': finishFormScreenshot(!!d.ok); break;
         case 'confirmClose': requestClose(); break;
         case 'openFailed': onOpenFailed(d); break;
+        case 'templateSaved': onTemplateSaved(d); break;
+        case 'openWindowFailed': if (d && d.path) navigateTo(d.path, false, {
+            line: d.line, search: d.search, regexp: d.regexp, matchCase: d.matchCase
+        }); break;
+        default:
+            if (typeof d.cmd === 'string' && d.cmd.indexOf('epf') === 0 && window.EpfUnpack) EpfUnpack.onMessage(d);
+            if (typeof d.cmd === 'string' && d.cmd.indexOf('pack') === 0 && window.EpfPack) EpfPack.onMessage(d);
     }
 }
 
@@ -496,6 +703,7 @@ function defineBsl(monaco) {
             increaseIndentPattern: /^\s*(Процедура|Procedure|Функция|Function|Если|If|Иначе|Else|ИначеЕсли|ElsIf|Пока|While|Для|For|Попытка|Try|Исключение|Except)\b/i,
             decreaseIndentPattern: /^\s*(КонецПроцедуры|EndProcedure|КонецФункции|EndFunction|КонецЕсли|EndIf|КонецЦикла|EndDo|КонецПопытки|EndTry|Иначе|Else|ИначеЕсли|ElsIf|Исключение|Except)\b/i
         },
+        onEnterRules: window.BslEditing ? BslEditing.enterRules(monaco) : [],
         folding: {
             markers: {
                 start: new RegExp('^\\s*#\\s*(Область|Region)\\b', 'i'),
@@ -538,7 +746,10 @@ function defineBsl(monaco) {
             'editor.selectionHighlightBackground': '#fef6d0',
             'editor.inactiveSelectionBackground': '#fef6d0',
             'editorLineNumber.foreground': '#2b91af',
-            'editorLineNumber.activeForeground': '#0000ff'
+            'editorLineNumber.activeForeground': '#0000ff',
+            /* Отметки непечатаемых символов. Умолчание vs — #33333333, то
+             * есть 20 % непрозрачности: на экране их попросту не видно. */
+            'editorWhitespace.foreground': '#8A8A8A'
         }
     });
 
@@ -583,7 +794,8 @@ function defineBsl(monaco) {
             'editorCursor.foreground': '#AEAFAD',
             'editorWidget.background': '#252526',
             'editorWidget.foreground': '#CCCCCC',
-            'minimap.background': '#1E1E1E'
+            'minimap.background': '#1E1E1E',
+            'editorWhitespace.foreground': '#7A7A7A'
         }
     });
 
@@ -613,11 +825,15 @@ function defineBsl(monaco) {
     monaco.languages.registerDefinitionProvider('bsl', {
         provideDefinition: function (m, pos) { return findLocalDefinition(m, pos); }
     });
+    if (window.BslEditing) BslEditing.install(monaco, 'bsl');
     monaco.languages.registerCompletionItemProvider('bsl', {
-        provideCompletionItems: function (m, pos) { return snippetSuggestions(m, pos); }
+        triggerCharacters: ['.'],
+        provideCompletionItems: function (m, pos) { return completionSuggestions(m, pos); }
     });
     monaco.languages.registerDocumentFormattingEditProvider('bsl', {
-        provideDocumentFormattingEdits: function (m) { return formatBsl(m, null); },
+        provideDocumentFormattingEdits: function (m) { return formatBsl(m, null); }
+    });
+    monaco.languages.registerDocumentRangeFormattingEditProvider('bsl', {
         provideDocumentRangeFormattingEdits: function (m, range) { return formatBsl(m, range); }
     });
 
@@ -858,13 +1074,82 @@ function snippetSuggestions(m, pos) {
     return { suggestions: out };
 }
 
+function completionSuggestions(m, pos) {
+    var result = snippetSuggestions(m, pos);
+    if (!state.isEditing || !window.BslCompletionData) return result;
+    var word = m.getWordUntilPosition(pos);
+    var range = {
+        startLineNumber: pos.lineNumber,
+        endLineNumber: pos.lineNumber,
+        startColumn: word.startColumn,
+        endColumn: word.endColumn
+    };
+    var kinds = monaco.languages.CompletionItemKind;
+    var entries = window.BslCompletionData;
+    for (var i = 0; i < entries.length; i++) {
+        var item = entries[i];
+        var suggestion = {
+            label: item.label,
+            kind: kinds[item.kind] || kinds.Text,
+            insertText: item.label,
+            detail: item.detail,
+            filterText: item.filterText || item.label,
+            range: range
+        };
+        if (item.documentation) suggestion.documentation = item.documentation;
+        result.suggestions.push(suggestion);
+    }
+    var metadata = window.BslMetadataCompletion;
+    var metadataContext = metadata && metadata.context(m, pos);
+    if (metadataContext && (metadataContext.category || metadataContext.commonModuleCandidate)) {
+        var pending = metadataContext.commonModuleCandidate
+            ? metadata.commonModuleSuggestions(state.filePath, formContextIo, metadataContext.commonModuleCandidate)
+            : metadata.suggestions(state.filePath, formContextIo, metadataContext.category);
+        return pending.then(function (items) {
+            for (var j = 0; j < items.length; j++) {
+                var item = items[j];
+                result.suggestions.push({
+                    label: item.label,
+                    kind: kinds[item.kind] || kinds.Text,
+                    insertText: item.insertText,
+                    detail: item.detail,
+                    filterText: item.filterText,
+                    range: range
+                });
+            }
+            return result;
+        }, function () { return result; });
+    }
+    return result;
+}
+
+/* The Configurator indents a line by its block nesting level alone, so a range
+ * has to know how deep it starts; the final newline belongs to the document,
+ * not to a range inside it. */
 function formatBsl(m, range) {
     if (!window.BslFormatter) return [];
     var full = m.getFullModelRange();
     var use = range || full;
     var text = m.getValueInRange(use);
+    var options = m.getOptions();
+    var level = 0;
     try {
-        return window.BslFormatter.format(text, use, { eol: m.getEOL() }) || [];
+        if (range) {
+            level = window.BslFormatter.getIndentLevel(m.getValueInRange({
+                startLineNumber: 1,
+                startColumn: 1,
+                endLineNumber: use.startLineNumber,
+                endColumn: use.startColumn
+            }));
+        }
+        return window.BslFormatter.format(text, use, {
+            eol: m.getEOL(),
+            useTabs: !options.insertSpaces,
+            indentSize: options.tabSize,
+            initialLevel: level,
+            indentFirstLine: Boolean(range) && use.startColumn === 1,
+            insertFinalNewline: !range
+        }) || [];
     } catch (e) {
         return [];
     }
@@ -978,7 +1263,7 @@ function defineJsonXml(monaco) {
 function editorOptions(big) {
     return {
         theme: state.isDark ? 'bsl-dark' : 'bsl-light',
-        readOnly: state.sarifMode || !state.isEditing,
+        readOnly: state.sarifMode || !state.isEditing || dcsLocked(),
         fontSize: state.fontSize,
         fontFamily: "Consolas, 'Courier New', monospace",
         fontLigatures: false,
@@ -994,7 +1279,11 @@ function editorOptions(big) {
         smoothScrolling: false,
         automaticLayout: true,
         wordWrap: (state.language === 'markdown' || state.language === 'html') ? 'on' : 'off',
-        renderWhitespace: 'none',
+        renderWhitespace: state.whitespace ? 'all' : 'none',
+        guides: { indentation: false, highlightActiveIndentation: false },
+        renderControlCharacters: !!state.whitespace,
+        /* Почему не 'svg' — см. whitespaceRenderOptions(). */
+        experimentalWhitespaceRendering: 'font',
         links: false,
         contextmenu: true,
         quickSuggestions: !!(state.isEditing && isBslModule()),
@@ -1043,7 +1332,7 @@ function resolveFormContext(req) {
     var token = ++formContextToken;
     var filePath = req.path || '';
     setFormContextPending(false);
-    if (!req.resolveContext || !window.FormContext || !/\.xml$/i.test(filePath)) return null;
+    if (!req.resolveContext || !window.FormContext || !/\.(?:xml|form)$/i.test(filePath)) return null;
     /* Only a form reads its owner's metadata, styles and commands; an object
      * descriptor or a template would only wait for context it never uses. */
     var claimed = detectProvider(req.content || '');
@@ -1056,10 +1345,13 @@ function resolveFormContext(req) {
             setFormContextPending(false);
             state.baseForm = context.baseForm;
             state.objectMeta = context.objectMeta;
+            state.contextInterfaceMode = context.interfaceMode || 'Any';
+            if (state.formInterfaceMode === 'Auto') state.interfaceMode = state.contextInterfaceMode;
             state.refMeta = context.refMeta || {};
             state.commonCommands = context.commonCommands;
             state.commonPictures = context.commonPictures;
             state.styleItems = context.styleItems;
+            syncFormInterfaceModeMenu();
             if (state.previewMode && isDocPreview()) {
                 refreshDocPreview();
                 allItems = [];
@@ -1114,15 +1406,23 @@ function resolveMdRelations(req) {
     state.mdRelations = null;
     state.mdRoles = null;
     state.mdRolesAvailable = false;
-    if (!window.MetadataRelations || !formContextIo || !/\.xml$/i.test(filePath)) return;
+    if (!window.MetadataRelations || !formContextIo || !/\.(?:xml|form)$/i.test(filePath)) return;
     var claimed = detectProvider(req.content || '');
     if (!claimed || claimed.id !== 'metadata') return;
     var parsed = MetadataPreview.parse(req.content || '');
-    if (!parsed.model || /^External/.test(parsed.model.kind)) return;
-    state.mdRolesAvailable = true;
-    mdRolesTarget = { path: filePath, kind: parsed.model.kind, name: parsed.model.name, token: token };
+    if (!parsed.model) return;
+    /* An external object has no configuration to scan, only its templates. */
+    var external = /^External/.test(parsed.model.kind);
+    if (!external) {
+        state.mdRolesAvailable = true;
+        mdRolesTarget = { path: filePath, kind: parsed.model.kind, name: parsed.model.name, token: token };
+    }
+    var templates = parsed.model.groups.filter(function (g) { return g.kind === 'Template'; })
+        .reduce(function (names, g) { return names.concat(g.items.map(function (t) { return t.name; })); }, []);
+    var forms = parsed.model.groups.filter(function (g) { return g.kind === 'Form'; })
+        .reduce(function (names, g) { return names.concat(g.items.map(function (f) { return f.name; })); }, []);
     MetadataRelations.create(formContextIo, mdRelationsCache)
-        .load(filePath, parsed.model.kind, parsed.model.name)
+        .load(filePath, parsed.model.kind, parsed.model.name, templates, forms)
         .then(function (relations) {
             if (!relations || token !== mdRelationsToken || state.filePath !== filePath) return;
             state.mdRelations = relations;
@@ -1139,11 +1439,43 @@ function resolveMdRelations(req) {
 }
 
 function applyLoad(req) {
+    if (window.EpfUnpack) EpfUnpack.hide();
+    if (window.EpfPack) EpfPack.hide();
+    /* Сообщение о прошлом файле новому документу не принадлежит. */
+    hideExternalBar();
     var content = req.content || '';
+    var isProjSource = /\.form$/i.test(String(req.path || ''));
+    var isProjMetadata = /\.mdo$/i.test(String(req.path || ''));
+    var projModuleView = isProjSource && req.formView === 'module' && !!req.formModulePath;
+    if (isProjSource && !projModuleView && window.ProjFormConverter) {
+        var converted = window.ProjFormConverter.convert(content);
+        if (!converted.ok) {
+            showTemplateError('Структура формы проекта пока не поддерживается; показан исходный Form.form.');
+            req.language = 'xml';
+            req.readOnly = true;
+        } else {
+            content = converted.xml;
+            req.language = 'xml';
+            if (!projModuleView) req.readOnly = true;
+        }
+    }
+    if (isProjMetadata && window.ProjMetadataConverter) {
+        var metadataConverted = window.ProjMetadataConverter.convert(content);
+        if (!metadataConverted.ok) {
+            showTemplateError('Этот тип объекта проекта пока не поддерживается; показан исходный .mdo.');
+            req.language = 'xml';
+            req.readOnly = true;
+        } else {
+            content = metadataConverted.xml;
+            req.language = 'xml';
+            req.readOnly = true;
+        }
+    }
+    req.content = content;
     state.language = req.language || 'bsl';
     state.isDark = preferredDark();
     state.fontSize = req.fontSize || 14;
-    state.readOnly = (req.readOnly !== false);
+    state.readOnly = (req.readOnly !== false) || (isProjSource && !projModuleView) || isProjMetadata;
     state.isEditing = !state.readOnly;
     state.previewMode = false;
     state.filePath = req.path || '';
@@ -1153,15 +1485,34 @@ function applyLoad(req) {
     state.formWorkbenchView = req.formView === 'module' && state.formModulePath ? 'module' : 'form';
     state.baseForm = req.baseForm || '';
     state.objectMeta = req.objectMeta || '';
+    state.contextInterfaceMode = req.interfaceMode || 'Any';
+    state.formInterfaceMode = storedFormInterfaceMode(state.filePath) || 'Auto';
+    state.interfaceMode = state.formInterfaceMode === 'Auto'
+        ? state.contextInterfaceMode : state.formInterfaceMode;
     state.refMeta = req.refMeta || {};
     state.commonCommands = req.commonCommands || {};
     state.commonPictures = req.commonPictures || {};
     state.styleItems = req.styleItems || {};
+    state.epfRoot = epfRootKind(content);
     var contextReady = resolveFormContext(req);
     resolveMdRelations(req);
     var loadToken = formContextToken;
     var loaded = detectProvider(content);
     state.previewId = loaded ? loaded.id : '';
+    /* A form or a template opens as a picture to look at, not as a document
+     * being typed into: the pencil is what turns the mockup into an editor,
+     * and until it is pressed a stray click cannot change the layout. A text
+     * file still opens ready to edit - that is what an editor is for - and so
+     * does a form opened on its module tab, which is text. */
+    if (loaded && loaded.editable && state.formWorkbenchView !== 'module') state.isEditing = false;
+    /* BSLEdit's «Настройки» can turn both around: a template straight into
+     * editing, a module into reading until the pencil. Read-only files stay so. */
+    if (!state.readOnly) {
+        var isTemplate = loaded && (loaded.id === 'template' || loaded.id === 'mxl');
+        var isModule = state.formWorkbenchView === 'module' || (!loaded && state.language === 'bsl');
+        if (isTemplate && req.openTemplates === 'edit') state.isEditing = true;
+        if (isModule && req.openModules === 'view') state.isEditing = false;
+    }
     state.sarifMode = !!(loaded && loaded.id === 'sarif');
     state.sarifRoot = '';
     state.sarifSourcePath = '';
@@ -1189,10 +1540,13 @@ function applyLoad(req) {
     trackNavigation(state.filePath);
     state.dirty = false;
     state.moduleDirty = false;
-    baselineContent = content;
-    moduleBaselineContent = state.formModule;
     pendingLeaveEdit = false;
     hideSavePrompt();
+    resetDiffPanel();
+    /* Спрашиваем git сразу: кнопка сравнения показывается вне режима правки
+     * только тогда, когда файлу есть с чем сравниваться. */
+    requestGitInfo('file');
+    if (state.formModulePath) requestGitInfo('module');
 
     var big = content.length > BIG_FILE_CHARS;
     var old = model;
@@ -1200,6 +1554,13 @@ function applyLoad(req) {
     model = monaco.editor.createModel(content, state.language);
     formModuleModel = state.formModulePath
         ? monaco.editor.createModel(state.formModule, 'bsl') : null;
+    /* Monaco normalises line endings (and may consume a leading BOM). Its
+     * value is the snapshot every later edit and undo is compared with; raw
+     * host text would leave a document dirty even after an exact undo. */
+    baselineContent = model.getValue();
+    baselineVersion = model.getAlternativeVersionId();
+    moduleBaselineContent = formModuleModel ? formModuleModel.getValue() : state.formModule;
+    moduleBaselineVersion = formModuleModel ? formModuleModel.getAlternativeVersionId() : -1;
     if (!big && model.getLineCount() > BIG_FILE_LINES) big = true;
     state.bigFile = !!big;
 
@@ -1209,18 +1570,23 @@ function applyLoad(req) {
     if (oldFormModule) oldFormModule.dispose();
 
     model.onDidChangeContent(function () {
-        if (!suppressDirty) state.dirty = true;
+        /* Undo back to the loaded/saved snapshot is clean. Treating every
+         * Monaco change as dirty made the XML return byte-for-byte while the
+         * save button and window title still kept their star. */
+        if (!suppressDirty) state.dirty = modelDirty(model, baselineContent, baselineVersion);
         updateStatusBar();
         if (!applyingFromPreview && !suppressDirty) schedulePreviewRefresh();
     });
     if (formModuleModel) formModuleModel.onDidChangeContent(function () {
-        if (!suppressDirty) state.moduleDirty = true;
+        if (!suppressDirty)
+            state.moduleDirty = modelDirty(formModuleModel, moduleBaselineContent, moduleBaselineVersion);
         updateStatusBar();
     });
 
     // A reused instance may still be showing the previous file's UI state.
     document.getElementById('outline-filter').value = '';
     editor.setScrollPosition({ scrollTop: 0, scrollLeft: 0 });
+    applyInitialSearch(req);
 
     /* A form opens in its light mockup. Theming the loading overlay and editor
      * dark here and light once the preview shows flashed dark -> light on
@@ -1235,8 +1601,11 @@ function applyLoad(req) {
      * the bare editor first and then the preview reads as several flashes. */
     var show = function () {
         if (loadToken !== formContextToken) return;
-        setPreviewMode(state.language === 'markdown' || state.language === 'html' || isDocPreview(),
-                       finishFirstPaint);
+        /* Выбор «только исходник» держится и при открытии следующего файла:
+         * иначе каждый .md снова открывался бы в два окна. */
+        var wantsPreview = isDocPreview()
+            || (textLayoutAvailable() && state.textLayout !== 'source');
+        setPreviewMode(wantsPreview, finishFirstPaint);
         /* Outline scanning walks every line, so let the editor paint first. */
         setTimeout(refreshOutline, 0);
     };
@@ -1245,6 +1614,7 @@ function applyLoad(req) {
      * Usually the context is quick; wait for it briefly under the overlay and
      * fall back to the bare form (updated later) only when it is slow. */
     refreshHelp();
+    refreshUpTarget();
     if (contextReady && isDocPreview()) {
         var shown = false;
         var once = function () { if (!shown) { shown = true; show(); } };
@@ -1334,8 +1704,11 @@ function parkEditor() {
     state.moduleDirty = false;
     baselineContent = '';
     moduleBaselineContent = '';
+    baselineVersion = -1;
+    moduleBaselineVersion = -1;
     pendingLeaveEdit = false;
     hideSavePrompt();
+    resetDiffPanel();
     if (state.previewMode) setPreviewMode(false);
     state.previewId = '';
     renderOutline();
@@ -1348,16 +1721,16 @@ function wireEditorCommands() {
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, saveFile);
     editor.addAction({
         id: 'bsl.format',
-        label: 'Форматировать документ',
+        label: 'Форматировать выделение или документ',
         keybindings: [monaco.KeyMod.Alt | monaco.KeyMod.Shift | monaco.KeyCode.KeyF],
         run: function () { formatDocument(); }
     });
     editor.addAction({
         id: 'bsl.comment',
         label: 'Комментировать строку',
-        keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.Slash],
         run: function () { toggleLineComment(); }
     });
+    if (window.BslEditing) BslEditing.attach(monaco, editor, function () { return isBslModule() || formModuleOpen(); });
 }
 
 /* Monaco's _applyLayout sets .lines-content to 16777216×16777216. That square
@@ -1366,25 +1739,31 @@ function wireEditorCommands() {
  * (860 × 19px ≈ 16340). Width can stay modest; height must cover scrollHeight. */
 var MAX_LINES_CONTENT_WIDTH = 100000;
 var MAX_LINES_CONTENT_HEIGHT = 1000000;   // same ceiling Monaco uses for margins
-function clampLinesContent() {
-    if (!editor) return;
-    var root = editor.getDomNode();
+function clampLinesContentOf(instance) {
+    if (!instance) return;
+    var root = instance.getDomNode();
     if (!root) return;
     var lc = root.querySelector('.lines-content');
     if (!lc) return;
-    var layout = editor.getLayoutInfo();
-    var h = Math.max(editor.getScrollHeight(), layout.height) + layout.height + 64;
-    var w = Math.max(editor.getScrollWidth(), layout.width) + layout.width + 64;
+    var layout = instance.getLayoutInfo();
+    var h = Math.max(instance.getScrollHeight(), layout.height) + layout.height + 64;
+    var w = Math.max(instance.getScrollWidth(), layout.width) + layout.width + 64;
     if (h > MAX_LINES_CONTENT_HEIGHT) h = MAX_LINES_CONTENT_HEIGHT;
     if (w > MAX_LINES_CONTENT_WIDTH) w = MAX_LINES_CONTENT_WIDTH;
     if (lc.style.height !== h + 'px') lc.style.height = h + 'px';
     if (lc.style.width !== w + 'px') lc.style.width = w + 'px';
 }
 
+function clampLinesContent() { clampLinesContentOf(editor); }
+
+function wireScrollFixFor(instance) {
+    clampLinesContentOf(instance);
+    instance.onDidLayoutChange(function () { clampLinesContentOf(instance); });
+    instance.onDidScrollChange(function () { clampLinesContentOf(instance); });
+}
+
 function wireEditorScrollFix() {
-    clampLinesContent();
-    editor.onDidLayoutChange(clampLinesContent);
-    editor.onDidScrollChange(clampLinesContent);
+    wireScrollFixFor(editor);
 }
 
 // --------------------------------------------------------------- SARIF source
@@ -1605,6 +1984,8 @@ function updateStatusBar() {
             (sarifSourceMeta ? ', ' + sarifSourceMeta.eol : '')) : '';
     }
     if (!state.sarifMode && statusEl) { statusEl.textContent = ''; statusEl.classList.remove('error'); }
+    syncUndoButtons();
+    syncDirtyMarks();
 
     /* Over a form mockup the hidden XML caret means nothing: show where the
      * selected element sits and what it is bound to instead. */
@@ -1669,7 +2050,8 @@ function renderFormStatus(crumbsEl, elementEl) {
     var entry = formElementItems[index];
     var view = previewView();
     var kindLabel = entry.tag && view && view.itemKindTitle ? view.itemKindTitle(entry.tag) : entry.tag;
-    elementEl.textContent = [kindLabel, entry.dataPath, entry.typeName]
+    var typeShown = entry.typeName && window.FormPreview ? FormPreview.typePresentation(entry.typeName) : entry.typeName;
+    elementEl.textContent = [kindLabel, entry.dataPath && ruDataPath(entry.dataPath), typeShown]
         .filter(function (part) { return !!part; }).join(' \u00B7 ');
 }
 
@@ -1707,6 +2089,11 @@ function parseDocOutline() {
     }
     allItems = p.id === 'form' && state.outlineKind === 'attributes'
         ? formAttributeItems : formElementItems;
+    /* Some document trees have a meaningful root of their own. Select it on
+     * first open so its inspector is visible immediately; a selection restored
+     * by navigation always wins. */
+    if (!state.formSelectedId && p.defaultSelection)
+        state.formSelectedId = String(p.defaultSelection);
 }
 
 function outlineParents(items) {
@@ -1809,10 +2196,275 @@ function selectOutlineKind(kind) {
     renderOutline();
 }
 
+/* ---- Moving form elements ----------------------------------------------
+ *
+ * The order of ChildItems in the document is the order on the form, so the
+ * tree moves an element by rewriting the document and everything else is
+ * drawn from it again. The engine owns the rules of what may lie where; the
+ * tree only offers the moves it would accept, and reports the refusal when
+ * one still comes back. */
+
+/* FormEdit.moveTree for the document as it stands. It is read on every arrow
+ * press and on every drag step, and the document only changes between them,
+ * so it is kept for the version of the model it was built from. */
+var formMoveTreeCache = { version: -1, list: [] };
+
+function formMoveTree() {
+    if (!model || !window.FormEdit || !window.FormEdit.moveTree) return [];
+    var version = model.getVersionId();
+    if (formMoveTreeCache.version === version) return formMoveTreeCache.list;
+    var list;
+    try { list = window.FormEdit.moveTree(model.getValue()); } catch (err) { list = []; }
+    formMoveTreeCache = { version: version, list: list };
+    return list;
+}
+
+function formMoveEntry(name) {
+    var tree = formMoveTree();
+    for (var i = 0; i < tree.length; i++) if (tree[i].name === name) return tree[i];
+    return null;
+}
+
+/* True while the tree may reorder the form: an element list of a form open for
+ * editing, shown in document order. Sorted by name it shows an order the
+ * document does not have, and an arrow would move the element somewhere the
+ * user is not looking. */
+function formMovingEnabled() {
+    return formOutlineActive() && state.outlineKind === 'elements'
+        && state.isEditing && !state.readOnly && state.previewId === 'form'
+        && !state.sortByName && !!(window.FormEdit && window.FormEdit.moveTree && window.DocEdits);
+}
+
+/* One move, as the engine takes it: into a container, or before/after a
+ * neighbour. Everything the change touches is redrawn from the document, and
+ * the element keeps the selection it had. */
+function moveFormElement(name, params) {
+    if (!formMovingEnabled() || !name || !model) return false;
+    var before = model.getValue();
+    var request = { element: name };
+    Object.keys(params || {}).forEach(function (key) { request[key] = params[key]; });
+    var out;
+    try {
+        out = window.FormEdit.moveElement(before, request);
+    } catch (err) {
+        showTemplateError((err && err.message) || String(err));
+        return false;
+    }
+    if (!out || !out.xml || out.xml === before) return false;
+    var keep = state.formSelectedId;
+    applyPreviewEdits(window.DocEdits.textEdits(before, out.xml));
+    showTemplateError('');
+    refreshDocPreview();
+    parseDocOutline();
+    renderOutline();
+    if (keep) {
+        var view = previewView();
+        if (view && view.highlight) view.highlight(formPreviewEl(), keep);
+        highlightFormOutline(keep);
+    }
+    return true;
+}
+
+/* The neighbours of an element: the items the document keeps in the same
+ * container, in its own order. */
+function formMoveNeighbours(entry) {
+    if (!entry) return [];
+    return formMoveTree().filter(function (row) { return row.container === entry.container; });
+}
+
+/* Whether the element has anywhere to step: a lone item in its container
+ * stays where it is, everything else can be moved. */
+function formMoveStepEnabled(entry) {
+    return formMoveNeighbours(entry).length > 1;
+}
+
+/* The arrows and Ctrl+Shift+Up/Down: one step among the neighbours the
+ * document gives the element, never out of its container. At the edge the
+ * step wraps round - up from the first place lands last, down from the last
+ * lands first - so the arrows keep working instead of dead-ending. */
+function moveFormElementStep(name, delta) {
+    var entry = formMoveEntry(name);
+    if (!entry) {
+        showTemplateError('«' + name + '» не переставляется: это не элемент формы.');
+        return false;
+    }
+    var neighbours = formMoveNeighbours(entry);
+    var at = -1;
+    for (var i = 0; i < neighbours.length; i++) if (neighbours[i].name === name) at = i;
+    if (at < 0 || neighbours.length < 2) return false;
+    var target = neighbours[at + delta];
+    if (target) return moveFormElement(name, delta < 0 ? { before: target.name } : { after: target.name });
+    /* Round the edge: to the other end of the same container. */
+    return delta < 0
+        ? moveFormElement(name, { after: neighbours[neighbours.length - 1].name })
+        : moveFormElement(name, { before: neighbours[0].name });
+}
+
+/* The element the arrows act on: the selected row of the tree. */
+function formMoveSelection() {
+    if (!formMovingEnabled()) return null;
+    var index = formElementIndex(state.formSelectedId);
+    if (index < 0) return null;
+    return formMoveEntry(formElementItems[index].name);
+}
+
+/* Whether a step exists at all, so a button that cannot do anything says so
+ * before it is pressed. Both directions work at the edges: the step wraps to
+ * the other end of the container. */
+function formMoveStepPossible() {
+    return formMoveStepEnabled(formMoveSelection());
+}
+
+function syncFormMoveButtons() {
+    var up = document.getElementById('outline-move-up');
+    var down = document.getElementById('outline-move-down');
+    if (!up || !down) return;
+    var on = formMovingEnabled();
+    up.hidden = !on;
+    down.hidden = !on;
+    if (!on) return;
+    up.disabled = !formMoveStepPossible();
+    down.disabled = !formMoveStepPossible();
+}
+
+/* ---- Dragging a row of the tree ----------------------------------------
+ *
+ * A row is dropped on another row: over its upper or lower edge it takes the
+ * place before or after it, and over its middle it goes inside, when the kind
+ * of the target takes the kind being dragged. */
+var formDrag = { name: '', index: -1, row: null, mode: '' };
+
+function formDragPlan(row, event) {
+    if (!formDrag.name || !row) return null;
+    var target = shownOutlineEntry(row);
+    if (!target || !target.name || target.name === formDrag.name) return null;
+    /* An element cannot be moved inside itself, and the tree already knows
+     * which rows lie under the one being dragged. */
+    for (var up = target.outlineIndex; up != null && up >= 0; up = formElementParents[up])
+        if (up === formDrag.index) return null;
+    var dragged = formMoveEntry(formDrag.name);
+    if (!dragged) return null;
+    var entry = formMoveEntry(target.name);
+    var canContain = window.FormEdit.canContain;
+    /* A row that is not an item of ChildItems - a command bar, a search
+     * addition - is not a neighbour, but it is a container of its own. */
+    var into = canContain(target.tag || (entry && entry.kind) || '', dragged.kind);
+    var beside = !!entry && canContain(entry.containerKind, dragged.kind);
+    if (!into && !beside) return null;
+    var rect = row.getBoundingClientRect();
+    var mode = formDropMode(into, beside, rect.height ? (event.clientY - rect.top) / rect.height : 0.5);
+    return mode ? { mode: mode, target: target.name } : null;
+}
+
+/* Where the pointer is over the row decides the move: the upper and lower
+ * edges put the element beside it, the middle puts it inside. A row that only
+ * takes one of the two has no edges to speak of, and the whole of it means
+ * that one thing. */
+function formDropMode(into, beside, ratio) {
+    if (into && beside) return ratio < 0.3 ? 'before' : ratio > 0.7 ? 'after' : 'into';
+    if (beside) return ratio < 0.5 ? 'before' : 'after';
+    return into ? 'into' : '';
+}
+
+function clearFormDropMark() {
+    var marked = document.querySelectorAll('#outline-list .drop-before, #outline-list .drop-after, #outline-list .drop-into');
+    for (var i = 0; i < marked.length; i++) marked[i].classList.remove('drop-before', 'drop-after', 'drop-into');
+}
+
+function endFormDrag() {
+    clearFormDropMark();
+    var dragging = document.querySelector('#outline-list .dragging');
+    if (dragging) dragging.classList.remove('dragging');
+    formDrag = { name: '', index: -1, row: null, mode: '' };
+}
+
+/* The editable property panel of a managed form. It replaces the read-only
+ * inspector while the form is open for editing; outside editing the inspector
+ * stays as it was, since it shows the same values with the presentation the
+ * renderer builds. */
+var formPropertyPanel = null;
+
+function formPropertyPanelFor(host) {
+    if (formPropertyPanel) return formPropertyPanel;
+    if (!window.FormProperties || !window.FormEdit || !window.DocEdits) return null;
+    formPropertyPanel = window.FormProperties.panel(document, {
+        xml: function () { return model ? model.getValue() : ''; },
+        apply: function (edits) {
+            applyPreviewEdits(edits);
+            showTemplateError('');
+            /* The mockup is drawn from the document, so it has to follow the
+             * change; the panel redraws itself. */
+            refreshDocPreview();
+        },
+        onError: showTemplateError,
+        readOnly: !!state.readOnly,
+        /* Handlers: the panel assigns names itself; opening or writing the
+         * procedure needs the module, which a lone Form.xml does not have. */
+        handlers: {
+            exists: function (name) { return !!findFormHandlerLine(name); },
+            open: function (element, kind, event, handler) {
+                var entry = formEntryByName(element);
+                if (!entry || !entry.item) entry = { name: element, item: { tag: kind } };
+                createFormHandler(entry, event, handler, kind);
+            },
+            openCommand: function (handler) { createFormHandler(null, '', handler, ''); }
+        }
+    });
+    if (formPropertyPanel) host.appendChild(formPropertyPanel.element);
+    return formPropertyPanel;
+}
+
+/* True when the property panel, rather than the read-only inspector, belongs
+ * in the right-hand pane right now. */
+function formPropertiesEditable() {
+    return formOutlineActive() && state.outlineKind === 'elements'
+        && state.isEditing && !state.readOnly && state.previewId === 'form'
+        && !!window.FormProperties;
+}
+
 function renderPropertyInspector() {
     var host = document.getElementById('property-inspector');
     if (!host) return;
     var propertyHandle = document.getElementById('property-resize-handle');
+    if (templateEditingActive()) {
+        var cells = templatePropertyPanelFor(host);
+        if (cells) {
+            host.hidden = false;
+            /* The handle is display:none in the stylesheet, so an empty inline
+             * value hides it rather than showing it. */
+            if (propertyHandle) propertyHandle.style.display = 'block';
+            cells.refresh();
+            updateStatusBar();
+            return;
+        }
+    }
+    /* Leaving the sheet drops its panel: whatever takes the pane next owns
+     * the markup and would wipe it out from under it. */
+    if (templateProperties) {
+        templateProperties = null;
+        host.innerHTML = '';
+    }
+
+    if (formPropertiesEditable()) {
+        var entry = null;
+        for (var e = 0; e < formElementItems.length; e++) {
+            if (formElementItems[e].id === state.formSelectedId) { entry = formElementItems[e]; break; }
+        }
+        var panel = formPropertyPanelFor(host);
+        if (panel) {
+            host.hidden = false;
+            if (propertyHandle) propertyHandle.style.display = 'block';
+            panel.show(entry ? entry.name : 'Form');
+            updateStatusBar();
+            return;
+        }
+    }
+    /* Leaving edit mode drops the panel: the read-only inspector owns the
+     * pane's markup and would wipe it out from under it. */
+    if (formPropertyPanel) {
+        formPropertyPanel = null;
+        host.innerHTML = '';
+    }
     function hideInspector() {
         host.hidden = true;
         host.innerHTML = '';
@@ -1884,7 +2536,154 @@ function renderPropertyInspector() {
     host.innerHTML = h.join('');
     host.hidden = false;
     if (propertyHandle) propertyHandle.style.display = 'block';
+    /* The inspector appearing (or changing height) shrinks the outline list,
+     * which can push the just-selected row below its visible edge. */
+    var selectedRow = document.querySelector('#outline-list .proc-item.selected');
+    if (selectedRow && selectedRow.scrollIntoView) {
+        try { selectedRow.scrollIntoView({ block: 'nearest', inline: 'nearest' }); }
+        catch (e) { selectedRow.scrollIntoView(); }
+    }
     updateStatusBar();
+}
+
+/* Opens the form module on the procedure `name`; false when it is not there. */
+function goToFormHandler(name) {
+    var line = findFormHandlerLine(name);
+    if (!line) return false;
+    switchFormWorkbenchView('module');
+    if (editor && formModuleModel) {
+        editor.revealLineInCenter(line);
+        editor.setPosition({ lineNumber: line, column: 1 });
+        editor.focus();
+    }
+    return true;
+}
+
+/* The handlers of a form element as its inspector lists them: the command's
+ * action of a button first, then the element's own events. */
+function formElementHandlers(entry) {
+    var view = previewView();
+    var info = entry && view && view.elementInspector ? view.elementInspector(entry) : null;
+    var out = [];
+    var groups = (info && info.groups) || [];
+    for (var g = 0; g < groups.length; g++) {
+        for (var i = 0; i < groups[g].items.length; i++) {
+            var item = groups[g].items[i];
+            if (item.link !== 'form-handler' || !item.handler) continue;
+            var command = groups[g].label === 'Команда';
+            var label = command ? 'команды' : '«' + item.label + '»';
+            var entryOut = { label: label, handler: item.handler, event: command ? '' : eventNameOf(entry, item.handler) };
+            if (groups[g].label === 'Команда') out.unshift(entryOut); else out.push(entryOut);
+        }
+    }
+    return out;
+}
+
+/* The XML name of the element's event that `handler` is assigned to. */
+function eventNameOf(entry, handler) {
+    var events = (entry && entry.item && entry.item.events) || [];
+    for (var i = 0; i < events.length; i++) {
+        if (String(events[i].handler || '').trim() === handler) return events[i].name;
+    }
+    return '';
+}
+
+/* The form's layout and module can both be written from the picture. */
+function formHandlersEditable() {
+    return !!(state.isEditing && !state.readOnly && state.previewId === 'form'
+        && window.FormEdit && window.FormEdit.setEvent && window.DocEdits);
+}
+
+function formEntryByName(name) {
+    for (var i = 0; i < formElementItems.length; i++) {
+        if (formElementItems[i].name === name) return formElementItems[i];
+    }
+    return null;
+}
+
+/* The handler entries of an element's context menu. Viewing lists only the
+ * handlers the module has; editing lists every event of the element's kind:
+ * an assigned one opens (or writes) its procedure, a free one gets a new
+ * handler the way the Designer names and writes it. Long lists go into a
+ * submenu. */
+function formHandlerMenu(entry) {
+    var assigned = formElementHandlers(entry);
+    var editable = formHandlersEditable();
+    var out = [];
+    var byEvent = {};
+    assigned.forEach(function (h) {
+        if (h.event) byEvent[h.event] = h.handler;
+        var found = !!findFormHandlerLine(h.handler);
+        if (!found && !editable) return;
+        out.push({
+            label: (found ? '' : 'Создать процедуру ') + (assigned.length > 1 ? h.label + ': ' : '') + h.handler,
+            link: found,
+            disabled: !found && !formModuleModel,
+            hint: !found && !formModuleModel ? 'нет модуля формы' : '',
+            action: function () { found ? goToFormHandler(h.handler) : createFormHandler(entry, h.event, h.handler); }
+        });
+    });
+    if (!editable) return out;
+    var kind = entry.item && entry.item.tag;
+    var free = window.FormEdit.eventsFor(kind).filter(function (e) { return !byEvent[e.name]; });
+    var add = free.map(function (e) {
+        return {
+            label: e.title,
+            action: function () { createFormHandler(entry, e.name, window.FormEdit.handlerName(entry.name, e.name)); }
+        };
+    });
+    var verb = formModuleModel ? 'Создать обработчик' : 'Назначить обработчик';
+    if (add.length > 3) out.push({ label: verb + ' события', items: add });
+    else add.forEach(function (a) { out.push({ label: verb + ' «' + a.label + '»', action: a.action }); });
+    return out;
+}
+
+/* Assigns `handler` to the element's event and writes its procedure at the
+ * end of the module unless the module already has it; then shows it. */
+function createFormHandler(entry, event, handler, kind) {
+    if (!formHandlersEditable() || !handler || (event && !entry)) return;
+    kind = kind || (entry && entry.item && entry.item.tag) || '';
+    var before = model.getValue();
+    var out = null;
+    if (event) {
+        try {
+            out = window.FormEdit.setEvent(before, { element: entry.name, event: event, handler: handler });
+        } catch (err) {
+            showTemplateError((err && err.message) || String(err));
+            return;
+        }
+        if (out && out.xml !== before) {
+            applyPreviewEdits(window.DocEdits.textEdits(before, out.xml));
+            showTemplateError('');
+            refreshDocPreview();
+            parseDocOutline();
+            renderOutline();
+        }
+    }
+    /* A lone Form.xml has no module: the name is assigned and that is all. */
+    if (!formModuleModel) {
+        if (formPropertyPanel) formPropertyPanel.refresh();
+        syncDirtyMarks();
+        applyChrome();
+        return;
+    }
+    if (!findFormHandlerLine(handler)) {
+        var text = formModuleModel.getValue();
+        var eol = /\r\n/.test(text) ? '\r\n' : '\n';
+        var stub = window.FormEdit.handlerStub(kind, event, handler, eol);
+        var tail = text && !/\n$/.test(text) ? eol + eol : text ? eol : '';
+        var end = formModuleModel.getFullModelRange().getEndPosition();
+        formModuleModel.pushStackElement();
+        formModuleModel.pushEditOperations([], [{
+            range: new monaco.Range(end.lineNumber, end.column, end.lineNumber, end.column),
+            text: tail + stub
+        }], function () { return null; });
+        formModuleModel.pushStackElement();
+        state.moduleDirty = true;
+    }
+    syncDirtyMarks();
+    applyChrome();
+    goToFormHandler(handler);
 }
 
 function findFormHandlerLine(name) {
@@ -1972,17 +2771,20 @@ function renderOutline() {
             return !ticked.length || r.rights.some(function (x) { return state.mdRoleRights[x.name]; });
         })) : []) : formElementItems;
     }
-    var items = allItems;
+    /* Inspector-only roots can be selected from links in the preview without
+     * adding duplicate rows to the visible section tree. Keep them in
+     * allItems for property lookup. */
+    var items = allItems.filter(function (item) { return !item.inspectorOnly; });
     var sortView = previewView();
     if (state.sortByName && sortKeepsTree()) {
-        items = sortView.outlineSortByName(allItems);
+        items = sortView.outlineSortByName(items);
     } else if (state.sortByName) {
         items = items.filter(function (x) { return x.type !== 'region'; })
                      .sort(function (a, b) { return a.name.toLowerCase().localeCompare(b.name.toLowerCase()); });
     }
     shownOutlineItems = items;
     var cnt = 0;
-    for (var i = 0; i < allItems.length; i++) if (allItems[i].type !== 'region') cnt++;
+    for (var i = 0; i < items.length; i++) if (items[i].type !== 'region') cnt++;
 
     var outlineKinds = document.getElementById('outline-kinds');
     outlineKinds.hidden = !formOutlineActive() && !mdTabsActive();
@@ -2012,6 +2814,7 @@ function renderOutline() {
      * document's structure (an indented tree) or is sorted by name (A→Z). */
     setIcon('sort-btn', state.sortByName ? 'sort-letters' : 'outline');
     sortBtn.title = state.sortByName ? 'Сортировка: по имени (нажмите — по порядку)' : 'Сортировка: по порядку (нажмите — по имени)';
+    var movingOn = formMovingEnabled();
     var h = [];
     for (var j = 0; j < items.length; j++) {
         var it = items[j];
@@ -2030,7 +2833,7 @@ function renderOutline() {
                     : { cls: 'icon-form-tbl', ch: 'A' };
                 iconCls = tic.cls;
                 iconCh = tic.ch;
-            } else if (it.itemKind === 'metadata' && ownIcons && ownIcons.outlineIcon) {
+            } else if ((it.itemKind === 'metadata' || it.itemKind === 'dcs') && ownIcons && ownIcons.outlineIcon) {
                 var mic = ownIcons.outlineIcon(it);
                 iconCls = mic.cls;
                 iconName = mic.icon || 'box';
@@ -2056,8 +2859,12 @@ function renderOutline() {
             var pad = 8 + (it.depth || 0) * 12;
             var shown = it.title || it.name;
             var treeOn = docTree() && (!state.sortByName || sortKeepsTree()) && !attributeMode;
-            h.push('<div class="proc-item form-el" data-line="', it.line, '" data-id="', esc(it.id || ''),
-                   '" data-kind="', esc(it.itemKind || 'element'),
+            /* Only an element of the form itself is dragged; the rows of the
+             * other trees (an object, a template) carry no order to change. */
+            var dragOn = movingOn && !attributeMode && it.itemKind !== 'attribute' && !!it.name;
+            h.push('<div class="proc-item form-el" data-line="', it.line, '" data-id="', esc(it.id || ''), '"',
+                   dragOn ? ' draggable="true"' : '',
+                   ' data-kind="', esc(it.itemKind || 'element'),
                    '" data-idx="', j, '" data-name="', esc((it.name + ' ' + (it.title || '') + ' ' + (it.tag || '') +
                        ' ' + (it.dataPath || '')).toLowerCase()),
                    '" style="padding-left:', pad, 'px">');
@@ -2128,6 +2935,7 @@ function renderOutline() {
     if (formOutlineActive() && state.outlineKind === 'attributes' && state.selectedAttributeId)
         highlightOutlineRow(state.selectedAttributeId);
     else if (isDocPreview() && state.formSelectedId) highlightFormOutline(state.formSelectedId);
+    syncFormMoveButtons();
     renderPropertyInspector();
 }
 
@@ -2189,7 +2997,8 @@ function syncOutlineToggle() {
     var shown = panel.style.display !== 'none';
     button.classList.toggle('active', shown);
     button.setAttribute('aria-pressed', shown ? 'true' : 'false');
-    button.title = (shown ? 'Скрыть панель: ' : 'Показать панель: ')
+    button.title = button.disabled ? 'У этого файла нет структуры'
+        : (shown ? 'Скрыть панель: ' : 'Показать панель: ')
         + (button.getAttribute('data-panel-title') || 'структура');
 }
 
@@ -2197,30 +3006,11 @@ function setIcon(id, name) {
     var svg = document.querySelector('#' + id + ' svg');
     if (!svg) svg = document.querySelector('#' + id + '.tb-btn');
     var use = svg ? svg.querySelector('use') : null;
-    var platform = {
-        save: 'platform-save.png', edit: 'platform-edit.png', refresh: 'platform-refresh.png',
-        search: 'platform-search.png', help: 'platform-help.png', close: 'platform-close.png',
-        'arrow-back-up': 'platform-back.png', 'arrow-forward-up': 'platform-forward.png',
-        'arrow-up': 'platform-up.png', 'arrow-down': 'platform-down.png',
-        'arrow-left': 'platform-left.png', 'arrow-right': 'platform-right.png'
-    }[name];
+    /* Every button of the toolbar wears the viewer's own icon set: the
+     * platform's own pictures stay where they mean something (the kinds of
+     * objects in the outline), not in the chrome around them. */
     if (!svg) return;
-    var img = svg.parentNode.querySelector('img.platform-icon');
-    if (platform) {
-        if (!img) {
-            img = document.createElement('img');
-            img.className = 'tb-icon platform-icon';
-            img.alt = '';
-            svg.parentNode.appendChild(img);
-        }
-        img.src = platform;
-        svg.style.display = 'none';
-        img.style.display = '';
-    } else {
-        if (use) use.setAttribute('href', '#i-' + name);
-        svg.style.display = '';
-        if (img) img.style.display = 'none';
-    }
+    if (use) use.setAttribute('href', '#i-' + name);
 }
 
 function applyChrome() {
@@ -2236,7 +3026,10 @@ function applyChrome() {
     outlinePanel.className = dk ? 'dark' : 'light';
     var pv = currentProvider();
     var tree = docTree();
-    outlineToggle.style.display = (isBsl || pv || moduleOpen) ? '' : 'none';
+    /* The right edge of the bar holds buttons that never leave it, greyed out
+     * when a document has no use for them: whatever comes and goes per
+     * document sits further in, so the edge does not slide under the cursor. */
+    outlineToggle.disabled = !(isBsl || pv || moduleOpen);
     outlinePanel.style.display = (isBsl || pv || moduleOpen) ? 'flex' : 'none';
     var panelTitle = moduleOpen ? 'Список процедур/функций' : (pv ? pv.outlineTitle : 'Список процедур/функций');
     outlineToggle.setAttribute('data-panel-title', panelTitle.charAt(0).toLowerCase() + panelTitle.slice(1));
@@ -2252,7 +3045,7 @@ function applyChrome() {
 
     setIcon('btn-theme', dk ? 'sun' : 'moon');
     document.getElementById('btn-theme').title = formOpen ? 'У макета формы всегда светлая тема' : 'Переключить тему';
-    document.getElementById('btn-theme').style.display = formOpen ? 'none' : '';
+    document.getElementById('btn-theme').disabled = formOpen;
 
     var mapBtn = document.getElementById('btn-minimap');
     mapBtn.classList.toggle('active', !!state.minimap);
@@ -2262,32 +3055,97 @@ function applyChrome() {
     var btnSave = document.getElementById('btn-save');
     setIcon('btn-edit', state.isEditing ? 'eye' : 'pencil');
     btnEdit.title = state.isEditing ? 'Режим просмотра (Ctrl+E)' : 'Редактировать (Ctrl+E)';
-    btnEdit.classList.toggle('active', state.isEditing && !state.sarifMode);
+    /* The eye and the pencil already say which mode is on: the highlight of
+     * the panel toggles beside it would claim this button opens a panel. */
     /* Editing is about source: a form, template or object window shown as a
      * picture has nothing to toggle (the form's Module tab does). */
-    btnEdit.style.display = state.sarifMode || (state.previewMode && isDocPreview() && !formModuleOpen())
+    btnEdit.style.display = state.sarifMode
+        || (state.previewMode && isDocPreview() && !formModuleOpen() && !previewEditable())
         ? 'none' : '';
-    btnSave.style.display = sourceEditingActive() ? '' : 'none';
+    var saveAvailable = sourceEditingActive() || previewEditingActive();
+    btnSave.style.display = '';
+    btnSave.disabled = !saveAvailable;
+    syncUndoButtons();
+    syncDirtyMarks();
+    var editingToolbar = document.getElementById('editor-toolbar');
+    if (editingToolbar) editingToolbar.hidden = !(sourceEditingActive() || previewEditingActive());
+    var codeEditing = sourceEditingActive() && monacoVisible() && !state.readOnly && !state.sarifMode;
+    var codeCommands = document.querySelectorAll('#editor-toolbar .code-edit-only');
+    for (var ci = 0; ci < codeCommands.length; ci++)
+        codeCommands[ci].style.display = codeEditing ? '' : 'none';
     document.getElementById('btn-format').style.display = (!state.sarifMode && state.isEditing && (isBsl || moduleOpen)) ? '' : 'none';
     document.getElementById('btn-comment').style.display = (!state.sarifMode && state.isEditing && (isCode || moduleOpen)) ? '' : 'none';
+    document.getElementById('btn-string-bar').style.display = (codeEditing && (isBslFamily() || moduleOpen)) ? '' : 'none';
+
+    var commitBtn = document.getElementById('btn-commit');
+    if (commitBtn) {
+        var commitInfo = gitState.info[gitTargetKey()];
+        commitBtn.style.display = !state.sarifMode && gitAvailable() && commitInfo && commitInfo.ok ? '' : 'none';
+    }
+    var diffBtn = document.getElementById('btn-diff');
+    if (diffBtn) {
+        diffBtn.style.display = (diffAvailable() || diffOpen) ? '' : 'none';
+        diffBtn.classList.toggle('active', diffOpen);
+        diffBtn.setAttribute('aria-pressed', diffOpen ? 'true' : 'false');
+        diffBtn.title = (diffOpen ? 'Скрыть изменения' : 'Показать изменения') + ' (Alt+Shift+D)';
+        if (diffOpen) syncDiffControls();
+    }
+    var wsBtn = document.getElementById('btn-whitespace');
+    if (wsBtn) {
+        wsBtn.style.display = monacoVisible() ? '' : 'none';
+        wsBtn.classList.toggle('active', !!state.whitespace);
+        wsBtn.setAttribute('aria-pressed', state.whitespace ? 'true' : 'false');
+        wsBtn.title = (state.whitespace ? 'Скрыть' : 'Показать')
+            + ' непечатаемые символы (Alt+Shift+W)';
+    }
+    /* Сохранение переписывает baseline, поэтому открытое сравнение
+     * перечитывается здесь, а не только при открытии панели. */
+    if (diffOpen) refreshDiffPanel();
 
     setIcon('btn-preview', state.previewMode ? 'code' : 'window');
     var canPreview = canPreviewLang();
-    document.getElementById('btn-preview').style.display = canPreview ? '' : 'none';
+    /* У markdown и HTML расположений три, и их выбирает группа кнопок:
+     * одна кнопка-переключатель рядом с ней означала бы то же самое дважды. */
+    document.getElementById('btn-preview').style.display =
+        (canPreview && !textLayoutAvailable()) ? '' : 'none';
+    syncTextLayoutButtons();
     mapBtn.style.display = minimapButtonVisible() ? '' : 'none';
 
     var back = document.getElementById('btn-back');
-    if (back) {
-        var previous = navHistory.length ? navHistory[navHistory.length - 1] : null;
-        back.style.display = previous && host ? '' : 'none';
-        back.title = previous ? 'Назад: ' + pathLabel(previous.path) + ' (Alt+\u2190)' : 'Назад';
+    var forward = document.getElementById('btn-forward');
+    /* The navigation buttons keep their places in the right toolbar whatever
+     * the document: a step up must not slide another button under the cursor. */
+    var navToolbar = document.getElementById('nav-toolbar');
+    if (navToolbar) navToolbar.hidden = !host;
+    var navSaveToolbar = document.getElementById('nav-save-toolbar');
+    var navSaveSep = document.getElementById('nav-save-sep');
+    var hasNavSaveActions = !!((navToolbar && !navToolbar.hidden) || saveAvailable);
+    if (navSaveToolbar) navSaveToolbar.hidden = !hasNavSaveActions;
+    if (navSaveSep) navSaveSep.hidden = !hasNavSaveActions;
+    if (back && forward) {
+        back.disabled = !navHistory.length;
+        forward.disabled = !navForward.length;
+        back.title = navHistory.length ? 'Назад: ' + navLabel(navHistory[navHistory.length - 1].path) + ' (Alt+←)' : 'Назад';
+        forward.title = navForward.length ? 'Вперёд: ' + navLabel(navForward[navForward.length - 1].path) + ' (Alt+→)' : 'Вперёд';
     }
+    var historyBtn = document.getElementById('btn-nav-history');
+    if (historyBtn) historyBtn.disabled = !navHistory.length && !navForward.length;
+    var up = document.getElementById('btn-up');
+    if (up) {
+        up.disabled = !upTarget.path;
+        up.title = upTarget.path ? 'Уровень вверх: ' + navLabel(upTarget.path)
+            + ' (Alt+\u2191, Backspace в режиме просмотра)' : 'Уровень вверх';
+    }
+    var epfBtn = document.getElementById('btn-epf');
+    if (epfBtn) epfBtn.style.display = state.epfRoot && host ? '' : 'none';
     var screenshotActions = document.getElementById('form-preview-actions');
     if (screenshotActions) {
         screenshotActions.hidden = !(formPreviewOpen() && isFormView()
             && !document.documentElement.classList.contains('screenshot-mode'));
     }
+    syncFormInterfaceModeMenu();
     syncFormContextProgress();
+    if (annotationSessionActive() !== (annotationRevision !== null)) syncSessionAnnotations();
 }
 
 function minimapButtonVisible() {
@@ -2302,6 +3160,1277 @@ function toggleMinimap() {
     applyChrome();
 }
 
+// --------------------------- расположение исходника и просмотра (md, html)
+
+/* Markdown и HTML показываются двумя окнами, и какие из них нужны — решает
+ * читатель: правит он текст, сверяет с готовым видом или только читает.
+ * Формы и макеты сюда не входят: там рисунок и есть документ, и выбор между
+ * ним и XML делает отдельная кнопка. */
+function textLayoutAvailable() {
+    return !state.sarifMode && !isDocPreview()
+        && (state.language === 'markdown' || state.language === 'html');
+}
+
+/* Что показано сейчас. previewMode остаётся главным признаком «превью
+ * поднято», а textLayout говорит, делит ли оно окно с исходником. */
+function currentTextLayout() {
+    if (!state.previewMode) return 'source';
+    return state.textLayout === 'preview' ? 'preview' : 'split';
+}
+
+/* Показать или спрятать редактор рядом с превью. Ширину не трогаем: её мог
+ * задать пользователь разделителем, и возврат к «исходник и просмотр» должен
+ * вернуть именно его пропорции. */
+function applyTextPreviewLayout() {
+    if (!textLayoutAvailable() || !state.previewMode) return;
+    var full = state.textLayout === 'preview';
+    document.getElementById('editor').style.display = full ? 'none' : '';
+    document.getElementById('preview-handle').style.display = full ? 'none' : 'block';
+}
+
+function setTextPreviewLayout(layout) {
+    if (!textLayoutAvailable()) return;
+    if (layout !== 'source' && layout !== 'preview') layout = 'split';
+    var was = currentTextLayout();
+    state.textLayout = layout;
+    writeStoredText('bsl.textLayout', layout);
+    if (layout === 'source') { setPreviewMode(false); return; }
+    /* Поднять превью впервые — это перестроить окно целиком; переложить уже
+     * поднятое — только спрятать или вернуть редактор. */
+    if (was === 'source') { setPreviewMode(true); return; }
+    applyTextPreviewLayout();
+    applyChrome();
+    if (editor) editor.layout();
+}
+
+function syncTextLayoutButtons() {
+    var group = document.getElementById('md-layout');
+    if (!group) return;
+    var available = textLayoutAvailable();
+    group.hidden = !available;
+    var separator = document.getElementById('md-layout-sep');
+    if (separator) separator.hidden = !available;
+    if (!available) return;
+    var now = currentTextLayout();
+    group.querySelectorAll('button[data-md-layout]').forEach(function (button) {
+        var on = button.getAttribute('data-md-layout') === now;
+        button.classList.toggle('active', on);
+        button.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+}
+
+/* Monaco показан, а не заменён рисующим превью: вкладка модуля формы — это
+ * снова редактор, чем бы ни был сам документ. */
+function monacoVisible() {
+    if (formModuleOpen()) return true;
+    var provider = currentProvider();
+    return !(provider && state.previewMode && !provider.keepsEditor);
+}
+
+/* Пробелы, табуляции и управляющие символы. Настройка общая для редактора и
+ * панели сравнения: непечатаемые символы ищут как раз в том, что изменилось. */
+/* Непечатаемые символы рисует Monaco: точка вместо пробела, стрелка вместо
+ * табуляции — как в конфигураторе 1С.
+ *
+ * `experimentalWhitespaceRendering: 'font'` обязателен. По умолчанию Monaco
+ * выбирает 'svg', и в нашей сборке этот путь не рисует ничего: слой с
+ * отметками не появляется вовсе, сколько бы ни стоял renderWhitespace:'all'.
+ * Режим 'font' кладёт каждый символ отдельным <div class="mwh">, и отметки
+ * видно. Цвет берётся из темы (editorWhitespace.foreground). */
+function whitespaceRenderOptions() {
+    return {
+        renderWhitespace: state.whitespace ? 'all' : 'none',
+        renderControlCharacters: !!state.whitespace,
+        experimentalWhitespaceRendering: 'font'
+    };
+}
+
+function toggleWhitespace() {
+    state.whitespace = !state.whitespace;
+    writeStoredBool('bsl.whitespace', state.whitespace);
+    if (editor) editor.updateOptions(whitespaceRenderOptions());
+    if (diffEditor) diffEditor.updateOptions(whitespaceRenderOptions());
+    applyChrome();
+}
+
+// ------------------------------------------- изменения против файла на диске
+
+/* Ревизии git как эталон сравнения.
+ *
+ * Хост умеет спросить git о файле («gitInfo»: где он лежит в репозитории, на
+ * какой ветке, какие коммиты его меняли) и выдать его содержимое на
+ * выбранной ревизии («gitShow»). Здесь только выбор эталона и кэш уже полученных ревизий:
+ * запускать git и ходить в файловую систему странице нечем. */
+/* base: 'disk' — файл на диске, 'index' — индекс git, иначе имя ревизии.
+ * info: ответ «gitInfo» по каждой цели.
+ * blobs: 'file|<rev>' -> { ok, text }, { ok:false, error } или 'pending'. */
+var gitState = { base: 'disk', info: { file: null, module: null }, blobs: {} };
+var gitPending = {};
+var gitReqSeq = 0;
+/* Чем занята левая сторона панели прямо сейчас: ждём git или он отказал. */
+var diffBaseState = { pending: false, error: '' };
+
+function gitAvailable() { return !!host; }
+
+/* Без оболочки (просто страница в браузере) ни диска, ни git нет: эталоном
+ * служит текст, каким его открыли или последний раз сохранили. */
+var NO_HOST_ERROR = 'нет связи с оболочкой';
+function diffWithoutHost() {
+    if (host) return false;
+    var info = gitState.info[gitTargetKey()];
+    return !!(info && !info.ok && info.error === NO_HOST_ERROR);
+}
+
+function gitSend(msg, done) {
+    if (!host) return;
+    var id = String(++gitReqSeq);
+    gitPending[id] = done;
+    msg.reqId = id;
+    send(msg);
+}
+
+function onGitMessage(d) {
+    var id = String((d && d.reqId) || '');
+    var done = gitPending[id];
+    delete gitPending[id];
+    if (done) done(d);
+}
+
+/* Цель сравнения в терминах хоста: у модуля формы своя история в git. */
+function gitTargetKey() {
+    var target = diffTarget();
+    return target ? target.key : 'file';
+}
+
+/* Спросить git заново. Делается и при загрузке файла — от ответа зависит,
+ * показывать ли кнопку сравнения, когда файл только смотрят, — и при каждом
+ * открытии панели: список коммитов мог пополниться, пока файл был открыт.
+ * Индекс тоже мог измениться, поэтому его копию забываем. */
+function requestGitInfo(key) {
+    if (!host) {
+        gitState.info[key] = { ok: false, error: NO_HOST_ERROR };
+        return;
+    }
+    delete gitState.blobs[key + '|'];
+    gitSend({ cmd: 'gitInfo', target: key }, function (d) {
+        gitState.info[key] = d && d.ok ? d : { ok: false, error: (d && d.error) || 'git недоступен' };
+        if (key !== gitTargetKey()) return;
+        syncDiffBase();
+        if (diffOpen) refreshDiffPanel();
+        /* Ответ git решает, показывать ли кнопку вне режима правки. */
+        applyChrome();
+    });
+}
+
+function requestGitBlob(key, rev) {
+    var cacheKey = key + '|' + rev;
+    if (gitState.blobs[cacheKey] === 'pending') return;
+    gitState.blobs[cacheKey] = 'pending';
+    gitSend({ cmd: 'gitShow', target: key, rev: rev }, function (d) {
+        gitState.blobs[cacheKey] = d && d.ok
+            ? { ok: true, text: String(d.content == null ? '' : d.content) }
+            : { ok: false, error: (d && d.error) || 'git не отдал эту ревизию' };
+        /* Ревизия без файла уходит из списка, выбор переходит на соседнюю. */
+        if (!gitState.blobs[cacheKey].ok) syncDiffBase();
+        if (diffOpen) refreshDiffPanel();
+    });
+}
+
+/* Имя выбранной ревизии для git: индекс — это пустая строка. */
+function gitBaseRev() { return gitState.base === 'index' ? '' : gitState.base; }
+
+/* Как называется левая сторона панели. Падежей два: «Слева — файл на диске»
+ * и «отличий от файла на диске нет», и подставить один вместо другого —
+ * значит написать не по-русски. */
+function gitBaseLabel(genitive) {
+    if (gitState.base === 'disk' && diffWithoutHost())
+        return genitive ? 'загруженной версии' : 'загруженная версия';
+    if (gitState.base === 'disk') return genitive ? 'файла на диске' : 'файл на диске';
+    if (gitState.base === 'index') return genitive ? 'индекса git' : 'индекс git';
+    var info = gitState.info[gitTargetKey()];
+    var list = (info && info.revisions) || [];
+    for (var i = 0; i < list.length; i++) {
+        if (list[i].id !== gitState.base) continue;
+        if (genitive) return 'ревизии ' + list[i].short;
+        var where = list[i].ref ? ' (' + list[i].ref + ', ' + list[i].date + ')'
+                                : ' (' + list[i].date + ')';
+        return 'ревизия ' + list[i].short + where + ' — ' + list[i].subject;
+    }
+    return (genitive ? 'ревизии ' : 'ревизия ') + gitState.base;
+}
+
+/* Строка коммита в списке: идентификатор, ветка, дата, заголовок. Колонки
+ * выровнены пробелами, а список набран моноширинным шрифтом (#diff-base в
+ * viewer.css): в <select> иначе колонок не сделать. */
+var GIT_COLUMNS = { id: 8, ref: 22, date: 11 };
+
+function padColumn(text, width) {
+    var value = String(text == null ? '' : text);
+    if (value.length > width - 1) value = value.slice(0, width - 2) + '…';
+    while (value.length < width) value += '\u00a0';
+    return value;
+}
+
+function gitRevisionLabel(rev) {
+    var subject = rev.subject || '';
+    if (subject.length > 60) subject = subject.slice(0, 59) + '…';
+    return padColumn(rev.short, GIT_COLUMNS.id)
+         + padColumn(rev.ref, GIT_COLUMNS.ref)
+         + padColumn(rev.date, GIT_COLUMNS.date)
+         + subject;
+}
+
+/* Заголовок колонок коммитов. Ширины те же, что у самих строк, поэтому
+ * подписи стоят над своими колонками. */
+function gitColumnsHeader() {
+    return padColumn('ид', GIT_COLUMNS.id)
+         + padColumn('ветка', GIT_COLUMNS.ref)
+         + padColumn('дата', GIT_COLUMNS.date)
+         + 'комментарий';
+}
+
+/* Правка идёт либо в исходнике, либо в рисунке превью. Вне правки сравнивать
+ * с файлом на диске нечего: на экране он и есть. */
+function diffEditingActive() {
+    return !!(sourceEditingActive() || previewEditingActive());
+}
+
+/* Не сохранены ли правки той цели, которую сравниваем: у модуля формы своя
+ * отметка. Пока правок нет, открытый документ равен файлу на диске. */
+function targetDirty() {
+    return gitTargetKey() === 'module' ? !!state.moduleDirty : !!state.dirty;
+}
+
+/* Совпадает ли ревизия с тем, что на экране: сравнение с ней ничего не
+ * покажет. Без правок это отметка хоста; с правками — загруженный текст
+ * ревизии (например, после отката всех изменений из сравнения). */
+function revisionMatchesScreen(key, rev, clean) {
+    if (clean && rev.same) return true;
+    var blob = gitState.blobs[key + '|' + rev.id];
+    if (!blob || blob === 'pending' || !blob.ok) return false;
+    var target = diffTarget();
+    if (!target || target.key !== key) return false;
+    function norm(t) { return String(t).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n'); }
+    return norm(blob.text) === norm(target.model.getValue());
+}
+
+/* Есть ли у файла история в git — то есть имеет ли смысл сравнение, когда
+ * файл только смотрят и «файла на диске» в списке нет. Ревизии, совпадающие с
+ * открытым файлом, не в счёт: сравнение с ними ничего не покажет. */
+function gitBaselinesAvailable() {
+    var info = gitState.info[gitTargetKey()];
+    if (!(info && info.ok && info.tracked)) return false;
+    if (targetDirty()) return true;
+    if (info.status) return true;
+    var list = info.revisions || [];
+    for (var i = 0; i < list.length; i++) {
+        var blob = gitState.blobs[gitTargetKey() + '|' + list[i].id];
+        if (!revisionMatchesScreen(gitTargetKey(), list[i], true) && !(blob && blob !== 'pending' && !blob.ok)) return true;
+    }
+    return false;
+}
+
+/* Список эталонов для выпадающего списка. Он же — признак того, что список
+ * пора перестроить: пока он тот же, выбор пользователя трогать нельзя.
+ * `group` заводит <optgroup>: коммиты отделены от файла и индекса, а подпись
+ * группы служит шапкой колонок. `disabled` — не эталон, а объяснение, почему
+ * список пуст: молчащий список ничем не отличается от сломанного. */
+function diffBaseOptions() {
+    /* Дисковый файл — базовый эталон и без git. Это важно для готовых XML-
+     * выгрузок внешних объектов: их часто хранят в обычном каталоге, а не в
+     * репозитории, но формы, макеты и модули всё равно нужно сравнивать. */
+    /* Без правок файл на диске и есть то, что на экране: пустое сравнение. */
+    var key = gitTargetKey();
+    if (diffWithoutHost()) return [{ value: 'disk', text: 'загруженной версией' }];
+    var out = targetDirty() ? [{ value: 'disk', text: 'файлом на диске' }] : [];
+    var info = gitState.info[key];
+    if (!info) {
+        out.push({ value: '', text: '— git: спрашиваем… —', disabled: true });
+        return out;
+    }
+    if (!info.ok) {
+        out.push({ value: '', text: '— git: ' + (info.error || 'недоступен') + ' —', disabled: true });
+        return out;
+    }
+    /* Эталон, совпадающий с тем, что на экране, показал бы пустое сравнение,
+     * поэтому в списке его нет. Пока документ не правили, это индекс (когда в
+     * нём то же, что в файле) и ревизии, помеченные хостом. Есть несохранённые
+     * правки — сравнивать есть с чем со всеми. */
+    var clean = !targetDirty();
+    if (!(clean && !info.status)) out.push({ value: 'index', text: 'индексом git' });
+    var list = info.revisions || [];
+    var shown = 0;
+    for (var i = 0; i < list.length; i++) {
+        if (revisionMatchesScreen(key, list[i], clean)) continue;
+        /* git уже ответил, что файла в этой ревизии нет: клик вёл бы в пустоту. */
+        var blob = gitState.blobs[key + '|' + list[i].id];
+        if (blob && blob !== 'pending' && !blob.ok) continue;
+        shown++;
+        out.push({ value: list[i].id, text: gitRevisionLabel(list[i]), group: gitColumnsHeader() });
+    }
+    if (!list.length)
+        out.push({ value: '', text: '— git: коммитов этого файла нет —', disabled: true });
+    else if (!shown)
+        out.push({ value: '', text: '— git: отличий от истории нет —', disabled: true });
+    /* Набранная руками ссылка стоит в списке наравне с коммитами. Иначе
+     * перестроение списка (ответ git, смена цели) молча сбрасывало бы выбор,
+     * а повторный ввод той же ссылки добавлял бы ещё один такой же пункт. */
+    var typed = gitState.base;
+    if (typed && typed !== 'disk' && typed !== 'index' && typed !== 'ref'
+        && !out.some(function (o) { return o.value === typed; }))
+        out.push({ value: typed, text: typed });
+    out.push({ value: 'ref', text: 'другой ревизией…' });
+    return out;
+}
+
+function syncDiffBase() {
+    var sel = document.getElementById('diff-base');
+    if (!sel) return;
+    var options = diffBaseOptions();
+    /* Строки-объяснения все пустые по value, поэтому в отпечаток идёт их
+     * текст: смена причины должна перерисовать список. */
+    var stamp = gitTargetKey() + '::' + options.map(function (o) {
+        return o.value || o.text;
+    }).join(',');
+    if (sel.getAttribute('data-stamp') !== stamp) {
+        sel.setAttribute('data-stamp', stamp);
+        sel.innerHTML = '';
+        var group = null;
+        for (var i = 0; i < options.length; i++) {
+            var option = document.createElement('option');
+            option.value = options[i].value;
+            option.textContent = options[i].text;
+            if (options[i].disabled) option.disabled = true;
+            if (!options[i].group) {
+                group = null;
+                sel.appendChild(option);
+                continue;
+            }
+            if (!group || group.label !== options[i].group) {
+                group = document.createElement('optgroup');
+                group.label = options[i].group;
+                sel.appendChild(group);
+            }
+            group.appendChild(option);
+        }
+        /* Список перестроился под другую цель, другую историю или выход из
+         * режима правки: выбранного эталона в нём может уже не быть. */
+        var known = options.some(function (o) {
+            return !o.disabled && o.value === gitState.base;
+        });
+        if (!known) gitState.base = diffDefaultBase(options);
+    }
+    sel.value = gitState.base;
+    var info = gitState.info[gitTargetKey()];
+    sel.title = info && info.ok
+        ? 'Ветка ' + (info.branch || '?') + ', файл ' + info.relative
+        : (info && info.error) || 'С чем сравнивать текущее состояние';
+}
+
+/* Чем сравнивать, когда прежний выбор пропал: файлом на диске в режиме
+ * правки, иначе первым, что предлагает git. */
+function diffDefaultBase(options) {
+    for (var i = 0; i < options.length; i++)
+        if (!options[i].disabled && options[i].value && options[i].value !== 'ref')
+            return options[i].value;
+    return 'disk';
+}
+
+/* Ввод произвольной ссылки: ветка, тег или хэш, которых нет в списке. */
+function openGitRefInput() {
+    var input = document.getElementById('diff-rev');
+    if (!input) return;
+    input.hidden = false;
+    input.value = '';
+    input.focus();
+}
+
+function closeGitRefInput() {
+    var input = document.getElementById('diff-rev');
+    if (input) { input.hidden = true; input.value = ''; }
+}
+
+function applyGitRef(text) {
+    var rev = String(text || '').trim();
+    closeGitRefInput();
+    if (!rev) { setDiffBase('disk'); return; }
+    setDiffBase(rev);
+}
+
+function setDiffBase(value) {
+    if (value === 'ref') { openGitRefInput(); return; }
+    gitState.base = value;
+    closeGitRefInput();
+    /* Список сам покажет набранную руками ссылку: она входит в
+     * diffBaseOptions(), поэтому перестроение её не теряет и не удваивает. */
+    syncDiffBase();
+    if (diffOpen) refreshDiffPanel();
+}
+
+/* Что показывать слева. Пока git не ответил — { pending: true }; если
+ * ревизии нет — { error }. Сам запрос уходит отсюда: эталон спрашивают
+ * ровно тогда, когда его собираются показать. */
+function diffBaseline(target) {
+    if (gitState.base === 'disk') return { text: target.baseline || '' };
+    var info = gitState.info[target.key];
+    if (!info || !info.ok) return { error: (info && info.error) || 'git недоступен' };
+    var cacheKey = target.key + '|' + gitBaseRev();
+    var blob = gitState.blobs[cacheKey];
+    if (blob === undefined) { requestGitBlob(target.key, gitBaseRev()); return { pending: true }; }
+    if (blob === 'pending') return { pending: true };
+    return blob.ok ? { text: blob.text } : { error: blob.error };
+}
+
+/* Сравнение с тем, что лежит на диске: «Форматировать» переписывает весь
+ * документ, и до сохранения нужно увидеть, что именно поменялось. Панель
+ * накрывает рабочую область и только показывает — правят под ней. */
+var diffEditor = null;
+var diffOriginalModel = null;
+var diffModifiedModel = null;
+var diffOpen = false;
+/* Что уже показано, чтобы перерисовывать панель только при настоящей
+ * перемене, а не на каждый вызов applyChrome. */
+var diffShown = { model: null, version: -1, baseline: null };
+
+/* Табличный документ сравнивается не текстом: в Template.xml сдвиг одной
+ * строки перенумеровывает весь файл, и построчный diff показывает «изменилось
+ * всё». Для макета панель показывает два листа рядом; кнопка в заголовке
+ * возвращает обычное текстовое сравнение, когда нужен именно XML. */
+var templateDiffView = null;
+var templateDiffSummary = '';
+
+/* Что сравнивать: вкладка «Модуль» формы правит собственную модель, всё
+ * остальное — сам файл. `key` — та же цель в терминах хоста: он сам знает
+ * пути обоих файлов, со страницы путь не приходит. */
+function diffTarget() {
+    if (formModuleOpen() && formModuleModel)
+        return { key: 'module', model: formModuleModel, baseline: moduleBaselineContent,
+                 language: 'bsl', title: pathLabel(state.formModulePath) || 'модуль формы' };
+    if (!model) return null;
+    return { key: 'file', model: model, baseline: baselineContent,
+             language: state.language, title: pathLabel(state.filePath) || 'документ' };
+}
+
+/* Сравнивать есть смысл и когда правят (с файлом на диске), и когда просто
+ * смотрят — если файл лежит в git и есть с какой ревизией сравнить. Отчёт
+ * SARIF и панели распаковки — не документы, их сравнивать не с чем. */
+/* Макет ли это: сравнение листами есть только у самого файла, у модуля формы
+ * своя история и свой текст. */
+function templateDiffPossible(target) {
+    if (!target || target.key !== 'file') return false;
+    if (!window.TemplateDiff || !window.TemplateDiffView || !window.TemplatePreview) return false;
+    if (!window.TemplatePreview.detect) return false;
+    return window.TemplatePreview.detect(target.model.getValue());
+}
+
+/* Листами или текстом — это тот же выбор, что и в самом окне: кнопка
+ * «макет/исходник» одна на весь документ, своего переключателя у панели
+ * сравнения нет. */
+function templateDiffMode(target) {
+    return !!state.previewMode && templateDiffPossible(target);
+}
+
+/* Управляемая форма тоже сравнивается по модели: перестановка XML-узлов не
+ * должна выглядеть как сотни изменённых строк. Исходник остаётся доступен
+ * той же кнопкой «форма/исходник», что и в основном окне. */
+function formDiffPossible(target) {
+    if (!target || target.key !== 'file') return false;
+    if (!window.FormDiff || !window.FormDiffView || !window.FormPreview) return false;
+    return !!(window.FormPreview.detect && window.FormPreview.detect(target.model.getValue()));
+}
+
+function formDiffMode(target) {
+    var provider = currentProvider();
+    return !!state.previewMode && !!provider && provider.id === 'form' && formDiffPossible(target);
+}
+
+/* СКД остаётся одним широким окном: список слева выбирает смысловую правку,
+ * а справа показывается обычный редактор СКД с текущей строкой и «было →
+ * стало». Два полных окна рядом сделали бы таблицы нечитаемыми. */
+function dcsDiffPossible(target) {
+    if (!target || target.key !== 'file') return false;
+    if (!window.DcsDiff || !window.DcsDiffView || !window.DcsPreview) return false;
+    return !!(window.DcsPreview.detect && window.DcsPreview.detect(target.model.getValue()));
+}
+
+function dcsDiffMode(target) {
+    var provider = currentProvider();
+    return !!state.previewMode && !!provider && provider.id === 'dcs' && dcsDiffPossible(target);
+}
+
+/* Кнопка есть, только когда сравнение что-то покажет: несохранённые правки
+ * (с файлом на диске) или ревизия git, отличная от открытого файла. */
+function diffAvailable() {
+    if (state.sarifMode || state.language === 'epf' || state.language === 'pack') return false;
+    if (!diffTarget()) return false;
+    return targetDirty() || gitBaselinesAvailable();
+}
+
+/* Вид сравнения выбирает пользователь, и выбор переживает перезапуск.
+ * Пробелы по умолчанию видны: форматирование меняет прежде всего отступы. */
+var DIFF_SIDE_KEY = 'bslviewer.diff.sideBySide';
+var DIFF_WS_KEY = 'bslviewer.diff.ignoreWhitespace';
+var diffPrefs = {
+    sideBySide: readStoredBool(DIFF_SIDE_KEY, true),
+    ignoreWhitespace: readStoredBool(DIFF_WS_KEY, false)
+};
+
+function setDiffPref(name, on) {
+    diffPrefs[name] = !!on;
+    writeStoredBool(name === 'sideBySide' ? DIFF_SIDE_KEY : DIFF_WS_KEY, !!on);
+    if (diffEditor) diffEditor.updateOptions(diffEditorOptions());
+    syncDiffControls();
+}
+
+/* Правка, возвращающая участок правой стороны к левой. Только числа и
+ * строки — без Monaco, чтобы её можно было проверить отдельно. change —
+ * ILineChange: конец 0 означает, что на этой стороне строк нет и участок
+ * стоит после строки start. modLengths — длины строк правой стороны. */
+function hunkRestoreEdit(origLines, modLengths, change, eol) {
+    var os = change.originalStartLineNumber, oe = change.originalEndLineNumber;
+    var ms = change.modifiedStartLineNumber, me = change.modifiedEndLineNumber;
+    var seg = oe > 0 ? origLines.slice(os - 1, oe) : [];
+    var count = modLengths.length;
+    function end(line) { return modLengths[line - 1] + 1; }
+    if (me === 0) {
+        if (ms === 0) return { startLineNumber: 1, startColumn: 1, endLineNumber: 1, endColumn: 1, text: seg.join(eol) + eol };
+        return { startLineNumber: ms, startColumn: end(ms), endLineNumber: ms, endColumn: end(ms), text: eol + seg.join(eol) };
+    }
+    if (seg.length) return { startLineNumber: ms, startColumn: 1, endLineNumber: me, endColumn: end(me), text: seg.join(eol) };
+    if (me < count) return { startLineNumber: ms, startColumn: 1, endLineNumber: me + 1, endColumn: 1, text: '' };
+    if (ms > 1) return { startLineNumber: ms - 1, startColumn: end(ms - 1), endLineNumber: me, endColumn: end(me), text: '' };
+    return { startLineNumber: 1, startColumn: 1, endLineNumber: me, endColumn: end(me), text: '' };
+}
+
+var diffChanges = [];
+var diffNav = null;
+
+function diffRestoreAllowed(target) {
+    return !!(target && state.isEditing && !state.readOnly && !state.sarifMode
+        && !diffBaseState.pending && !diffBaseState.error && !templateDiffView);
+}
+
+function currentDiffChange() {
+    var cur = diffNav && diffNav.current();
+    if (cur && diffChanges.indexOf(cur) >= 0) return cur;
+    return diffChanges.length === 1 ? diffChanges[0] : null;
+}
+
+function syncDiffControls() {
+    var side = document.getElementById('diff-side');
+    if (side) {
+        side.textContent = diffPrefs.sideBySide ? 'Одной колонкой' : 'Рядом';
+        side.setAttribute('aria-pressed', diffPrefs.sideBySide ? 'false' : 'true');
+    }
+    var ws = document.getElementById('diff-ignore-ws');
+    if (ws) ws.checked = diffPrefs.ignoreWhitespace;
+    var restore = document.getElementById('diff-restore');
+    if (restore) {
+        var allowed = diffRestoreAllowed(diffTarget());
+        var change = currentDiffChange();
+        restore.disabled = !(allowed && change);
+        restore.title = !allowed ? 'Вернуть фрагмент можно только в режиме правки'
+            : !change ? 'Выберите изменение (F7 / Shift+F7)'
+            : 'Заменить выбранный фрагмент справа версией слева';
+    }
+    if (diffNav) diffNav.refresh();
+}
+
+/* Вернуть текущий участок: правится настоящая модель документа (или модуля
+ * формы), одним шагом отмены; копию справа перерисует refreshDiffPanel(). */
+function restoreDiffHunk() {
+    var target = diffTarget();
+    var change = currentDiffChange();
+    if (!diffRestoreAllowed(target) || !change || !diffOriginalModel) return false;
+    var m = target.model;
+    if (m.getValue() !== diffModifiedModel.getValue()) return false;
+    var lengths = [];
+    for (var i = 1; i <= m.getLineCount(); i++) lengths.push(m.getLineMaxColumn(i) - 1);
+    var edit = hunkRestoreEdit(diffOriginalModel.getLinesContent(), lengths, change, m.getEOL());
+    var range = new monaco.Range(edit.startLineNumber, edit.startColumn, edit.endLineNumber, edit.endColumn);
+    m.pushStackElement();
+    m.pushEditOperations([], [{ range: range, text: edit.text, forceMoveMarkers: true }], function () { return null; });
+    m.pushStackElement();
+    if (diffNav) diffNav.setCurrent(null);
+    refreshDiffPanel();
+    applyChrome();
+    return true;
+}
+
+function revealDiffChange(change) {
+    if (!diffEditor || !change) return;
+    var ed = diffEditor.getModifiedEditor();
+    var line = Math.max(1, change.modifiedStartLineNumber || 1);
+    var last = Math.max(line, change.modifiedEndLineNumber || line);
+    ed.revealLinesInCenterIfOutsideViewport(line, last);
+    ed.setPosition({ lineNumber: line, column: 1 });
+    syncDiffControls();
+}
+
+function wireDiffControls() {
+    var head = document.querySelector('#diff-panel .diff-head');
+    var anchor = document.getElementById('diff-restore');
+    if (!head || diffNav || !window.DiffNav) return;
+    diffNav = window.DiffNav.navBar(document, {
+        items: function () { return diffChanges; },
+        onSelect: function (change) { revealDiffChange(change); },
+        keyTarget: document.getElementById('diff-panel')
+    });
+    if (anchor && anchor.parentNode === head) head.insertBefore(diffNav.element, anchor);
+    else head.appendChild(diffNav.element);
+    var restore = document.getElementById('diff-restore');
+    if (restore) restore.addEventListener('click', function () { restoreDiffHunk(); });
+    var side = document.getElementById('diff-side');
+    if (side) side.addEventListener('click', function () { setDiffPref('sideBySide', !diffPrefs.sideBySide); });
+    var ws = document.getElementById('diff-ignore-ws');
+    if (ws) ws.addEventListener('change', function () { setDiffPref('ignoreWhitespace', ws.checked); });
+    syncDiffControls();
+}
+
+function onDiffUpdated() {
+    var prev = diffNav ? diffNav.current() : null;
+    var prevIndex = prev ? diffChanges.indexOf(prev) : -1;
+    diffChanges = (diffEditor && diffEditor.getLineChanges()) || [];
+    if (diffNav) diffNav.setCurrent(prevIndex >= 0 && prevIndex < diffChanges.length ? diffChanges[prevIndex] : null);
+    syncDiffSummary();
+    syncDiffControls();
+}
+
+function diffEditorOptions() {
+    return {
+        theme: uiIsDark() ? 'bsl-dark' : 'bsl-light',
+        readOnly: true,
+        originalEditable: false,
+        renderSideBySide: diffPrefs.sideBySide,
+        automaticLayout: true,
+        fontSize: state.fontSize,
+        fontFamily: "Consolas, 'Courier New', monospace",
+        fontLigatures: false,
+        /* Extra translate3d layers on .lines-content fight WebView2's compositor. */
+        disableLayerHinting: true,
+        /* Ради этого кнопка и заведена: форматирование меняет прежде всего
+         * отступы, и сравнение не вправе их прятать. */
+        ignoreTrimWhitespace: diffPrefs.ignoreWhitespace,
+        renderWhitespace: state.whitespace ? 'all' : 'none',
+        guides: { indentation: false, highlightActiveIndentation: false },
+        renderControlCharacters: !!state.whitespace,
+        experimentalWhitespaceRendering: 'font',
+        minimap: { enabled: false },
+        folding: false,
+        scrollBeyondLastLine: false,
+        smoothScrolling: false,
+        lineNumbers: 'on',
+        links: false,
+        contextmenu: false,
+        unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false }
+    };
+}
+
+function ensureDiffEditor(language) {
+    var body = document.getElementById('diff-body');
+    if (!body || !window.monaco) return null;
+    if (diffEditor) {
+        diffEditor.updateOptions(diffEditorOptions());
+        return diffEditor;
+    }
+    diffEditor = monaco.editor.createDiffEditor(body, diffEditorOptions());
+    diffOriginalModel = monaco.editor.createModel('', language);
+    diffModifiedModel = monaco.editor.createModel('', language);
+    diffEditor.setModel({ original: diffOriginalModel, modified: diffModifiedModel });
+    wireScrollFixFor(diffEditor.getOriginalEditor());
+    wireScrollFixFor(diffEditor.getModifiedEditor());
+    diffEditor.onDidUpdateDiff(onDiffUpdated);
+    wireDiffControls();
+    /* Курсор в правой стороне выбирает участок, на котором стоит. */
+    diffEditor.getModifiedEditor().onDidChangeCursorPosition(function (e) {
+        var line = e.position.lineNumber;
+        for (var i = 0; i < diffChanges.length; i++) {
+            var c = diffChanges[i];
+            var from = c.modifiedStartLineNumber, to = c.modifiedEndLineNumber || from;
+            if (line >= from && line <= Math.max(from, to)) {
+                if (diffNav && diffNav.current() !== c) { diffNav.setCurrent(c); syncDiffControls(); }
+                return;
+            }
+        }
+    });
+    return diffEditor;
+}
+
+/* Сколько участков разошлось. Пока Monaco считает, getLineChanges() отдаёт
+ * null — тогда в заголовке нечего обещать. */
+function syncDiffSummary() {
+    var out = document.getElementById('diff-summary');
+    if (!out) return;
+    if (diffBaseState.pending) { out.textContent = 'читаем ревизию из git…'; return; }
+    if (diffBaseState.error) { out.textContent = diffBaseState.error; return; }
+    if (templateDiffView || templateDiffSummary) { out.textContent = templateDiffSummary; return; }
+    var changes = diffEditor ? diffEditor.getLineChanges() : null;
+    if (!changes) { out.textContent = 'сравниваем…'; return; }
+    out.textContent = changes.length
+        ? 'изменённых участков: ' + changes.length
+        : 'отличий от ' + gitBaseLabel(true) + ' нет';
+}
+
+function syncDiffLegend() {
+    var legend = document.getElementById('diff-legend');
+    if (legend) legend.textContent = 'Слева — ' + gitBaseLabel() + ', справа — текущее состояние';
+}
+
+/* Два листа рядом вместо текста. Слева — выбранный эталон, справа — то, что
+ * открыто; подсветка и список изменений считаются `TemplateDiff`. */
+function renderTemplateDiff(target, base) {
+    var host = document.getElementById('diff-sheets');
+    var body = document.getElementById('diff-body');
+    if (!host) return;
+    if (body) body.hidden = true;
+    host.hidden = false;
+    if (templateDiffView && templateDiffView.destroy) templateDiffView.destroy();
+    templateDiffView = null;
+    host.innerHTML = '';
+
+    function say(text) {
+        templateDiffSummary = text;
+        var note = document.createElement('div');
+        note.className = 'tpd-empty';
+        note.textContent = text;
+        host.appendChild(note);
+        syncDiffSummary();
+    }
+
+    if (base.pending) { say('читаем ревизию из git…'); return; }
+    if (base.error) { say(base.error); return; }
+
+    var P = window.TemplatePreview;
+    var left = P.parse(base.text);
+    if (left.error) { say('Эталон не разобрался: ' + left.error); return; }
+    var right = P.parse(target.model.getValue());
+    if (right.error) { say('Текущий макет не разобрался: ' + right.error); return; }
+
+    var diff = window.TemplateDiff.compare(left.model, right.model);
+    if (diff.error) { say(diff.error); return; }
+    var renderText = target.model.getValue();
+    var canEditDiff = state.isEditing && !state.readOnly && !state.sarifMode
+        && target.model === model && state.previewId === 'template';
+    function targetsOf(entry, detail) {
+        if (detail && detail.targets && detail.targets.length) return detail.targets;
+        if (entry && entry.targets && entry.targets.length) return entry.targets;
+        if (entry && entry.row != null) return [{ row: entry.row, col: null, leftRow: entry.leftRow }];
+        if (entry && entry.col != null) return [{ row: null, col: entry.col, leftCol: entry.leftCol }];
+        return [];
+    }
+    function formatArgs(field, info) {
+        var f = info && info.format || {}, args = {};
+        if (field === 'font' && info.font) args.font = { face: info.font.faceName, size: info.font.height,
+            bold: !!info.font.bold, italic: !!info.font.italic, underline: !!info.font.underline,
+            strikeout: !!info.font.strikeout };
+        else if (field === 'textColor' || field === 'backColor' || field === 'horizontalAlignment'
+            || field === 'verticalAlignment' || field === 'textPlacement') args[field] = f[field] == null ? null : f[field];
+        else if (/^border(Left|Top|Right|Bottom)$/.test(field)) {
+            var side = field.slice(6).toLowerCase();
+            var line = info.borders && info.borders[side];
+            args[side + 'Border'] = line ? { style: line.style, width: line.width || 1 } : null;
+        }
+        return args;
+    }
+    /* true — откат возможен; строка — почему нет (кнопка выключена с этой
+     * причиной); false — у изменения отката нет вовсе. Проверка — тот же
+     * пробный прогон TemplateMarkup, что и при нажатии. */
+    function canRestoreTemplate(entry, detail) {
+        if (!canEditDiff) return false;
+        if (target.model.getValue() !== renderText) return 'Макет изменился после сравнения — обновите сравнение';
+        if (entry.structural === 'row' || entry.structural === 'column') {
+            var count = entry.structural === 'row' ? entry.rowEnd - entry.row + 1 : entry.colEnd - entry.col + 1;
+            if (entry.kind === 'added' && entry.side === 'right') {
+                try {
+                    var removal = entry.structural === 'row'
+                        ? window.TemplateMarkup.deleteRows(renderText, { at: entry.row + 1, count: count })
+                        : window.TemplateMarkup.deleteColumns(renderText, { at: entry.col + 1, count: count });
+                    if (removal.result.removedMerges) return 'Нельзя вернуть: удаление затронет объединения ячеек';
+                    if (removal.result.removedDrawings) return 'Нельзя вернуть: удаление затронет рисунки';
+                    if (removal.result.removedAreas && removal.result.removedAreas.length)
+                        return 'Нельзя вернуть: удаление затронет именованные области';
+                    return true;
+                } catch (removeError) { return 'Нельзя вернуть: ' + (removeError && removeError.message || removeError); }
+            }
+            if (entry.kind !== 'removed' || entry.side !== 'left') return false;
+            try {
+                if (entry.structural === 'row') {
+                    var nextRow = null;
+                    for (var ri = 0; ri < diff.rows.length; ri++) {
+                        var pair = diff.rows[ri];
+                        if (pair.kind !== 'removed' && pair.left > entry.rowEnd) { nextRow = pair.right; break; }
+                    }
+                    var insertRowAt = nextRow == null ? right.model.rows.length : nextRow;
+                    window.TemplateMarkup.restoreRows(renderText, base.text,
+                        { at: insertRowAt + 1, sourceAt: entry.row + 1, count: count });
+                    return true;
+                }
+                var nextColumn = null;
+                for (var ci = 0; ci < diff.columns.length; ci++) {
+                    var columnPair = diff.columns[ci];
+                    if (columnPair.kind !== 'removed' && columnPair.left > entry.colEnd) { nextColumn = columnPair.right; break; }
+                }
+                var insertColumnAt = nextColumn == null ? window.TemplatePreview.sheetWidth(right.model) : nextColumn;
+                window.TemplateMarkup.restoreColumns(renderText, base.text,
+                    { at: insertColumnAt + 1, sourceAt: entry.col + 1, count: count });
+                return true;
+            } catch (restoreError) {
+                return 'Нельзя вернуть без потерь: ' + (restoreError && restoreError.message || restoreError);
+            }
+        }
+        if (!detail) return false;
+        if (detail.field === 'width' || detail.field === 'height' || detail.field === 'hidden') {
+            var sizeTargets = targetsOf(entry, detail), sizePreview = window.TemplatePreview;
+            if (!sizeTargets.length) return false;
+            for (var si = 0; si < sizeTargets.length; si++) {
+                var st = sizeTargets[si];
+                var sr = st.leftRow != null ? st.leftRow : st.row;
+                var sc = st.leftCol != null ? st.leftCol : st.col;
+                var baseSize = sizePreview.cellSize(left.model, sr == null ? 0 : sr, sc == null ? 0 : sc);
+            }
+            return true;
+        }
+        var supported = { font: 1, textColor: 1, backColor: 1, horizontalAlignment: 1,
+            verticalAlignment: 1, textPlacement: 1, borderLeft: 1, borderTop: 1,
+            borderRight: 1, borderBottom: 1, parameter: 1, text: 1, detail: 1 };
+        if (!supported[detail.field]) return false;
+        var targets = targetsOf(entry, detail);
+        if (!targets.length) return false;
+        var P = window.TemplatePreview;
+        for (var i = 0; i < targets.length; i++) {
+            var t = targets[i];
+            var br = t.leftRow != null ? t.leftRow : t.row;
+            var bc = t.leftCol != null ? t.leftCol : t.col;
+            if (br == null || bc == null) return false;
+            var beforeInfo = P.cellInfo(left.model, br, bc);
+            if (!beforeInfo) return false;
+            if (detail.field === 'parameter' && beforeInfo.fillType !== 'Parameter') return false;
+            if (detail.field === 'text' && beforeInfo.fillType !== 'Text' && beforeInfo.fillType !== 'Template') return false;
+            if (detail.field !== 'parameter' && detail.field !== 'text' && detail.field !== 'detail'
+                && !Object.keys(formatArgs(detail.field, beforeInfo)).length) return false;
+        }
+        return true;
+    }
+    function restoreTemplate(entry, detail) {
+        var verdict = canRestoreTemplate(entry, detail);
+        if (verdict !== true) {
+            if (typeof verdict === 'string') showTemplateNote(verdict);
+            return;
+        }
+        var before = target.model.getValue(), xml = before, result;
+        try {
+            if (entry.structural === 'row') {
+                if (entry.kind === 'added') result = window.TemplateMarkup.deleteRows(xml,
+                    { at: entry.row + 1, count: entry.rowEnd - entry.row + 1 });
+                else {
+                    var rowAt = null;
+                    for (var ri = 0; ri < diff.rows.length; ri++) {
+                        var rowPair = diff.rows[ri];
+                        if (rowPair.kind !== 'removed' && rowPair.left > entry.rowEnd) { rowAt = rowPair.right; break; }
+                    }
+                    if (rowAt == null) rowAt = right.model.rows.length;
+                    result = window.TemplateMarkup.restoreRows(xml, base.text,
+                        { at: rowAt + 1, sourceAt: entry.row + 1, count: entry.rowEnd - entry.row + 1 });
+                }
+                xml = result.xml;
+            } else if (entry.structural === 'column') {
+                if (entry.kind === 'added') result = window.TemplateMarkup.deleteColumns(xml,
+                    { at: entry.col + 1, count: entry.colEnd - entry.col + 1 });
+                else {
+                    var columnAt = null;
+                    for (var ci = 0; ci < diff.columns.length; ci++) {
+                        var columnPair = diff.columns[ci];
+                        if (columnPair.kind !== 'removed' && columnPair.left > entry.colEnd) { columnAt = columnPair.right; break; }
+                    }
+                    if (columnAt == null) columnAt = window.TemplatePreview.sheetWidth(right.model);
+                    result = window.TemplateMarkup.restoreColumns(xml, base.text,
+                        { at: columnAt + 1, sourceAt: entry.col + 1, count: entry.colEnd - entry.col + 1 });
+                }
+                xml = result.xml;
+            } else {
+                var P = window.TemplatePreview, targets = targetsOf(entry, detail);
+                for (var i = 0; i < targets.length; i++) {
+                    var t = targets[i];
+                    var r = t.row != null ? t.row : t.leftRow;
+                    var c = t.col != null ? t.col : t.leftCol;
+                    var br = t.leftRow != null ? t.leftRow : t.row;
+                    var bc = t.leftCol != null ? t.leftCol : t.col;
+                    if (detail.field === 'width' || detail.field === 'height' || detail.field === 'hidden') {
+                        var baseSize = P.cellSize(left.model, br == null ? 0 : br, bc == null ? 0 : bc);
+                        var sizeArgs = detail.field === 'width'
+                            ? { column: c + 1, width: baseSize.width || 0 }
+                            : detail.field === 'height'
+                                ? { row: r + 1, height: baseSize.height || 0 }
+                                : c != null ? { column: c + 1, hidden: baseSize.hidden }
+                                    : { row: r + 1, hidden: baseSize.hidden };
+                        result = window.TemplateMarkup.setSize(xml, sizeArgs);
+                    } else if (detail.field === 'parameter' || detail.field === 'text' || detail.field === 'detail') {
+                        var baseCell = P.cellInfo(left.model, br, bc).cell || {};
+                        var contentArgs = { row: r + 1, column: c + 1 };
+                        if (detail.field === 'parameter') contentArgs.name = baseCell.parameter || '';
+                        else if (detail.field === 'detail') contentArgs.detail = baseCell.detailParameter || '';
+                        else if (P.cellInfo(left.model, br, bc).fillType === 'Template') contentArgs.template = baseCell.text || '';
+                        else contentArgs.text = baseCell.text || '';
+                        result = window.TemplateMarkup.setParameter(xml, contentArgs);
+                    } else {
+                        var info = P.cellInfo(left.model, br, bc), format = formatArgs(detail.field, info);
+                        format.row = r + 1; format.column = c + 1;
+                        result = window.TemplateMarkup.setFormat(xml, format);
+                    }
+                    xml = result.xml;
+                }
+            }
+            if (xml !== before) {
+                applyPreviewEdits(window.DocEdits.textEdits(before, xml));
+                refreshDocPreview();
+                refreshDiffPanel();
+            }
+        } catch (err) { showTemplateNote('Откат не выполнен: ' + (err && err.message || err)); }
+    }
+    templateDiffView = window.TemplateDiffView.render(document, host, {
+        left: { model: left.model, label: gitBaseLabel() },
+        right: { model: right.model, label: 'текущее состояние' },
+        diff: diff,
+        canRestore: canRestoreTemplate,
+        onRestore: restoreTemplate,
+        onShowXml: showXmlDiff
+    });
+    var counted = (templateDiffView && templateDiffView.entries) ? templateDiffView.entries.length : 0;
+    templateDiffSummary = counted
+        ? 'изменений: ' + counted
+        : 'отличий от ' + gitBaseLabel(true) + ' нет';
+    syncDiffSummary();
+}
+
+/* Сводка формы вместо построчного XML: сущности сопоставляются по имени,
+ * поэтому перемещение или одно свойство остаётся одной читаемой правкой. */
+/* Модуль формы для вкладки «Модуль» того же сравнения: та же выбранная
+ * ревизия, но своя цель git. null — у формы нет модуля. */
+function formModuleDiffSide() {
+    if (!formModuleModel || !state.formModulePath) return null;
+    var base = diffBaseline({ key: 'module', model: formModuleModel, baseline: moduleBaselineContent });
+    return { text: base.pending || base.error ? null : base.text, pending: !!base.pending,
+        error: base.error || '', current: formModuleModel.getValue() };
+}
+
+function renderFormDiff(target, base) {
+    var host = document.getElementById('diff-sheets');
+    var body = document.getElementById('diff-body');
+    if (!host) return;
+    if (body) body.hidden = true;
+    host.hidden = false;
+    if (templateDiffView && templateDiffView.destroy) templateDiffView.destroy();
+    templateDiffView = null;
+    host.innerHTML = '';
+    function say(text) {
+        templateDiffSummary = text;
+        var note = document.createElement('div');
+        note.className = 'fpd-empty'; note.textContent = text; host.appendChild(note);
+        syncDiffSummary();
+    }
+    if (base.pending) { say('читаем ревизию из git…'); return; }
+    if (base.error) { say(base.error); return; }
+    var currentText = target.model.getValue();
+    var moduleSide = formModuleDiffSide();
+    var diff = window.FormDiff.compareXml(base.text, currentText, moduleSide && moduleSide.text != null
+        ? { moduleBefore: moduleSide.text, moduleAfter: moduleSide.current } : null);
+    if (diff.error) { say(diff.error); return; }
+    var renderText = currentText;
+    var canEditDiff = state.isEditing && !state.readOnly && !state.sarifMode
+        && target.model === model && state.previewId === 'form';
+    function safeFormProperty(change) {
+        return !!(change && /^[A-Za-z][A-Za-z0-9]*$/.test(change.property)
+            && ['Вид', 'Родитель', 'Страница'].indexOf(change.property) < 0);
+    }
+    function canRestoreForm(entry, change) {
+        return canEditDiff && entry && entry.kind === 'changed' && entry.type !== 'order'
+            && !!entry.name && safeFormProperty(change);
+    }
+    function restoreForm(entry, change) {
+        if (!canRestoreForm(entry, change) || target.model.getValue() !== renderText) return;
+        var fresh = window.FormDiff.compareXml(base.text, target.model.getValue());
+        var stillChanged = fresh.entries && fresh.entries.some(function (candidate) {
+            return candidate.name === entry.name && candidate.type === entry.type
+                && candidate.changes && candidate.changes.some(function (item) {
+                    return item.property === change.property && item.from === change.from && item.to === change.to;
+                });
+        });
+        if (!stillChanged) return;
+        var before = target.model.getValue();
+        try {
+            var restored = window.FormEdit.restoreProperty(before, base.text,
+                { element: entry.name, property: change.property });
+            if (restored.xml === before) return;
+            applyPreviewEdits(window.DocEdits.textEdits(before, restored.xml));
+            refreshDocPreview();
+            refreshDiffPanel();
+        } catch (err) { showTemplateNote('Откат не выполнен: ' + (err && err.message || err)); }
+    }
+    /* Удалённый элемент возвращается целиком, если его родитель на месте:
+     * null — кнопки нет (только смотрим), строка — причина недоступности. */
+    function restoreElementState(entry) {
+        if (!canEditDiff || !entry || entry.type !== 'element' || entry.kind !== 'removed') return null;
+        return window.FormEdit.restoreElementBlocked
+            ? window.FormEdit.restoreElementBlocked(renderText, base.text, entry.name) : null;
+    }
+    function restoreElement(entry) {
+        if (restoreElementState(entry) !== '' || target.model.getValue() !== renderText) return;
+        var before = target.model.getValue();
+        try {
+            var restored = window.FormEdit.restoreElement(before, base.text, { element: entry.name });
+            if (restored.xml === before) return;
+            applyPreviewEdits(window.DocEdits.textEdits(before, restored.xml));
+            refreshDocPreview();
+            refreshDiffPanel();
+        } catch (err) { showTemplateNote('Элемент не восстановлен: ' + (err && err.message || err)); }
+    }
+    var renderOptions = { diff: diff, canRestore: canRestoreForm, onRestore: restoreForm, onShowXml: showXmlDiff,
+        restoreElementState: restoreElementState, onRestoreElement: restoreElement };
+    if (moduleSide) {
+        renderOptions.module = { before: moduleSide.text || '', after: moduleSide.current,
+            pending: moduleSide.pending, error: moduleSide.error, changes: diff.moduleChanges || null,
+            changed: moduleSide.text != null && moduleSide.text.replace(/\r\n?/g, '\n') !== moduleSide.current.replace(/\r\n?/g, '\n') };
+        renderOptions.createModuleDiff = createFormModuleDiff;
+    }
+    var formProvider = providerById('form');
+    if (formProvider) {
+        var beforePreview = parseWithProviderUncached(formProvider, base.text);
+        var afterPreview = parseWithProviderUncached(formProvider, currentText);
+        if (beforePreview && beforePreview.model && afterPreview && afterPreview.model) {
+            renderOptions.left = { model: beforePreview.model, label: gitBaseLabel() };
+            renderOptions.right = { model: afterPreview.model, label: 'текущее состояние' };
+        }
+    }
+    templateDiffView = window.FormDiffView.render(document, host, renderOptions);
+    var count = diff.entries ? diff.entries.length : 0;
+    templateDiffSummary = count ? 'изменённых сущностей: ' + count
+        : 'отличий от ' + gitBaseLabel(true) + ' нет';
+    syncDiffSummary();
+}
+
+/* Кнопка «XML-текст» смыслового сравнения: тот же переход, что и кнопкой
+ * «форма/исходник» — без режима просмотра панель сравнивает текст. */
+function showXmlDiff() {
+    if (state.previewMode) setPreviewMode(false);
+}
+
+/* Встроенный Monaco для единственного места, где две стороны полезнее
+ * объединённого представления: текста запроса набора данных. */
+function createDcsQueryDiff(host, before, after) {
+    return createMonacoTextDiff(host, before, after, 'bsl_query');
+}
+
+/* Вкладка «Модуль» сравнения формы: тот же встроенный Monaco, язык BSL. */
+function createFormModuleDiff(host, before, after) {
+    return createMonacoTextDiff(host, before, after, 'bsl');
+}
+
+function createMonacoTextDiff(host, before, after, language) {
+    if (!window.monaco || !monaco.editor) return null;
+    var original = monaco.editor.createModel(before || '', language);
+    var modified = monaco.editor.createModel(after || '', language);
+    var opts = diffEditorOptions();
+    opts.fontSize = Math.max(11, (state.fontSize || 14) - 1);
+    var view = monaco.editor.createDiffEditor(host, opts);
+    view.setModel({ original: original, modified: modified });
+    wireScrollFixFor(view.getOriginalEditor());
+    wireScrollFixFor(view.getModifiedEditor());
+    return {
+        destroy: function () {
+            view.dispose();
+            original.dispose();
+            modified.dispose();
+        }
+    };
+}
+
+function renderDcsDiff(target, base) {
+    var host = document.getElementById('diff-sheets');
+    var body = document.getElementById('diff-body');
+    if (!host) return;
+    if (body) body.hidden = true;
+    host.hidden = false;
+    if (templateDiffView && templateDiffView.destroy) templateDiffView.destroy();
+    templateDiffView = null;
+    host.innerHTML = '';
+    function say(text) {
+        templateDiffSummary = text;
+        var note = document.createElement('div');
+        note.className = 'dcsd-empty'; note.textContent = text; host.appendChild(note);
+        syncDiffSummary();
+    }
+    if (base.pending) { say('читаем ревизию из git…'); return; }
+    if (base.error) { say(base.error); return; }
+    var diff = window.DcsDiff.compareXml(base.text, target.model.getValue());
+    if (diff.error) { say(diff.error); return; }
+    var renderText = target.model.getValue();
+    var p = currentProvider();
+    var canEditDiff = state.isEditing && !state.readOnly && !state.sarifMode
+        && target.model === model && !!p && p.id === 'dcs';
+    function freshDcsModel() {
+        var parsed = parseWithProvider(p, model.getValue());
+        return parsed && parsed.model ? parsed.model : null;
+    }
+    /* true — откат свойства возможен, строка — почему нет, false — у этого
+     * изменения отката нет. Проверка — пробная правка той же функцией. */
+    function canRestoreDcs(entry, change) {
+        if (!canEditDiff || !window.DcsDiff.restorePlan(diff, entry, change)) return false;
+        if (target.model.getValue() !== renderText) return 'Схема изменилась после сравнения — обновите сравнение';
+        var edit = window.DcsDiff.restoreEdit(diff, entry, change, freshDcsModel());
+        if (!edit) return false;
+        return edit.error ? String(edit.error) : true;
+    }
+    function restoreDcs(entry, change) {
+        var verdict = canRestoreDcs(entry, change);
+        if (verdict !== true) {
+            if (typeof verdict === 'string') showTemplateNote(verdict);
+            return;
+        }
+        var edit = window.DcsDiff.restoreEdit(diff, entry, change, freshDcsModel());
+        if (!edit || edit.error) return;
+        applyDcsEdit(edit);
+        model.pushStackElement();
+        refreshDocPreview();
+        refreshDiffPanel();
+    }
+    templateDiffView = window.DcsDiffView.render(document, host, {
+        diff: diff,
+        canRestore: canRestoreDcs,
+        onRestore: restoreDcs,
+        leftLabel: gitBaseLabel(),
+        rightLabel: 'текущее состояние',
+        createQueryDiff: createDcsQueryDiff,
+        onShowXml: showXmlDiff
+    });
+    var count = diff.entries ? diff.entries.length : 0;
+    templateDiffSummary = count ? 'изменений в СКД: ' + count
+        : diff.unmodeled ? 'есть различия только в XML'
+        : 'отличий от ' + gitBaseLabel(true) + ' нет';
+    syncDiffSummary();
+}
+
+/* Текстовое сравнение снова занимает панель: лист убирается вместе со своими
+ * обработчиками прокрутки. */
+function dropTemplateDiff() {
+    if (templateDiffView && templateDiffView.destroy) templateDiffView.destroy();
+    templateDiffView = null;
+    templateDiffSummary = '';
+    var host = document.getElementById('diff-sheets');
+    if (host) { host.hidden = true; host.innerHTML = ''; }
+    var body = document.getElementById('diff-body');
+    if (body) body.hidden = false;
+}
+
+function refreshDiffPanel() {
+    var target = diffTarget();
+    if (!target) return;
+    /* Сначала список эталонов: смена цели могла выбросить выбранную ревизию
+     * (у модуля формы своя история), и baseline надо считать по уже
+     * исправленному выбору. Иначе слева пусто с «git недоступен», а легенда
+     * тут же обещает файл на диске. */
+    syncDiffBase();
+    var templateSheets = templateDiffMode(target);
+    var formSheets = formDiffMode(target);
+    var dcsSheets = dcsDiffMode(target);
+    var sheets = templateSheets || formSheets || dcsSheets;
+    var version = target.model.getAlternativeVersionId();
+    var base = diffBaseline(target);
+    /* Отпечаток левой стороны: по нему видно, что перерисовывать нечего.
+     * Ожидание и отказ — такие же состояния, как готовый текст. */
+    /* Кнопки «Вернуть» есть только в режиме правки, так что режим входит в
+     * отпечаток: карандаш при открытом диффе перерисовывает листы. */
+    var stamp = (sheets ? 'sheet::' + (state.isEditing && !state.readOnly ? 'edit::' : 'view::') : 'text::')
+        + gitState.base + '::'
+        + (base.pending ? '<ждём>' : base.error ? '<нет> ' + base.error : base.text);
+    /* Вкладка «Модуль» и пометки обработчиков зависят и от модуля формы. */
+    if (formSheets) {
+        var moduleSide = formModuleDiffSide();
+        if (moduleSide) stamp += '::module::' + (moduleSide.pending ? '<ждём>' : moduleSide.error ? '<нет> ' + moduleSide.error
+            : moduleSide.text) + '::' + moduleSide.current;
+    }
+    if (diffShown.model === target.model && diffShown.version === version
+        && diffShown.baseline === stamp) return;
+    diffShown = { model: target.model, version: version, baseline: stamp };
+    diffBaseState = { pending: !!base.pending, error: base.error || '' };
+    if (sheets) {
+        var sheetTitle = document.getElementById('diff-title');
+        if (sheetTitle) sheetTitle.textContent = 'Изменения: ' + target.title;
+        syncDiffLegend();
+        if (dcsSheets) renderDcsDiff(target, base);
+        else if (formSheets) renderFormDiff(target, base);
+        else renderTemplateDiff(target, base);
+        return;
+    }
+    dropTemplateDiff();
+    /* Из листов можно прийти в текст, ни разу не заводив Monaco. */
+    if (!ensureDiffEditor(target.language)) return;
+    monaco.editor.setModelLanguage(diffOriginalModel, target.language);
+    monaco.editor.setModelLanguage(diffModifiedModel, target.language);
+    /* Нечего показать слева — пусты обе стороны: пустой эталон против целого
+     * документа нарисовал бы «весь файл добавлен», а это неправда. Что
+     * именно случилось, говорит заголовок. */
+    var blank = !!(base.pending || base.error);
+    diffOriginalModel.setValue(blank ? '' : base.text);
+    diffModifiedModel.setValue(blank ? '' : target.model.getValue());
+    var title = document.getElementById('diff-title');
+    if (title) title.textContent = 'Изменения: ' + target.title;
+    syncDiffLegend();
+    syncDiffSummary();
+}
+
+function openDiffPanel() {
+    var target = diffTarget();
+    var panel = document.getElementById('diff-panel');
+    if (!target || !panel) return;
+    /* Листам редактор Monaco не нужен, и заводить его ради них не за чем. */
+    if (!templateDiffMode(target) && !ensureDiffEditor(target.language)) return;
+    panel.hidden = false;
+    diffOpen = true;
+    /* Коммиты могли появиться, пока файл был открыт, а индекс — измениться. */
+    if (gitAvailable()) requestGitInfo(target.key);
+    /* Список эталонов перестраивает refreshDiffPanel() — он же считает по
+     * нему левую сторону, поэтому второй вызов здесь был бы лишним. */
+    refreshDiffPanel();
+    if (diffEditor && !templateDiffView) diffEditor.layout();
+    applyChrome();
+}
+
+function closeDiffPanel() {
+    if (!diffOpen) return;
+    diffOpen = false;
+    var panel = document.getElementById('diff-panel');
+    if (panel) panel.hidden = true;
+    /* Повторное открытие всегда собирает представление заново: пока панель
+     * скрыта, режим превью или её DOM могли измениться. */
+    diffShown = { model: null, version: -1, baseline: null };
+    applyChrome();
+    if (editor) editor.layout();
+}
+
+function toggleDiffPanel() {
+    if (diffOpen) { closeDiffPanel(); return; }
+    if (diffAvailable()) openDiffPanel();
+}
+
+/* Другой файл — другой baseline: открытое сравнение относится к прошлому
+ * документу, а его текст незачем держать в памяти. Другой файл лежит и в
+ * другом месте в git — или не лежит там вовсе. */
+function resetDiffPanel() {
+    closeDiffPanel();
+    closeGitRefInput();
+    dropTemplateDiff();
+    diffShown = { model: null, version: -1, baseline: null };
+    diffBaseState = { pending: false, error: '' };
+    gitState.base = 'disk';
+    gitState.info = { file: null, module: null };
+    gitState.blobs = {};
+    gitPending = {};
+    var sel = document.getElementById('diff-base');
+    if (sel) sel.setAttribute('data-stamp', '');
+    if (diffOriginalModel) diffOriginalModel.setValue('');
+    if (diffModifiedModel) diffModifiedModel.setValue('');
+}
+
 function flushPreviewEdits() {
     if (previewInputTimer) {
         clearTimeout(previewInputTimer);
@@ -2311,10 +4440,17 @@ function flushPreviewEdits() {
 }
 
 /* Read-only state and BSL typing aids for the model the editor shows. */
+/* A data composition schema is not edited by hand for now: neither its XML
+ * nor its window. Only restoring a change from the diff writes into it. */
+function dcsLocked() {
+    var p = currentProvider();
+    return !!p && p.id === 'dcs';
+}
+
 function editingOptions(bsl) {
     var snip = !!(state.isEditing && bsl);
     return {
-        readOnly: !state.isEditing,
+        readOnly: !state.isEditing || dcsLocked(),
         quickSuggestions: snip,
         acceptSuggestionOnEnter: snip ? 'smart' : 'off',
         tabCompletion: snip ? 'on' : 'off',
@@ -2329,9 +4465,25 @@ function setEditing(on) {
      * its XML source. */
     var moduleOpen = formModuleOpen();
     editor.updateOptions(editingOptions(isBslModule() || moduleOpen));
-    if (isDocPreview() && !moduleOpen) setPreviewMode(!on);
+    /* A picture that can be edited in place keeps the picture; the rest give
+     * way to their XML, which is where they are edited. */
+    if (isDocPreview() && !moduleOpen && !previewEditable()) setPreviewMode(!on);
     applyChrome();
     applyPreviewEditable();
+    /* The picture is drawn read-only or editable, with its toolbar and its
+     * session, so switching the mode has to draw it again. */
+    if (previewEditable()) refreshDocPreview();
+    /* The tree carries the reordering of a form, and only while the form is
+     * edited: its rows become draggable and the header grows the arrows, so
+     * the mode has to redraw it. */
+    if (formOutlineActive()) renderOutline();
+    /* Which panel belongs in the right-hand pane follows the mode: the
+     * read-only inspector in view mode, the property editor in edit mode. The
+     * template path redraws it from bindTemplateEditing, the form path had
+     * nothing, so the pencil left the old panel standing until the user picked
+     * an element again. The call is idempotent, so both are served here. */
+    renderPropertyInspector();
+    if (diffOpen) refreshDiffPanel();
     if (state.isEditing && state.previewMode && !isDocPreview()) focusPreview();
     else if (editor) editor.focus();
 }
@@ -2360,6 +4512,7 @@ function applyRevert(content) {
     suppressDirty = false;
     state.dirty = false;
     baselineContent = model.getValue();
+    baselineVersion = model.getAlternativeVersionId();
     if (editor) {
         editor.setScrollTop(scroll);
         if (pos) editor.setPosition(pos);
@@ -2381,6 +4534,7 @@ function applyModuleRevert(content) {
     suppressDirty = false;
     state.moduleDirty = false;
     moduleBaselineContent = formModuleModel.getValue();
+    moduleBaselineVersion = formModuleModel.getAlternativeVersionId();
     if (formModuleOpen()) refreshOutline();
     updateStatusBar();
 }
@@ -2399,7 +4553,8 @@ function savePromptOpen() {
 
 function toggleEdit() {
     if (pendingLeaveEdit || pendingClose || savePromptOpen()) return;
-    if (state.previewMode && isDocPreview() && !formModuleOpen() && !state.isEditing) return;
+    if (state.previewMode && isDocPreview() && !formModuleOpen() && !previewEditable()
+        && !state.isEditing) return;
     if (state.isEditing) {
         flushPreviewEdits();
         if (anyDirty()) {
@@ -2415,6 +4570,13 @@ function toggleEdit() {
 /* Host asks (on window close) whether it is safe to shut down. Unsaved edits
  * get the same save-prompt as leaving edit mode; otherwise ack right away. */
 function requestClose() {
+    if (window.EpfPack && EpfPack.visible() && EpfPack.running()) {
+        return window.confirm('Сборка ещё идёт. Прервать её и закрыть?');
+    }
+    if (window.EpfUnpack && EpfUnpack.visible() && EpfUnpack.running()) {
+        send({ cmd: 'closeAck', allow: window.confirm('Идёт распаковка. Прервать её и закрыть?') });
+        return;
+    }
     if (savePromptOpen()) {
         // A prompt is already up for another reason (e.g. leaving edit mode);
         // piggyback the close on whatever the user decides there instead of
@@ -2433,7 +4595,13 @@ function requestClose() {
 
 function formatDocument() {
     if (!state.isEditing || !(isBslModule() || formModuleOpen()) || !editor) return;
-    var act = editor.getAction('editor.action.formatDocument');
+    var selection = editor.getSelection && editor.getSelection();
+    var currentModel = editor.getModel && editor.getModel();
+    var selectedLength = selection && currentModel
+        ? currentModel.getValueInRange(selection).length : 0;
+    var actionId = selectedLength > 2
+        ? 'editor.action.formatSelection' : 'editor.action.formatDocument';
+    var act = editor.getAction(actionId);
     if (act) act.run();
     editor.focus();
 }
@@ -2441,6 +4609,55 @@ function formatDocument() {
 function toggleLineComment() {
     if (!state.isEditing || !(isBslFamily() || formModuleOpen()) || !editor) return;
     editor.trigger('bsl', 'editor.action.commentLine');
+    editor.focus();
+}
+
+/* Continuation lines of a multi-line BSL string (a query text) start with
+ * "|" after the indent. Toggles it on every line the selections touch: when
+ * all non-blank lines already carry it, it is removed, otherwise added where
+ * missing. A selection ending at column 1 does not claim that last line. */
+function toggleStringBar() {
+    if (!state.isEditing || !(isBslFamily() || formModuleOpen()) || !editor) return;
+    var model = editor.getModel();
+    var selections = editor.getSelections() || [];
+    if (!model || !selections.length) return;
+    var seen = {}, lines = [];
+    selections.forEach(function (sel) {
+        var last = sel.endLineNumber;
+        if (last > sel.startLineNumber && sel.endColumn === 1) last--;
+        for (var ln = sel.startLineNumber; ln <= last; ln++) {
+            if (seen[ln]) continue;
+            seen[ln] = true;
+            var text = model.getLineContent(ln);
+            var indent = text.length - text.replace(/^\s+/, '').length;
+            lines.push({ line: ln, col: indent + 1, blank: indent === text.length, bar: text.charAt(indent) === '|' });
+        }
+    });
+    var filled = lines.filter(function (l) { return !l.blank; });
+    var remove = filled.length > 0 && filled.every(function (l) { return l.bar; });
+    var edits = [];
+    lines.forEach(function (l) {
+        if (remove && l.bar)
+            edits.push({ range: new monaco.Range(l.line, l.col, l.line, l.col + 1), text: '' });
+        else if (!remove && !l.bar && (!l.blank || lines.length === 1))
+            edits.push({ range: new monaco.Range(l.line, l.col, l.line, l.col), text: '|' });
+    });
+    if (edits.length) {
+        editor.pushUndoStop();
+        editor.executeEdits('string-bar', edits);
+        editor.pushUndoStop();
+    }
+    editor.focus();
+}
+
+/* Toolbar shortcuts call the same public actions as Monaco's F1 palette.
+ * getAction() also covers actions that complete asynchronously; trigger() is
+ * retained for compatibility with older Monaco bundles. */
+function runEditorAction(id) {
+    if (!editor || !monacoVisible()) return;
+    var action = editor.getAction && editor.getAction(id);
+    if (action) action.run();
+    else editor.trigger('toolbar', id, null);
     editor.focus();
 }
 
@@ -2475,8 +4692,10 @@ function onSavePromptCancel() {
  * swaps the loaded file, and the page keeps the way back. `navHistory` holds
  * the files left behind, newest last; `navPending` is the request in flight,
  * so a load the host starts on its own (Total Commander's next file) clears
- * the history instead of extending it. */
+ * the history instead of extending it. `navForward` holds the files «Назад»
+ * left, newest last, until a new jump drops them. */
 var navHistory = [];
+var navForward = [];
 var navPending = null;
 
 function pathLabel(path) {
@@ -2491,12 +4710,92 @@ function pathLabel(path) {
     return name;
 }
 
-function navigateTo(path, back) {
+/* A file of the Designer dump named the way the Designer names it:
+ * Справочник.Номенклатура.Форма.ФормаЭлемента, with the module after a colon.
+ * Anything outside a dump keeps its file name (pathLabel). */
+var NAV_CLASSES = {
+    Catalogs: 'Справочник', Documents: 'Документ', DocumentJournals: 'ЖурналДокументов',
+    Enums: 'Перечисление', Constants: 'Константа', InformationRegisters: 'РегистрСведений',
+    AccumulationRegisters: 'РегистрНакопления', AccountingRegisters: 'РегистрБухгалтерии',
+    CalculationRegisters: 'РегистрРасчета', ChartsOfCharacteristicTypes: 'ПланВидовХарактеристик',
+    ChartsOfAccounts: 'ПланСчетов', ChartsOfCalculationTypes: 'ПланВидовРасчета',
+    BusinessProcesses: 'БизнесПроцесс', Tasks: 'Задача', ExchangePlans: 'ПланОбмена',
+    DataProcessors: 'Обработка', Reports: 'Отчет', CommonModules: 'ОбщийМодуль',
+    CommonForms: 'ОбщаяФорма', CommonCommands: 'ОбщаяКоманда', CommonTemplates: 'ОбщийМакет',
+    CommonPictures: 'ОбщаяКартинка', CommonAttributes: 'ОбщийРеквизит', Subsystems: 'Подсистема',
+    Roles: 'Роль', HTTPServices: 'HTTPСервис', WebServices: 'WebСервис',
+    SettingsStorages: 'ХранилищеНастроек', FilterCriteria: 'КритерийОтбора',
+    DefinedTypes: 'ОпределяемыйТип', EventSubscriptions: 'ПодпискаНаСобытие',
+    ScheduledJobs: 'РегламентноеЗадание', SessionParameters: 'ПараметрСеанса',
+    FunctionalOptions: 'ФункциональнаяОпция', StyleItems: 'ЭлементСтиля', Styles: 'Стиль',
+    XDTOPackages: 'ПакетXDTO', Sequences: 'Последовательность',
+    DocumentNumerators: 'НумераторДокументов', CommandGroups: 'ГруппаКоманд', Languages: 'Язык'
+};
+var NAV_PARTS = { Forms: 'Форма', Templates: 'Макет', Commands: 'Команда', Recalculations: 'Перерасчет' };
+var NAV_MODULES = {
+    module: 'Модуль', objectmodule: 'Модуль объекта', managermodule: 'Модуль менеджера',
+    valuemanagermodule: 'Модуль менеджера значения', recordsetmodule: 'Модуль набора записей',
+    commandmodule: 'Модуль команды', sessionmodule: 'Модуль сеанса',
+    applicationmodule: 'Модуль приложения', managedapplicationmodule: 'Модуль управляемого приложения',
+    ordinaryapplicationmodule: 'Модуль обычного приложения',
+    externalconnectionmodule: 'Модуль внешнего соединения'
+};
+
+function navLabel(path) {
+    var parts = String(path || '').split(/[\\/]/).filter(Boolean);
+    var file = parts[parts.length - 1] || '';
+    var module = /\.bsl$/i.test(file) ? NAV_MODULES[file.replace(/\.bsl$/i, '').toLowerCase()] || '' : '';
+    var at = -1;
+    for (var i = parts.length - 2; i >= 0 && at < 0; i--) {
+        if (!Object.prototype.hasOwnProperty.call(NAV_CLASSES, parts[i])) continue;
+        var rest = parts.slice(i + 1);
+        /* Catalogs/X.xml, Catalogs/X/X.mdo or anything under Catalogs/X/. */
+        if (rest.length === 1 ? /\.(xml|mdo)$/i.test(rest[0])
+                : /^(Ext|Forms|Templates|Commands|Recalculations)$/i.test(rest[1])
+                    || rest.length === 2 && /\.(mdo|bsl)$/i.test(rest[1]))
+            at = i;
+    }
+    if (at < 0) {
+        if (/^Configuration\.(xml|mdo)$/i.test(file)) return 'Конфигурация';
+        if (module && parts.length > 1 && /^Ext$/i.test(parts[parts.length - 2])
+                && /^(session|application|managedapplication|ordinaryapplication|externalconnection)module\.bsl$/i.test(file))
+            return 'Конфигурация: ' + module;
+        return pathLabel(path);
+    }
+    var label = NAV_CLASSES[parts[at]] + '.' + parts[at + 1].replace(/\.(xml|mdo)$/i, '');
+    var j = at + 2;
+    if (NAV_PARTS[parts[j]] && parts[j + 1] && j + 1 < parts.length - 1) {
+        label += '.' + NAV_PARTS[parts[j]] + '.' + parts[j + 1];
+        j += 2;
+    } else if (NAV_PARTS[parts[j]] && parts[j + 1]) {
+        /* Forms/F.xml: the form's own descriptor. */
+        label += '.' + NAV_PARTS[parts[j]] + '.' + parts[j + 1].replace(/\.(xml|mdo)$/i, '');
+    }
+    return module ? label + ': ' + module : label;
+}
+
+function navigationMessage(path, target) {
+    var msg = { cmd: 'open', path: path };
+    if (!target) return msg;
+    if (target.formView === 'module') msg.formView = 'module';
+    if (target.line > 0) msg.line = Math.floor(target.line);
+    if (target.search) msg.search = String(target.search);
+    if (target.regexp) msg.regexp = true;
+    if (target.matchCase) msg.matchCase = true;
+    return msg;
+}
+
+/* `direction` is true or 'back' for a step back through navHistory, 'forward'
+ * for a step through navForward, a number for that many steps (negative is
+ * back, from the history menu), anything else for a new jump. */
+function navigateTo(path, direction, target) {
     if (!host || !path) return false;
     flushPreviewEdits();
     if (anyDirty() && !window.confirm('Несохранённые изменения будут потеряны. Перейти?')) return false;
-    navPending = { path: path, back: !!back, from: state.filePath, selectedId: state.formSelectedId };
-    send({ cmd: 'open', path: path });
+    var steps = typeof direction === 'number' ? direction
+        : direction === true || direction === 'back' ? -1 : direction === 'forward' ? 1 : 0;
+    navPending = { path: path, steps: steps, from: state.filePath, selectedId: state.formSelectedId };
+    send(navigationMessage(path, target));
     return true;
 }
 
@@ -2505,31 +4804,275 @@ function navigateTo(path, back) {
 function relatedPath(rel) {
     /* Another object of the configuration comes with its full path. */
     if (/^([A-Za-z]:[\\/]|\\\\|\/)/.test(String(rel || ''))) return String(rel);
-    var base = String(state.filePath || '').replace(/\.xml$/i, '');
+    var current = String(state.filePath || '');
+    var lastSeparator = Math.max(current.lastIndexOf('\\'), current.lastIndexOf('/'));
+    var base = /\.mdo$/i.test(current)
+        ? current.slice(0, lastSeparator)
+        : current.replace(/\.xml$/i, '');
     if (!base || !rel) return '';
     var sep = base.indexOf('\\') >= 0 ? '\\' : '/';
-    return base + sep + String(rel).split('/').join(sep);
+    var related = String(rel);
+    if (/\.mdo$/i.test(state.filePath || '')) {
+        related = related.replace(/^Forms\/(.+)\/Ext\/Form\.xml$/i, 'Forms/$1/Form.form')
+            .replace(/^Forms\/(.+)\/Ext\/Module\.bsl$/i, 'Forms/$1/Module.bsl')
+            .replace(/^Commands\/(.+)\/Ext\/CommandModule\.bsl$/i, 'Commands/$1/CommandModule.bsl')
+            .replace(/^Ext\/(ObjectModule|ManagerModule|RecordSetModule|ValueManagerModule)\.bsl$/i, '$1.bsl');
+    }
+    return base + sep + related.split('/').join(sep);
 }
 
-function openRelated(rel) {
-    var path = relatedPath(rel);
-    if (path) navigateTo(path, false);
+/* An object window's link: a file to open, an HTML template to show
+ * ('html:' + the base of its Template.xml) or a binary template to save
+ * ('save:' + type + ':' + its Template.bin). */
+function relatedTarget(rel) {
+    var m = String(rel || '').match(/^(?:(html):|(save):([A-Za-z]+):)?([\s\S]*)$/);
+    return { action: m[1] || m[2] || 'open', type: m[3] || '', path: relatedPath(m[4]) };
+}
+
+function openRelated(rel, openAt) {
+    var target = relatedTarget(rel);
+    if (!target.path) return;
+    if (target.action === 'html') showHelp(target.path, htmlTemplateTitle(target.path));
+    else if (target.action === 'save') send({ cmd: 'saveTemplate', path: target.path, type: target.type });
+    else {
+        var path = target.path;
+        var portablePath = path.replace(/\\/g, '/');
+        var separator = path.indexOf('\\') >= 0 ? '\\' : '/';
+        var formView = null;
+        var projModule = portablePath.match(/^(.*\/(?:Forms\/[^/]+|CommonForms\/[^/]+))\/Module\.bsl$/i);
+        var dumpedModule = portablePath.match(/^(.*\/Ext)\/Form\/Module\.bsl$/i);
+        if (projModule) {
+            path = (projModule[1] + '/Form.form').replace(/\//g, separator);
+            formView = 'module';
+        } else if (dumpedModule) {
+            path = (dumpedModule[1] + '/Form.xml').replace(/\//g, separator);
+            formView = 'module';
+        }
+        /* A hit in a form module opens the form on its Module tab, still at
+         * the hit's line and with its search. */
+        var navTarget = openAt ? Object.assign({}, openAt) : null;
+        if (formView) (navTarget = navTarget || {}).formView = formView;
+        navigateTo(path, false, navTarget);
+    }
+}
+
+/* Templates/<Имя>/Ext/Template -> Макет: <Имя>. */
+function htmlTemplateTitle(base) {
+    var parts = String(base).split(/[\\/]/);
+    return 'Макет: ' + (parts[parts.length - 3] || '');
+}
+
+function objectMetadataCandidates(directory, sep) {
+    var parts = String(directory || '').split(/[\\/]/);
+    var name = parts[parts.length - 1] || '';
+    if (!name) return [];
+    var objectDir = parts.join(sep);
+    var parentDir = parts.slice(0, -1).join(sep);
+    return [objectDir + sep + name + '.mdo', parentDir + sep + name + '.xml', objectDir + sep + name + '.xml'];
+}
+
+function onTemplateSaved(d) {
+    if (d && !d.ok && !d.cancelled) window.alert('Не удалось сохранить макет:\n' + (d.path || ''));
 }
 
 /* Whether a related file exists, asked through the same configuration host the
  * form context reads from; a host that cannot answer says "yes", so nothing is
  * hidden by mistake. */
 function relatedExists(rel) {
-    var path = relatedPath(rel);
+    var target = relatedTarget(rel);
+    var path = target.action === 'html' ? target.path + '.xml' : target.path;
     if (!path || !window.fetch) return Promise.resolve(true);
     return fetch('https://bslcfg.invalid/file?p=' + encodeURIComponent(path) + '&exists=1')
         .then(function (r) { return r.ok ? r.text() : '1'; })
         .then(function (t) { return t !== '0'; }, function () { return true; });
 }
 
+/* «Уровень вверх»: a form, template or module goes up to its object, an
+ * object to the configuration root (a nested subsystem to its parent). The
+ * path alone gives the candidates; the first one that exists wins. */
+function upCandidates(path) {
+    var p = String(path || '');
+    var sep = p.indexOf('\\') >= 0 ? '\\' : '/';
+    var parts = p.split(/[\\/]/);
+    if (/\.mdo$/i.test(p) && !/^Configuration\.mdo$/i.test(parts[parts.length - 1])) {
+        if (parts.length < 5) return [];
+        var mdoParent = parts.slice(0, -3).join(sep);
+        if (/(?:^|[\\/])Subsystems[\\/][^\\/]+(?:[\\/]|$)/i.test(mdoParent)) {
+            return objectMetadataCandidates(mdoParent, sep).concat([
+                mdoParent + sep + 'Configuration.xml', mdoParent + sep + 'Configuration.mdo',
+                mdoParent + sep + 'Configuration' + sep + 'Configuration.mdo'
+            ]);
+        }
+        return [mdoParent + sep + 'Configuration' + sep + 'Configuration.mdo',
+            mdoParent + sep + 'Configuration.mdo', mdoParent + sep + 'Configuration.xml', mdoParent + '.xml'];
+    }
+    if (/\.bsl$/i.test(p) && !parts.some(function (part) { return /^Ext$/i.test(part); })) {
+        var objectFolderAt = -1;
+        for (var b = parts.length - 2; b > 0; b--) {
+            if (/^(Forms|Commands|Templates|Recalculations)$/i.test(parts[b])) {
+                objectFolderAt = b;
+                break;
+            }
+        }
+        var projObject = objectFolderAt > 0
+            ? parts.slice(0, objectFolderAt).join(sep)
+            : parts.slice(0, -1).join(sep);
+        if (projObject) return objectMetadataCandidates(projObject, sep);
+    }
+    if (/\.form$/i.test(p)) {
+        var formsAt = -1;
+        for (var f = parts.length - 2; f > 0; f--) if (/^Forms$/i.test(parts[f])) { formsAt = f; break; }
+        if (formsAt > 0) {
+            var projOwner = parts.slice(0, formsAt).join(sep);
+            return objectMetadataCandidates(projOwner, sep);
+        }
+    }
+    var ext = -1;
+    for (var i = parts.length - 2; i > 0; i--) if (/^Ext$/i.test(parts[i])) { ext = i; break; }
+    if (ext > 0) {
+        var owner = parts.slice(0, ext);
+        /* Catalogs/X/Forms/F/Ext/Form.xml: the form belongs to Catalogs/X. */
+        if (owner.length > 2 && /^(Forms|Templates|Commands|Recalculations)$/i.test(owner[owner.length - 2])) {
+            var objectBase = owner.slice(0, -2).join(sep);
+            return objectMetadataCandidates(objectBase, sep);
+        }
+        return [owner.concat(['Configuration.xml']).join(sep), owner.join(sep) + '.xml'];
+    }
+    if (!/\.(?:xml|mdo)$/i.test(p) || /^Configuration\.xml$/i.test(parts[parts.length - 1]) || parts.length < 4) return [];
+    var grand = parts.slice(0, -2);
+    return [grand.concat(['Configuration.xml']).join(sep), grand.join(sep) + '.mdo', grand.join(sep) + '.xml'];
+}
+
+var upTarget = { path: '', token: 0 };
+function refreshUpTarget() {
+    var token = ++upTarget.token;
+    upTarget.path = '';
+    /* An object opened from the unpacking panel goes up to that panel. */
+    if (epfOrigin && sameEpfPath(state.filePath, epfOrigin.rootXml)
+            && navHistory.some(function (e) { return sameEpfPath(e.path, epfOrigin.epf); })) {
+        upTarget.path = epfOrigin.epf;
+        applyChrome();
+        return;
+    }
+    var list = host && window.fetch ? upCandidates(state.filePath) : [];
+    (function next(i) {
+        if (i >= list.length || token !== upTarget.token) return;
+        fetch(configFileUrl(list[i], true))
+            .then(function (r) { return r.ok ? r.text() : '0'; }, function () { return '0'; })
+            .then(function (t) {
+                if (token !== upTarget.token) return;
+                if (t === '0') { next(i + 1); return; }
+                upTarget.path = list[i];
+                applyChrome();
+            });
+    })(0);
+}
+
+/* Going up to a file left behind brings back what was selected there. */
+function navigateUp() {
+    if (!upTarget.path) return;
+    var last = navHistory.length ? navHistory[navHistory.length - 1] : null;
+    navigateTo(upTarget.path, !!(last && last.path.toLowerCase() === upTarget.path.toLowerCase()));
+}
+
 function navigateBack() {
-    if (!navHistory.length) return;
-    navigateTo(navHistory[navHistory.length - 1].path, true);
+    if (navHistory.length) navigateTo(navHistory[navHistory.length - 1].path, 'back');
+}
+
+function navigateForward() {
+    if (navForward.length) navigateTo(navForward[navForward.length - 1].path, 'forward');
+}
+
+/* The history menu lists the way in the order it was walked: the files left
+ * behind, the current one, then those «Назад» stepped out of. Each item
+ * carries how many steps away it is. */
+function navHistoryItems() {
+    var items = navHistory.map(function (e, i) {
+        return { path: e.path, steps: i - navHistory.length };
+    });
+    items.push({ path: state.filePath, steps: 0 });
+    for (var j = navForward.length - 1; j >= 0; j--)
+        items.push({ path: navForward[j].path, steps: navForward.length - j });
+    return items;
+}
+
+function closeNavHistoryMenu(returnFocus) {
+    var menu = document.getElementById('nav-history-menu');
+    var button = document.getElementById('btn-nav-history');
+    if (menu) menu.hidden = true;
+    if (button) button.setAttribute('aria-expanded', 'false');
+    if (returnFocus && button) button.focus();
+}
+
+function toggleNavHistoryMenu() {
+    var menu = document.getElementById('nav-history-menu');
+    var button = document.getElementById('btn-nav-history');
+    if (!menu || !button) return;
+    if (!menu.hidden) { closeNavHistoryMenu(false); return; }
+    menu.textContent = '';
+    var current = null;
+    navHistoryItems().forEach(function (item) {
+        var row = document.createElement('div');
+        row.className = 'nav-history-item';
+        row.setAttribute('role', item.steps ? 'menuitem' : 'menuitemradio');
+        row.textContent = navLabel(item.path);
+        row.title = item.path;
+        if (!item.steps) {
+            row.setAttribute('aria-checked', 'true');
+            row.classList.add('current');
+            current = row;
+        } else {
+            row.tabIndex = -1;
+            row.addEventListener('click', function () {
+                closeNavHistoryMenu(false);
+                navigateTo(item.path, item.steps);
+            });
+        }
+        menu.appendChild(row);
+    });
+    /* Fixed to the window, not the toolbar: an absolutely placed menu that
+     * runs past the right edge makes the toolbar scroll sideways. */
+    var anchor = button.getBoundingClientRect();
+    menu.style.left = '0px';
+    menu.style.top = Math.round(anchor.bottom + 3) + 'px';
+    menu.hidden = false;
+    var width = menu.offsetWidth;
+    menu.style.left = Math.max(4, Math.min(anchor.left, window.innerWidth - width - 4)) + 'px';
+    button.setAttribute('aria-expanded', 'true');
+    if (current && current.scrollIntoView) current.scrollIntoView({ block: 'nearest' });
+    var first = menu.querySelector('.nav-history-item:not(.current)');
+    if (first) first.focus({ preventScroll: true });
+}
+
+/* Alt+← / Alt+→, as in a browser. */
+function historyKeyDirection(event) {
+    if (!event || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return '';
+    return event.key === 'ArrowLeft' ? 'back' : event.key === 'ArrowRight' ? 'forward' : '';
+}
+
+/* Backspace behaves like the toolbar's «Уровень вверх» only while the
+ * document is being viewed. An input in a preview keeps Backspace for text
+ * editing; Alt+↑ remains available in both viewing and editing modes. */
+function isNavigateUpKey(event) {
+    if (!event) return false;
+    if (event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && event.key === 'ArrowUp') return true;
+    if (event.key !== 'Backspace' || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey
+            || state.isEditing) return false;
+    var target = event.target;
+    return !(target && target.closest
+        && target.closest('input, textarea, select, [contenteditable="true"]'));
+}
+
+/* The configuration window opens objects in a separate BSLEdit, so closing
+ * the object brings the user back to the window, not to an empty editor.
+ * A host that cannot start one answers openWindowFailed: open in place. */
+function openInWindow(rel, target) {
+    var path = relatedPath(rel);
+    if (path) {
+        var msg = navigationMessage(path, target);
+        msg.cmd = 'openWindow';
+        send(msg);
+    }
 }
 
 function trackNavigation(path) {
@@ -2537,14 +5080,106 @@ function trackNavigation(path) {
     navPending = null;
     if (!nav || nav.path !== path) {
         navHistory = [];
+        navForward = [];
         return;
     }
-    if (nav.back) {
-        var entry = navHistory.pop();
+    var left = nav.from ? { path: nav.from, selectedId: nav.selectedId } : null;
+    if (nav.steps) {
+        var from = nav.steps < 0 ? navHistory : navForward;
+        var to = nav.steps < 0 ? navForward : navHistory;
+        if (left) to.push(left);
+        for (var k = Math.abs(nav.steps); k > 1 && from.length; k--) to.push(from.pop());
+        var entry = from.pop();
         if (entry && entry.selectedId) state.formSelectedId = entry.selectedId;
-    } else if (nav.from) {
-        navHistory.push({ path: nav.from, selectedId: nav.selectedId });
+    } else if (left) {
+        navHistory.push(left);
+        navForward = [];
     }
+}
+
+/* The unpacking panel of an .epf/.erf (epf-unpack.js). «Открыть» there loads
+ * the unpacked object's root XML in this same window, with the panel kept as
+ * the way back. */
+var epfOrigin = null;   // { epf, rootXml } of the last object opened from the panel
+
+function sameEpfPath(a, b) {
+    return !!a && !!b && String(a).toLowerCase() === String(b).toLowerCase();
+}
+
+/* Designer складывает корневой XML и все дочерние файлы внешнего объекта в
+ * один каталог. Сравнение сегментное: `C:\\Dump2` не является частью
+ * `C:\\Dump`, а разные направления слешей в сообщениях хоста допустимы. */
+/* What the assembly panel has to say about the document now open. Anything
+ * the Designer dumps is a <MetaDataObject>: the external object it assembles
+ * on its own ('external'), the root of a configuration or an extension
+ * ('config'), and any object of such an export ('object'), which is the one
+ * to load back into an infobase. */
+function epfRootKind(content) {
+    var head = String(content || '').slice(0, 8192);
+    var m = /<MetaDataObject[^>]*>\s*<([A-Za-z]+)[\s>]/.exec(head);
+    var root = m ? m[1] : '';
+    if (!root) return '';
+    if (root === 'ExternalDataProcessor' || root === 'ExternalReport') return 'external';
+    if (root === 'Configuration') return 'config';
+    return 'object';
+}
+
+/* «Сборка и загрузка»: the host opens the assembly panel on the dump this
+ * object belongs to in a new window, and in this one only when it cannot. The
+ * assembly reads the files on disk, so unsaved edits do not reach it. */
+function openEpfPanel() {
+    if (!host || !state.epfRoot) return;
+    flushPreviewEdits();
+    if (anyDirty() && !window.confirm('Несохранённые изменения не попадут в сборку. Открыть окно сборки?')) return;
+    send({ cmd: 'packPanel' });
+}
+
+function showEpf(req) {
+    pending = null;
+    trackNavigation(req.path || '');
+    state.language = 'epf';
+    state.epfRoot = '';
+    state.filePath = req.path || '';
+    state.previewId = '';
+    state.previewMode = false;
+    state.sarifMode = false;
+    state.dirty = false;
+    state.moduleDirty = false;
+    hideSavePrompt();
+    refreshUpTarget();
+    if (!window.EpfUnpack) return;
+    EpfUnpack.show(req, send, { open: openEpfResult });
+    document.getElementById('loading').style.display = 'none';
+    send({ cmd: 'painted' });
+}
+
+/* The assembly panel (epf-pack.js): the same window switches to it and back
+ * to the object with «К объекту». */
+function showPack(req) {
+    pending = null;
+    trackNavigation(req.path || '');
+    state.language = 'pack';
+    state.epfRoot = '';
+    state.filePath = req.path || '';
+    state.previewId = '';
+    state.previewMode = false;
+    state.sarifMode = false;
+    state.dirty = false;
+    state.moduleDirty = false;
+    hideSavePrompt();
+    refreshUpTarget();
+    if (!window.EpfPack) return;
+    if (window.EpfUnpack) EpfUnpack.hide();
+    EpfPack.show(req, send);
+    document.getElementById('loading').style.display = 'none';
+    send({ cmd: 'painted' });
+}
+
+function openEpfResult(file, target, rootXml) {
+    if (!host || !rootXml) return;
+    epfOrigin = { epf: state.filePath, rootXml: rootXml };
+    navPending = { path: rootXml, back: false, from: state.filePath, selectedId: '' };
+    send({ cmd: 'epfOpen', file: file, target: target });
 }
 
 function onOpenFailed(d) {
@@ -2561,7 +5196,7 @@ var helpState = { base: '', available: false, token: 0 };
 function helpBaseFor(path) {
     var p = String(path || '');
     var sep = p.indexOf('\\') >= 0 ? '\\' : '/';
-    if (/[\\/]Ext[\\/]Form\.xml$/i.test(p)) return p.replace(/Form\.xml$/i, 'Help');
+    if (/[\\/]Ext[\\/]Form\.(?:xml|form)$/i.test(p)) return p.replace(/Form\.(?:xml|form)$/i, 'Help');
     var provider = currentProvider();
     if (provider && provider.id === 'metadata' && /\.xml$/i.test(p))
         return p.replace(/\.xml$/i, '') + sep + 'Ext' + sep + 'Help';
@@ -2582,8 +5217,6 @@ function readConfigText(path) {
 }
 
 function syncHelpButton() {
-    var button = document.getElementById('btn-help');
-    if (button) button.style.display = helpState.available ? '' : 'none';
     var inWindow = document.querySelectorAll('#form-preview .md-help-button');
     for (var i = 0; i < inWindow.length; i++) inWindow[i].hidden = !helpState.available;
 }
@@ -2608,14 +5241,14 @@ function helpTitle() {
     var parts = String(state.filePath || '').split(/[\\/]/);
     var name = parts[parts.length - 1] || '';
     if (/^Form\.xml$/i.test(name) && parts.length > 2) return parts[parts.length - 3];
-    return name.replace(/\.xml$/i, '');
+    return name.replace(/\.(?:xml|mdo)$/i, '');
 }
 
-/* The page body without the platform's v8help stylesheet, which a browser
- * cannot load; links inside help lead into the platform's help system and
- * are shown as text. */
+/* The page body without the platform's stylesheet (v8help: in help,
+ * __STYLE__ in an HTML template), which a browser cannot load; links inside
+ * help lead into the platform's help system and are shown as text. */
 function helpDocument(html) {
-    var body = String(html).replace(/<link[^>]*v8help:[^>]*>(\s*<\/link>)?/gi, '');
+    var body = String(html).replace(/<link[^>]*(?:v8help:|__STYLE__)[^>]*>(\s*<\/link>)?/gi, '');
     var style = '<style>body{font:13px Arial,Segoe UI,sans-serif;color:#000;background:#fff;margin:12px 16px;}' +
         'h1{font-size:18px;margin:0 0 10px;}h2{font-size:15px;}h3{font-size:13px;}' +
         'a{color:#0645ad;text-decoration:none;cursor:default;}table{border-collapse:collapse;}' +
@@ -2624,9 +5257,12 @@ function helpDocument(html) {
         : style + body;
 }
 
-function showHelp() {
-    if (!helpState.available || !helpState.base) return;
-    var base = helpState.base;
+/* An object's help, or the page of an HTML template, which is kept the same
+ * way: <base>.xml lists the pages, <base>/<lang>.html holds each one. */
+function showHelp(templateBase, templateTitle) {
+    var isTemplate = typeof templateBase === 'string';
+    if (!isTemplate && (!helpState.available || !helpState.base)) return;
+    var base = isTemplate ? templateBase : helpState.base;
     var token = helpState.token;
     var sep = base.indexOf('\\') >= 0 ? '\\' : '/';
     readConfigText(base + '.xml').then(function (xml) {
@@ -2638,7 +5274,7 @@ function showHelp() {
         if (token !== helpState.token) return;
         var panel = document.getElementById('help-panel');
         var frame = document.getElementById('help-frame');
-        document.getElementById('help-title').textContent = 'Справка: ' + helpTitle();
+        document.getElementById('help-title').textContent = isTemplate ? templateTitle : 'Справка: ' + helpTitle();
         frame.onload = function () {
             var doc = frame.contentDocument;
             if (!doc) return;
@@ -2651,7 +5287,7 @@ function showHelp() {
         frame.srcdoc = helpDocument(html);
         panel.hidden = false;
     }).catch(function () {
-        window.alert('Не удалось прочитать справку.');
+        window.alert(isTemplate ? 'Не удалось прочитать HTML документ.' : 'Не удалось прочитать справку.');
     });
 }
 
@@ -2664,11 +5300,13 @@ function hideHelp() {
 
 /* Re-read the file from disk so an agent's edit shows without reopening the
  * lister; cached configuration metadata is dropped with it. */
-function reloadFromDisk() {
+function reloadFromDisk(asked) {
     if (!host) return;
-    if (anyDirty() && !window.confirm('Несохранённые изменения будут потеряны. Перечитать файл?')) return;
-    Object.keys(formContextCache).forEach(function (key) { delete formContextCache[key]; });
-    Object.keys(mdRelationsCache).forEach(function (key) { delete mdRelationsCache[key]; });
+    /* asked: спрашивать второй раз нечего — выбор уже сделан в полоске
+     * «файл изменён на диске». */
+    if (!asked && anyDirty() && !window.confirm('Несохранённые изменения будут потеряны. Перечитать файл?')) return;
+    hideExternalBar();
+    dropContextCaches();
     send({ cmd: 'reload' });
 }
 
@@ -2676,10 +5314,125 @@ function onReverted(d) {
     if (d && d.ok && typeof d.content === 'string') applyRevert(d.content);
     if (d && d.ok && typeof d.formModule === 'string') applyModuleRevert(d.formModule);
     pendingLeaveEdit = false;
+    /* Перечитанный файл сам стал baseline: сравнивать больше не с чем, а
+     * открытая панель продолжала бы показывать прошлое сравнение. */
+    if (d && d.ok) resetDiffPanel();
+}
+
+/* --- Файл изменился на диске -------------------------------------------- */
+
+/* Хост следит за открытыми файлами и сообщает о записи со стороны — обычно это
+ * агент, правящий тот же файл. Чистый документ хост заменяет сам и присылает
+ * новый текст: пользователю остаётся сообщение, а курсор, прокрутка и вкладка
+ * на месте. Документ с несохранёнными правками не заменяется — выбор за
+ * пользователем, и до его решения ревизия на стороне хоста остаётся прежней,
+ * поэтому сохранение поверх спросит, а не затрёт. */
+var externalBarTimer = 0;
+
+function hideExternalBar() {
+    if (externalBarTimer) { clearTimeout(externalBarTimer); externalBarTimer = 0; }
+    var bar = document.getElementById('external-change');
+    if (bar) bar.hidden = true;
+}
+
+/* actions: [{ text, onClick }]; autoHideMs — для сообщения, которое не требует
+ * ответа. */
+function showExternalBar(text, actions, autoHideMs) {
+    var bar = document.getElementById('external-change');
+    var msg = document.getElementById('external-change-msg');
+    var btns = document.getElementById('external-change-btns');
+    if (!bar || !msg || !btns) return;
+    if (externalBarTimer) { clearTimeout(externalBarTimer); externalBarTimer = 0; }
+    msg.textContent = text;
+    btns.innerHTML = '';
+    (actions || []).forEach(function (action) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = action.text;
+        button.addEventListener('click', function () {
+            hideExternalBar();
+            action.onClick();
+        });
+        btns.appendChild(button);
+    });
+    bar.hidden = false;
+    if (autoHideMs) externalBarTimer = setTimeout(hideExternalBar, autoHideMs);
+}
+
+/* Кэш метаданных конфигурации описывает файлы, которые тоже могли измениться:
+ * перечитанный документ начинает с чистого кэша, как и перечитывание по
+ * кнопке. */
+function dropContextCaches() {
+    Object.keys(formContextCache).forEach(function (key) { delete formContextCache[key]; });
+    Object.keys(mdRelationsCache).forEach(function (key) { delete mdRelationsCache[key]; });
+}
+
+function onExternalChange(d) {
+    if (!d || state.sarifMode || !model) return;
+    var toModule = d.target === 'module';
+    var what = toModule ? 'Модуль' : 'Файл';
+    if (d.apply && typeof d.content === 'string') {
+        dropContextCaches();
+        if (toModule) applyModuleRevert(d.content); else applyRevert(d.content);
+        resetDiffPanel();
+        syncDirtyMarks();
+        syncUndoButtons();
+        showExternalBar(what + ' изменён на диске и перечитан.', [], 5000);
+        return;
+    }
+    showExternalBar(what + ' изменён на диске, а здесь есть несохранённые правки.', [
+        { text: 'Перечитать', onClick: function () { reloadFromDisk(true); } },
+        { text: 'Оставить мои правки', onClick: function () {} }
+    ]);
+}
+
+/* Сохранение отказано: файл изменился под буфером. Выбор именно здесь, а не в
+ * молчаливой перезаписи — один из двух текстов будет потерян в любом случае, и
+ * решает это пользователь. */
+function showSaveConflict(target, snapshot) {
+    var toModule = target === 'module';
+    var actions = [];
+    /* Без снимка перезаписывать нечем: остаётся посмотреть, что на диске. */
+    if (typeof snapshot === 'string')
+        actions.push({ text: 'Перезаписать', onClick: function () { saveTarget(target, snapshot, true); } });
+    actions.push({ text: 'Посмотреть, что на диске', onClick: function () { reloadFromDisk(); } });
+    showExternalBar((toModule ? 'Модуль' : 'Файл') + ' изменён на диске после того, как документ был открыт.', actions);
 }
 
 function savedSnapshotState(currentContent, snapshot) {
     return { baseline: snapshot, dirty: currentContent !== snapshot };
+}
+
+/* Номер состояния для нового эталона: он есть, только если документ сейчас
+ * эталону дословно равен. Сохранение отдаёт снимок, снятый до последних
+ * нажатий, и тогда номера нет — до первого совпадения сравниваем текст. */
+function markBaseline(target, baseline) {
+    return target && target.getValue() === baseline ? target.getAlternativeVersionId() : -1;
+}
+
+/* Расходится ли модель со своим эталоном. Дешёвый путь — номер состояния;
+ * сравнение целого текста остаётся на случай, когда номера нет. */
+function modelDirty(target, baseline, cleanVersion) {
+    if (!target) return false;
+    if (cleanVersion >= 0) return target.getAlternativeVersionId() !== cleanVersion;
+    return target.getValue() !== baseline;
+}
+
+/* The toolbar is a row of icons, so the save button keeps its icon while it
+ * reports: the result is the colour and the tooltip. Only a failure spells
+ * itself out, because "which file, and why" does not fit in a colour - and
+ * that text is what the user acts on. The button used to come back from its
+ * report as a floppy emoji beside the word "Сохранить", left over from the
+ * toolbar's text days, and stayed that way until the next document. */
+var SAVE_BUTTON_ICON = '<svg class="tb-icon"><use href="#i-save"></use></svg>';
+
+function setSaveButton(kind, message) {
+    var btnSave = document.getElementById('btn-save');
+    if (!btnSave) return;
+    btnSave.classList.remove('save-ok', 'save-err');
+    if (kind) btnSave.classList.add(kind === 'ok' ? 'save-ok' : 'save-err');
+    btnSave.innerHTML = kind === 'err' ? message : SAVE_BUTTON_ICON;
+    btnSave.title = message;
 }
 
 function onSaveResult(ok, saveId, conflict, target) {
@@ -2687,27 +5440,28 @@ function onSaveResult(ok, saveId, conflict, target) {
     delete pendingSaveSnapshots[String(saveId)];
     var toModule = target === 'module';
     var snapshot = pending.snapshot;
-    var btnSave = document.getElementById('btn-save');
     /* The layout and the module save as one batch: a failure of either stays
      * on the button even when the other one lands after it. */
     if (!ok) saveBatchFailed = true;
+    if (!ok && conflict) showSaveConflict(toModule ? 'module' : 'form',
+        typeof snapshot === 'string' ? snapshot : null);
     if (!ok || !saveBatchFailed) {
-        btnSave.classList.remove('save-ok', 'save-err');
-        btnSave.classList.add(ok ? 'save-ok' : 'save-err');
-        btnSave.innerHTML = ok ? '&#10004; Сохранено'
+        setSaveButton(ok ? 'ok' : 'err', ok ? 'Сохранено'
             : (conflict ? '&#9888; ' + (toModule ? 'Модуль изменён извне' : 'Файл изменён извне')
-                : '&#10006; Ошибка' + (toModule ? ' записи модуля' : ''));
+                : '&#10006; Ошибка' + (toModule ? ' записи модуля' : '')));
     }
     if (ok) {
         if (toModule) {
             var savedModule = savedSnapshotState(formModuleModel ? formModuleModel.getValue() : moduleBaselineContent,
                 typeof snapshot === 'string' ? snapshot : moduleBaselineContent);
             moduleBaselineContent = savedModule.baseline;
+            moduleBaselineVersion = markBaseline(formModuleModel, savedModule.baseline);
             state.moduleDirty = savedModule.dirty;
         } else {
             var saved = savedSnapshotState(model ? model.getValue() : baselineContent,
                 typeof snapshot === 'string' ? snapshot : baselineContent);
             baselineContent = saved.baseline;
+            baselineVersion = markBaseline(model, saved.baseline);
             state.dirty = saved.dirty;
         }
         /* Pending leave/close waits for the other half of the batch. */
@@ -2731,16 +5485,21 @@ function onSaveResult(ok, saveId, conflict, target) {
         pendingClose = false;
         if (wasClosing) send({ cmd: 'closeAck', allow: false });
     }
+    syncDirtyMarks();
+    syncUndoButtons();
+    /* Запись меняет файл на диске: какие ревизии совпадают с ним теперь и
+     * отличается ли он от индекса, знает только git — спрашиваем заново. */
+    if (ok && gitAvailable()) requestGitInfo(toModule ? 'module' : 'file');
     setTimeout(function () {
-        btnSave.classList.remove('save-ok', 'save-err');
-        btnSave.innerHTML = '&#128190; Сохранить';
+        setSaveButton('', 'Сохранить (Ctrl+S)');
         applyChrome();
     }, 2000);
 }
 
 function saveFile(forPendingAction) {
     if (state.sarifMode) return;
-    if ((!sourceEditingActive() && !forPendingAction) || !state.isEditing || !model) return;
+    if ((!sourceEditingActive() && !previewEditingActive() && !forPendingAction)
+        || !state.isEditing || !model) return;
     flushPreviewEdits();
     /* Save whatever part of the form changed: the layout, the module or both.
      * With nothing changed, save the part on screen, as a plain file would. */
@@ -2750,16 +5509,130 @@ function saveFile(forPendingAction) {
     if (!targets.length) targets.push(formModuleOpen() && formModuleModel ? 'module' : 'form');
     saveBatchFailed = false;
     targets.forEach(function (target) {
-        var snapshot = target === 'module' ? formModuleModel.getValue() : model.getValue();
-        var saveId = String(nextSaveId++);
-        pendingSaveSnapshots[saveId] = { target: target, snapshot: snapshot };
-        var msg = { cmd: 'save', content: snapshot, saveId: saveId };
-        if (target === 'module') msg.target = 'module';
-        send(msg);
+        saveTarget(target, target === 'module' ? formModuleModel.getValue() : model.getValue(), false);
+    });
+}
+
+/* Одна запись одного файла. `force` — ответ на конфликт: файл изменился под
+ * буфером, и пользователь выбрал буфер. */
+function saveTarget(target, snapshot, force) {
+    var saveId = String(nextSaveId++);
+    pendingSaveSnapshots[saveId] = { target: target, snapshot: snapshot };
+    var msg = { cmd: 'save', content: snapshot, saveId: saveId };
+    if (target === 'module') msg.target = 'module';
+    if (force) msg.force = true;
+    send(msg);
+}
+
+// ------------------------------------------------------------------ commit
+/* Коммит открытого файла или всего объекта 1С, к которому он относится.
+ * Что именно войдёт в коммит, решает хост по пути открытого файла; страница
+ * выбирает только охват и сообщение. Несохранённое в коммит не попадает. */
+var commitKey = 'file';
+
+function commitEl(id) { return document.getElementById(id); }
+
+function commitError(text) {
+    var box = commitEl('commit-error');
+    box.textContent = text || '';
+    box.hidden = !text;
+}
+
+function openCommitPrompt() {
+    if (!gitAvailable()) return;
+    commitKey = gitTargetKey();
+    commitEl('commit-prompt').hidden = false;
+    commitEl('commit-file').textContent = '…';
+    commitEl('commit-object').textContent = '…';
+    commitEl('commit-branch').textContent = '';
+    commitEl('commit-ok').disabled = true;
+    commitError(anyDirty() ? 'Есть несохранённые изменения — в коммит попадёт только то, что записано на диск.' : '');
+    var message = commitEl('commit-message');
+    message.focus();
+    gitSend({ cmd: 'gitCommitPlan', target: commitKey }, function (d) {
+        if (!d || !d.ok) { commitError((d && d.error) || 'git недоступен'); return; }
+        commitEl('commit-branch').textContent = d.branch ? '(' + d.branch + ')' : '';
+        commitEl('commit-file').textContent = d.file;
+        var object = d.object || [];
+        var whole = object.length > 1 || (object.length === 1 && object[0] !== d.file);
+        /* По пути на строку: через запятую длинные пути сливаются в кашу. */
+        commitEl('commit-object').textContent = whole ? object.join('\n') : 'файл не входит в объект';
+        var radios = document.querySelectorAll('input[name="commit-scope"]');
+        radios[1].disabled = !whole;
+        /* Из окна объекта естественнее коммитить объект целиком. */
+        var preferObject = whole && currentProvider() && currentProvider().id === 'metadata';
+        radios[preferObject ? 1 : 0].checked = true;
+        commitEl('commit-ok').disabled = false;
+    });
+}
+
+function closeCommitPrompt() {
+    commitEl('commit-prompt').hidden = true;
+    commitError('');
+}
+
+function runCommit() {
+    var message = commitEl('commit-message').value;
+    if (!message.trim()) { commitError('Введите сообщение коммита.'); commitEl('commit-message').focus(); return; }
+    var scope = document.querySelector('input[name="commit-scope"]:checked');
+    var ok = commitEl('commit-ok');
+    ok.disabled = true;
+    commitError('');
+    gitSend({ cmd: 'gitCommit', target: commitKey, scope: scope ? scope.value : 'file', message: message }, function (d) {
+        ok.disabled = false;
+        if (!d || !d.ok) { commitError((d && d.error) || 'Коммит не выполнен'); return; }
+        commitEl('commit-message').value = '';
+        closeCommitPrompt();
+        var btn = commitEl('btn-commit');
+        btn.classList.add('save-ok');
+        btn.title = 'Закоммичено' + (d.id ? ' ' + d.id : '');
+        setTimeout(function () { btn.classList.remove('save-ok'); btn.title = 'Закоммитить в git'; }, 2500);
+        requestGitInfo(commitKey);
+    });
+}
+
+function wireCommitPrompt() {
+    commitEl('btn-commit').addEventListener('click', openCommitPrompt);
+    commitEl('commit-ok').addEventListener('click', runCommit);
+    commitEl('commit-cancel').addEventListener('click', closeCommitPrompt);
+    commitEl('commit-prompt').addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeCommitPrompt(); }
+        else if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); e.stopPropagation(); runCommit(); }
     });
 }
 
 // ------------------------------------------------------------------ search
+
+/* A global-search result opens on its exact hit and seeds Monaco's find
+ * controller. The widget may stay closed: its F3 command still continues
+ * from the selected occurrence with the same text and options. */
+function applyInitialSearch(req) {
+    if (!editor || !model || !req) return;
+    if (!(Number(req.line) > 0) && !req.search) return;
+    var line = Math.max(1, Math.min(model.getLineCount(), Number(req.line) || 1));
+    var search = String(req.search || '');
+    var match = search && model.findNextMatch
+        ? model.findNextMatch(search, { lineNumber: line, column: 1 }, !!req.regexp,
+            !!req.matchCase, null, false) : null;
+    if (match && match.range.startLineNumber === line) {
+        editor.setSelection(match.range);
+        editor.revealRangeInCenterIfOutsideViewport(match.range);
+    } else {
+        editor.setPosition({ lineNumber: line, column: 1 });
+        editor.revealLineInCenterIfOutsideViewport(line);
+    }
+    if (search && editor.getContribution) {
+        var controller = editor.getContribution('editor.contrib.findController');
+        var findState = controller && controller.getState && controller.getState();
+        if (findState && findState.change) {
+            findState.change({ searchString: search, isRegex: !!req.regexp,
+                matchCase: !!req.matchCase }, false);
+        } else if (controller && controller.setSearchString) {
+            controller.setSearchString(search);
+        }
+    }
+    editor.focus();
+}
 
 function doFind(req) {
     var model = editor && editor.getModel();
@@ -2965,19 +5838,511 @@ function refreshDocPreview() {
         showPreviewMessage(host, p, parsed.error);
         return;
     }
+    if (p.id === 'metadata' && /\.mdo$/i.test(state.filePath)
+            && parsed.model.kind === 'CommonForm') {
+        if (parsed.model.nodes.Own) parsed.model.nodes.Own.open = 'Form.form';
+        parsed.model.modules.forEach(function (module) { module.open = 'Module.bsl'; });
+    }
+    if (p.id === 'template') parsed = { model: templateSheetModel(parsed.model) };
+    /* A redraw throws the scrolled sheet away and builds a new one at the top.
+     * The user is working somewhere in the middle of it, so the position is
+     * taken back afterwards. */
+    var scrolled = host.querySelector('.tp-scroll');
+    var keepTop = scrolled ? scrolled.scrollTop : 0;
+    var keepLeft = scrolled ? scrolled.scrollLeft : 0;
     window[p.viewer].render(parsed.model, host, {
         onSelect: p.id === 'sarif' ? onSarifSelect : onDocPreviewSelect,
-        onOpen: window.chrome && window.chrome.webview ? openRelated : null,
+        onOpen: !(window.chrome && window.chrome.webview) ? null : p.id === 'configuration' ? openInWindow : openRelated,
         onHelp: window.chrome && window.chrome.webview ? showHelp : null,
         sortByName: !!state.sortByName,
         probe: window.chrome && window.chrome.webview ? relatedExists : null,
-        windowTitle: state.formTitle
+        windowTitle: state.formTitle,
+        io: p.usesConfigurationIo || p.id === 'metadata' ? formContextIo : null,
+        queryEditor: p.id === 'dcs' ? createQueryEditor : null,
+        /* Hand editing of the schema is closed (dcsLocked); the handlers stay
+         * for when it opens again. */
+        onPropertyEdit: null,
+        onSchemaEdit: null,
+        onObjectEdit: p.id === 'metadata' && state.isEditing && !state.readOnly ? onObjectEdit : null,
+        onOutlineChanged: function () {
+            allItems = [];
+            renderOutline();
+            setTimeout(refreshOutline, 0);
+        },
+        filePath: state.filePath
     });
+    if (p.id === 'template') {
+        var back = host.querySelector('.tp-scroll');
+        if (back && (keepTop || keepLeft)) {
+            back.scrollTop = keepTop;
+            back.scrollLeft = keepLeft;
+        }
+        bindTemplateEditing(host, parsed.model);
+    }
     syncHelpButton();
     /* A redrawn document keeps the selection the outline already shows. */
     if (p.selectHighlightsPreview && state.formSelectedId && window[p.viewer].highlight)
         window[p.viewer].highlight(host, state.formSelectedId);
     scheduleFormFit();
+}
+
+/* The query of a data composition schema's data set, shown in a Monaco editor
+ * of its own inside the schema window — read-only: a query is rewritten in the
+ * source or in the query designer, not from the schema window. No theme
+ * option: Monaco has one theme per page, and the main editor owns it. */
+function createQueryEditor(host, text, opts) {
+    if (!window.monaco || !monaco.editor) return null;
+    var queryModel = monaco.editor.createModel(text || '', 'bsl_query');
+    var queryEditor = monaco.editor.create(host, {
+        model: queryModel,
+        readOnly: !!opts.readOnly,
+        fontSize: Math.max(11, (state.fontSize || 14) - 1),
+        fontFamily: "Consolas, 'Courier New', monospace",
+        fontLigatures: false,
+        disableLayerHinting: true,
+        minimap: { enabled: false },
+        lineNumbers: 'on',
+        scrollBeyondLastLine: false,
+        automaticLayout: true,
+        wordWrap: 'off',
+        links: false,
+        contextmenu: true,
+        unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false }
+    });
+    return {
+        dispose: function () {
+            queryEditor.dispose();
+            queryModel.dispose();
+        }
+    };
+}
+
+var dcsOutlineTimer = null;
+
+/* A property changed in the schema window (an expression, a title, a flag, a
+ * parameter value): one undoable edit of the source. The window redraws from
+ * the source handed back; an { error } keeps its editor open. */
+function onDcsPropertyEdit(id, prop, value) {
+    var p = currentProvider();
+    if (!model || !p || p.id !== 'dcs' || !state.isEditing) return null;
+    var parsed = parseWithProvider(p, model.getValue());
+    var edit = parsed && parsed.model ? DcsPreview.propertyEdit(parsed.model, id, prop, value) : null;
+    if (!edit) return null;
+    if (edit.error) return { error: edit.error };
+    applyDcsEdit(edit);
+    /* Each property change is an undo step of its own. */
+    model.pushStackElement();
+    return { source: model.getValue() };
+}
+
+/* A change the schema window computes itself (adding a field, a calculated
+ * field, a resource): `compute` gets the source freshly parsed and returns
+ * the edit. One undoable edit; the new record's id goes back with the source. */
+function onDcsSchemaEdit(compute) {
+    var p = currentProvider();
+    if (!model || !p || p.id !== 'dcs' || !state.isEditing) return null;
+    var parsed = parseWithProvider(p, model.getValue());
+    var edit = parsed && parsed.model ? compute(parsed.model) : null;
+    if (!edit) return null;
+    if (edit.error) return { error: edit.error };
+    applyDcsEdit(edit);
+    model.pushStackElement();
+    return { source: model.getValue(), id: edit.id };
+}
+
+/* The object window's name, synonym or comment, written into its XML as one
+ * undoable edit; the toolbar's floppy saves it like any other change. */
+function onObjectEdit(prop, value) {
+    var p = currentProvider();
+    if (!model || !p || p.id !== 'metadata' || !state.isEditing) return null;
+    var edit = MetadataPreview.propertyEdit(model.getValue(), prop, value);
+    if (!edit || edit.error) return edit;
+    applyDcsEdit(edit);
+    model.pushStackElement();
+    syncDirtyMarks();
+    applyChrome();
+    return { source: model.getValue() };
+}
+
+function applyDcsEdit(edit) {
+    var from = model.getPositionAt(edit.start);
+    var to = model.getPositionAt(edit.end);
+    if (model.getValueInRange(new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column)) === edit.text) return;
+    applyingFromPreview = true;
+    model.pushStackElement();
+    model.pushEditOperations([], [{
+        range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column),
+        text: edit.text
+    }], function () { return null; });
+    applyingFromPreview = false;
+    state.dirty = true;
+    updateStatusBar();
+    /* Lines below the edit moved: the outline follows once typing pauses. */
+    if (dcsOutlineTimer) clearTimeout(dcsOutlineTimer);
+    dcsOutlineTimer = setTimeout(function () {
+        dcsOutlineTimer = null;
+        if (isDocPreview()) refreshOutline();
+    }, 500);
+}
+
+/* --------------------------------- editing a spreadsheet template or a form
+ * The preview owns the selection and the toolbar (TemplateEdit); the markup
+ * engine rewrites the document; this end turns that rewrite into ranges over
+ * the Monaco model, so one toolbar click is one undo step and the source view
+ * stays the same text the user would have typed. */
+
+var templateSession = null;
+var templateToolbar = null;
+/* The selection outlives a redraw: the sheet is rebuilt from scratch after
+ * every edit, and losing the range the user is working in would make the
+ * toolbar unusable. */
+var templateSelection = null;
+var templateErrorTimer = null;
+/* Set while a named area is being made the current selection, so the session's
+ * own onSelect does not wipe the area highlight that click is about to draw. */
+var templateAreaSelecting = false;
+/* The parsed sheet the session works on, and the cell property panel that
+ * shows what the selected cell has. Both belong to the current binding. */
+var templateModel = null;
+var templateProperties = null;
+
+function showTemplateError(message) {
+    var statusEl = document.getElementById('sb-status');
+    if (!statusEl) return;
+    statusEl.textContent = message || '';
+    statusEl.classList.toggle('error', !!message);
+    if (templateErrorTimer) clearTimeout(templateErrorTimer);
+    if (message) templateErrorTimer = setTimeout(function () { showTemplateError(''); }, 6000);
+}
+
+/* A note is not a refusal: the edit went through and there is only something
+ * worth knowing about it. Same line at the bottom, without the red, and it
+ * stays a little longer because it is meant to be read, not reacted to. */
+function showTemplateNote(message) {
+    var statusEl = document.getElementById('sb-status');
+    if (!statusEl) return;
+    statusEl.textContent = message || '';
+    statusEl.classList.remove('error');
+    if (templateErrorTimer) clearTimeout(templateErrorTimer);
+    if (message) templateErrorTimer = setTimeout(function () { showTemplateNote(''); }, 9000);
+}
+
+/* Several ranges from one engine call go in as a single edit operation, which
+ * is what makes them a single undo step. The ranges are computed against the
+ * text the model holds right now and never overlap. Shared by the spreadsheet
+ * editor and the form property panel: both engines rewrite the document and
+ * hand over the difference the same way. */
+function applyPreviewEdits(edits) {
+    if (!model || !edits || !edits.length) return;
+    var ops = [];
+    for (var i = 0; i < edits.length; i++) {
+        var from = model.getPositionAt(edits[i].start);
+        var to = model.getPositionAt(edits[i].end);
+        ops.push({
+            range: new monaco.Range(from.lineNumber, from.column, to.lineNumber, to.column),
+            text: edits[i].text
+        });
+    }
+    applyingFromPreview = true;
+    model.pushStackElement();
+    model.pushEditOperations([], ops, function () { return null; });
+    model.pushStackElement();
+    applyingFromPreview = false;
+    state.dirty = true;
+    updateStatusBar();
+}
+
+/* Puts an edit on screen. A change that stays inside its cells repaints only
+ * the rows it touched: the sheet keeps its scroll position, the selection and
+ * the focus, and the session, the toolbar and the property panel are not torn
+ * down and built again. Anything else — a size, a merge, rows, columns, an
+ * area — draws the sheet from scratch, and so does an incremental repaint that
+ * the renderer refuses because the new document lays out differently. */
+function refreshTemplateAfterEdit(dirty) {
+    var host = formPreviewEl();
+    var preview = window.TemplatePreview;
+    if (host && model && templateSession && preview && preview.update
+        && dirty && !dirty.structural) {
+        var parsed = preview.parse(model.getValue());
+        var next = parsed.error ? null : templateSheetModel(parsed.model);
+        if (next && preview.update(next, host, dirty)) {
+            templateModel = next;
+            /* Hands the session the sheet it now shows and repaints the
+             * selection onto the rows that were replaced. */
+            templateSession.setModel(next);
+            if (templateToolbar) templateToolbar.sync();
+            renderPropertyInspector();
+            return;
+        }
+    }
+    refreshDocPreview();
+}
+
+/* Ctrl+Z over a drawn document. Every change made in a picture — a cell of a
+ * template, a form property, a data composition schema — is written as an undo
+ * step of the Monaco model, but Monaco only hears the keyboard while its own
+ * editor has the focus, and while the picture is being edited the focus is in
+ * the picture. Without this the step is on the stack and nothing can reach it.
+ *
+ * A field being typed into keeps its own undo: the browser's, over that field.
+ * Focus inside the editor is Monaco's own business and is left alone. */
+function previewUndoKey(ev, editorDom) {
+    if (!ev || !(ev.ctrlKey || ev.metaKey) || ev.altKey) return '';
+    var key = String(ev.key || '').toLowerCase();
+    /* `key` follows the active keyboard layout (Ctrl+Z can arrive as the
+     * Russian letter «я»). `code` identifies the physical shortcut key. */
+    var code = String(ev.code || '');
+    if (code === 'KeyZ') key = 'z';
+    else if (code === 'KeyY') key = 'y';
+    if (key !== 'z' && key !== 'y') return '';
+    var target = ev.target;
+    /* A field being typed into keeps its own undo: the browser's, over that
+     * field. Focus inside the editor is Monaco's own business. */
+    if (target && target.closest && target.closest('input, textarea, [contenteditable="true"]')) return '';
+    if (editorDom && target && editorDom.contains && editorDom.contains(target)) return '';
+    return (key === 'y' || ev.shiftKey) ? 'redo' : 'undo';
+}
+
+function onPreviewUndoKey(ev) {
+    if (!model || !state.isEditing || state.readOnly || state.sarifMode) return;
+    if (!(state.previewMode && isDocPreview())) return;
+    /* The module tab shows a different document in the same editor; undo there
+     * belongs to Monaco and to that model, not to the picture's XML. */
+    if (formModuleOpen()) return;
+    var what = previewUndoKey(ev, editor && editor.getDomNode ? editor.getDomNode() : null);
+    if (!what) return;
+    if (!undoDocument(what === 'redo')) return;
+    ev.preventDefault();
+}
+
+/* One step back (or forward) through the document the picture is drawn from,
+ * and the picture drawn again from what is left. The redraw is done here
+ * rather than left to the model's change hook so the sheet is never redrawn
+ * twice for one keystroke. */
+function undoDocument(redo) {
+    var target = undoTargetModel();
+    if (!target) return false;
+    var fn = redo ? 'redo' : 'undo';
+    /* A picture is redrawn here rather than by the model's change hook, so it
+     * is never drawn twice for one step. */
+    var picture = previewUndoTarget();
+    var before = target.getValue();
+    applyingFromPreview = picture;
+    try {
+        /* The model undoes itself whoever holds the focus. Monaco's own undo
+         * command runs on the focused editor, and while a picture is edited
+         * the focus is in the picture: the command reached nothing and the
+         * step stayed on the stack. */
+        if (typeof target[fn] === 'function') target[fn]();
+        else if (editor && editor.getModel && editor.getModel() === target) editor.trigger('preview', fn, null);
+    } finally {
+        applyingFromPreview = false;
+    }
+    if (target.getValue() === before) return false;
+    /* Undone all the way back to what is on disk, the document is not dirty
+     * any more: 1C drops the star there, and so does this. */
+    if (target === formModuleModel)
+        state.moduleDirty = modelDirty(target, moduleBaselineContent, moduleBaselineVersion);
+    else state.dirty = modelDirty(target, baselineContent, baselineVersion);
+    updateStatusBar();
+    if (picture) refreshDocPreview();
+    return true;
+}
+
+/* The document a step back belongs to: the module tab edits its own model in
+ * the same editor, everything else edits the file itself. */
+function undoTargetModel() {
+    return formModuleOpen() ? (formModuleModel || model) : model;
+}
+
+/* True when the step is taken over a drawn document rather than over the
+ * source Monaco shows. */
+function previewUndoTarget() {
+    return !!(state.previewMode && isDocPreview()) && !formModuleOpen();
+}
+
+/* The toolbar's own undo and redo: the same step the keyboard takes, for a
+ * user working with the mouse in a picture. */
+function undoFromToolbar(redo) {
+    if (!state.isEditing || state.readOnly || state.sarifMode) return;
+    undoDocument(redo);
+    syncUndoButtons();
+}
+
+/* Both buttons show up wherever saving does — the modes where an edit is being
+ * made — and go grey when there is nothing left on the stack. */
+function syncUndoButtons() {
+    var undoBtn = document.getElementById('btn-undo');
+    var redoBtn = document.getElementById('btn-redo');
+    if (!undoBtn || !redoBtn) return;
+    var on = !state.sarifMode && (sourceEditingActive() || previewEditingActive());
+    undoBtn.style.display = redoBtn.style.display = on ? '' : 'none';
+    var target = on ? undoTargetModel() : null;
+    undoBtn.disabled = !(target && (!target.canUndo || target.canUndo()));
+    redoBtn.disabled = !(target && (!target.canRedo || target.canRedo()));
+}
+
+/* Unsaved changes have to be visible: the save button is marked, and the host
+ * puts a star after the file name in the window title, the way 1C does. */
+var lastReportedDirty = null;
+function syncDirtyMarks() {
+    var dirty = !state.sarifMode && anyDirty();
+    var btnSave = document.getElementById('btn-save');
+    if (btnSave) btnSave.classList.toggle('dirty', dirty);
+    /* Который из двух файлов не сохранён, а не только «есть ли такой»: хост
+     * держит маркер занятости по файлу и по файлу же решает, можно ли заменить
+     * документ, изменившийся на диске. */
+    var fileDirty = !state.sarifMode && !!state.dirty;
+    var moduleDirty = !state.sarifMode && !!state.moduleDirty;
+    var stamp = (dirty ? '1' : '0') + (fileDirty ? '1' : '0') + (moduleDirty ? '1' : '0');
+    if (stamp === lastReportedDirty) return;
+    lastReportedDirty = stamp;
+    /* Первая правка сама делает возможным сравнение с файлом на диске, а
+     * applyChrome() при наборе текста не вызывается. */
+    var diffBtn = document.getElementById('btn-diff');
+    if (diffBtn) diffBtn.style.display = (diffAvailable() || diffOpen) ? '' : 'none';
+    send({ cmd: 'dirty', dirty: dirty, file: fileDirty, module: moduleDirty });
+}
+
+/* True while a spreadsheet template is being edited: the cell property panel
+ * takes the right pane only then, the way the form panel does. */
+function templateEditingActive() {
+    return state.previewId === 'template' && !!templateSession && !!state.isEditing && !state.readOnly;
+}
+
+/* The cell property panel mounted in the right pane, built once per session. */
+function templatePropertyPanelFor(host) {
+    if (!host || !window.TemplateEdit || !window.TemplateEdit.properties) return null;
+    /* The panel outlives the session: the sheet is rebuilt after every edit,
+     * and throwing the panel away with it would take the focus and the scroll
+     * position out from under the user's hand. */
+    if (templateProperties && templateProperties.host === host) {
+        templateProperties.session = templateSession;
+        templateProperties.panel.setSession(templateSession);
+        return templateProperties.panel;
+    }
+    var panel = window.TemplateEdit.properties(document, templateSession, {
+        model: function () { return templateModel; },
+        readOnly: !!state.readOnly,
+        onError: showTemplateError,
+        onNote: showTemplateNote
+    });
+    if (!panel) return null;
+    host.innerHTML = '';
+    host.appendChild(panel.element);
+    templateProperties = { host: host, session: templateSession, panel: panel };
+    /* A cell has two dozen properties and a sheet has a handful of areas, so
+     * the pane opens the other way round from the form's: the tree keeps about
+     * a third and the properties the rest. A height the user has already
+     * dragged to wins over this. */
+    var saved = 0;
+    try { saved = parseInt(sessionStorage.getItem('1cFormViewer.propertyInspectorHeight'), 10) || 0; }
+    catch (error) { saved = 0; }
+    if (!saved) {
+        host.style.flex = '0 1 70%';
+        host.style.height = '';
+    }
+    return panel;
+}
+
+/* The sheet the user works on while editing: the document plus a few rows
+ * under it. A template ends at its last row, and without them there is no way
+ * to add anything below it — 1C and Excel simply go on downwards. They are
+ * drawn paler, carry no content, and become real rows of the file as soon as
+ * something is written into them. */
+var TEMPLATE_TRAILING_ROWS = 3;
+/* То же справа: без запасных колонок к макету нечего дописать правее
+ * последней. Их меньше, чем строк: колонка шире и дороже по месту. */
+var TEMPLATE_TRAILING_COLUMNS = 2;
+
+function templateSheetModel(parsedModel) {
+    var preview = window.TemplatePreview;
+    if (!parsedModel || !preview || !preview.withTrailingRows) return parsedModel;
+    if (!state.isEditing || state.readOnly) return parsedModel;
+    var sheet = preview.withTrailingRows(parsedModel, TEMPLATE_TRAILING_ROWS);
+    if (preview.withTrailingColumns)
+        sheet = preview.withTrailingColumns(sheet, TEMPLATE_TRAILING_COLUMNS);
+    return sheet;
+}
+
+/* Attaches the editing session to a freshly rendered sheet. Called from
+ * refreshDocPreview, which rebuilds the DOM, so the previous session and its
+ * toolbar are dropped every time. */
+function bindTemplateEditing(host, parsedModel) {
+    if (templateSession) {
+        templateSession.destroy();
+        templateSession = null;
+    }
+    templateToolbar = null;
+    templateModel = parsedModel;
+    /* No session means no cell panel either: the pane has to let go of it. */
+    if (!host || !window.TemplateEdit || !window.TemplateMarkup) { renderPropertyInspector(); return; }
+    /* Viewing selects cells exactly as editing does, but changes nothing:
+     * no toolbar, no cell panel, a session that refuses every edit. */
+    if (!state.isEditing || state.readOnly) {
+        templateSession = window.TemplateEdit.attach(host, {
+            model: parsedModel,
+            xml: function () { return model.getValue(); },
+            readOnly: true,
+            onSelect: function (selection) {
+                templateSelection = selection;
+                if (!templateAreaSelecting && window.TemplatePreview && window.TemplatePreview.clearHighlight) {
+                    window.TemplatePreview.clearHighlight(host);
+                }
+            }
+        }) || null;
+        if (templateSession && templateSelection) templateSession.select(templateSelection);
+        renderPropertyInspector();
+        return;
+    }
+
+    var session = window.TemplateEdit.attach(host, {
+        model: parsedModel,
+        xml: function () { return model.getValue(); },
+        apply: function (edits, next, result, dirty) {
+            applyPreviewEdits(edits);
+            showTemplateError('');
+            refreshTemplateAfterEdit(dirty);
+        },
+        onError: showTemplateError,
+        /* «Свойства» in the cell menu: the panel is already in the right pane,
+         * so the command brings the pane forward and puts the focus in it. */
+        onProperties: function () {
+            var panel = document.getElementById('property-inspector');
+            if (!panel) return;
+            renderPropertyInspector();
+            if (panel.scrollIntoView) panel.scrollIntoView({ block: 'nearest' });
+            var first = panel.querySelector('input, select, button');
+            if (first && first.focus) first.focus();
+        },
+        onSelect: function (selection) {
+            templateSelection = selection;
+            /* A range picked in the sheet replaces the named area the outline
+             * points at: the sheet must never show two selections at once. */
+            if (!templateAreaSelecting && window.TemplatePreview && window.TemplatePreview.clearHighlight) {
+                window.TemplatePreview.clearHighlight(host);
+            }
+            if (templateToolbar) templateToolbar.sync();
+            renderPropertyInspector();
+        }
+    });
+    if (!session) return;
+    templateSession = session;
+
+    var built = window.TemplateEdit.toolbar(document, session, {
+        /* The model is replaced by every edit, so the toolbar reads the
+         * current one rather than the one this binding started with. */
+        model: function () { return templateModel; },
+        readOnly: !!state.readOnly,
+        onError: showTemplateError
+    });
+    if (built) {
+        templateToolbar = built;
+        host.insertBefore(built.element, host.firstChild);
+    }
+    if (templateSelection) session.select(templateSelection);
+    else if (templateToolbar) templateToolbar.sync();
+    renderPropertyInspector();
 }
 
 /* «Вписать по ширине»: a form wider than the pane is zoomed out until its
@@ -3029,11 +6394,21 @@ function showPreviewMessage(host, provider, text) {
 function onDocPreviewSelect(item) {
     var p = currentProvider();
     if (!item || !editor || !p) return;
+    var view = window[p.viewer];
+    if (p.id === 'configuration' && item.inspectorOnly) {
+        var selectedId = view.itemKey(item);
+        if (!allItems.some(function (entry) { return entry.id === selectedId; })) {
+            parseDocOutline();
+            renderOutline();
+        }
+        if (allItems.some(function (entry) { return entry.id === selectedId; }))
+            highlightFormOutline(selectedId);
+        return;
+    }
     if (!allItems.length) {
         parseDocOutline();
         renderOutline();
     }
-    var view = window[p.viewer];
     var id = view.itemKey(item);
     var line = 1;
     for (var i = 0; i < allItems.length; i++) {
@@ -3058,7 +6433,18 @@ function onDocPreviewSelect(item) {
     highlightFormOutline(id);
     /* The form preview marks its own selection on click; the spreadsheet one
      * has to be told. */
-    if (p.selectHighlightsPreview && view.highlight) view.highlight(formPreviewEl(), id);
+    /* A clicked cell is keyed by its parameter name, which may coincide with a
+     * named area («Контрагент» in a «Контрагент» row): the cell must not be
+     * taken for that area, it keeps the selection the sheet already drew. */
+    var isCell = p.id === 'template' && item.row != null;
+    if (p.selectHighlightsPreview && view.highlight && !isCell) view.highlight(formPreviewEl(), id);
+    /* A named area is a selection too, so it takes the place of whatever range
+     * was selected in the sheet before. */
+    if (!isCell && p.id === 'template' && templateSession && templateSession.selectArea) {
+        templateAreaSelecting = true;
+        try { templateSession.selectArea(item.name || id); }
+        finally { templateAreaSelecting = false; }
+    }
 }
 
 function highlightFormOutline(id) {
@@ -3069,6 +6455,8 @@ function highlightFormOutline(id) {
         return;
     }
     highlightOutlineRow(state.formSelectedId);
+    /* The arrows act on the selected element, so they follow the selection. */
+    syncFormMoveButtons();
     renderPropertyInspector();
     updateStatusBar();
 }
@@ -3137,7 +6525,8 @@ function setPreviewMode(on, onShown) {
         state.previewMode = on;
         state.previewPending = false;
         if (on) {
-            btn.classList.add('active');
+            /* Переключатель вида только меняет значок: подсветка читалась
+             * бы как включённый режим, а вида здесь два равноправных. */
             if (isDocPreview()) {
                 var provider = currentProvider();
                 if (provider && provider.keepsEditor) {
@@ -3170,8 +6559,9 @@ function setPreviewMode(on, onShown) {
                  * laid the whole form out twice on every open. */
             } else {
                 hideFormPreview();
-                editorEl.style.display = '';
-                handle.style.display = 'block';
+                var sourceToo = state.textLayout !== 'preview';
+                editorEl.style.display = sourceToo ? '' : 'none';
+                handle.style.display = sourceToo ? 'block' : 'none';
                 frame.style.display = 'block';
                 if (onShown) {
                     var shown = onShown;
@@ -3188,6 +6578,7 @@ function setPreviewMode(on, onShown) {
                 }
                 frame.srcdoc = buildPreviewDoc();
                 btn.title = 'Скрыть превью';
+                applyTextPreviewLayout();
             }
             if (editor) editor.layout();
             applyPreviewEditable();
@@ -3939,6 +7330,60 @@ function wirePreviewScroll() {
 
 var formScreenshotScroll = null;
 
+var FORM_INTERFACE_MODE_LABELS = {
+    Auto: { short: 'Режим: авто', title: 'Автоматически по конфигурации' },
+    Taxi: { short: 'Режим: Taxi', title: 'Такси 8.3' },
+    Version85: { short: 'Режим: 8.5', title: 'Интерфейс 8.5' }
+};
+
+function syncFormInterfaceModeMenu() {
+    var button = document.getElementById('btn-form-interface-mode');
+    var menu = document.getElementById('form-interface-mode-menu');
+    var selected = state.formInterfaceMode || 'Auto';
+    if (button) {
+        var label = FORM_INTERFACE_MODE_LABELS[selected] || FORM_INTERFACE_MODE_LABELS.Auto;
+        button.textContent = label.short;
+        button.title = 'Режим представления: ' + label.title;
+    }
+    if (menu) menu.querySelectorAll('[data-form-interface-mode]').forEach(function (item) {
+        var active = item.getAttribute('data-form-interface-mode') === selected;
+        item.setAttribute('aria-checked', active ? 'true' : 'false');
+    });
+}
+
+function closeFormInterfaceModeMenu(returnFocus) {
+    var menu = document.getElementById('form-interface-mode-menu');
+    var button = document.getElementById('btn-form-interface-mode');
+    if (menu) menu.hidden = true;
+    if (button) button.setAttribute('aria-expanded', 'false');
+    if (returnFocus && button && button.focus) button.focus();
+}
+
+function setFormInterfaceMode(mode) {
+    if (mode !== 'Auto' && mode !== 'Taxi' && mode !== 'Version85') return false;
+    state.formInterfaceMode = mode;
+    saveFormInterfaceMode(state.filePath, mode);
+    state.interfaceMode = mode === 'Auto'
+        ? (state.contextInterfaceMode || 'Any') : mode;
+    parseMemo = null;
+    syncFormInterfaceModeMenu();
+    closeFormInterfaceModeMenu(true);
+    if (state.previewMode && isFormView()) {
+        var preview = formPreviewEl();
+        var body = preview && preview.querySelector('.fp-body');
+        var scrollTop = body ? body.scrollTop : 0;
+        var scrollLeft = body ? body.scrollLeft : 0;
+        refreshDocPreview();
+        requestAnimationFrame(function () {
+            var nextBody = preview && preview.querySelector('.fp-body');
+            if (!nextBody) return;
+            nextBody.scrollTop = scrollTop;
+            nextBody.scrollLeft = scrollLeft;
+        });
+    }
+    return true;
+}
+
 // CapturePreview is viewport-sized. Freeze the layout size before applying a
 // paint-only scale: zoom on a percentage-sized root expands its layout again.
 function requestFormScreenshot() {
@@ -4019,91 +7464,327 @@ function finishFormScreenshot() {
     requestAnimationFrame(restoreScroll);
 }
 
-// --------------------------------------------------------------------- PDF
+// ------------------------------------------------------------ context menu
 
-function printFrame() { return document.getElementById('print-frame'); }
+/* The page's own context menu in place of the browser's (Back, Refresh,
+ * Inspect, Save as...): Копировать for selected text, editing commands in a
+ * text box, and what the thing under the pointer offers — an outline row, an
+ * inspector property, a form element, a command of the configuration root.
+ * Monaco keeps its own menu. */
+var contextMenuEl = null;
 
-function printCss() {
-    return 'html,body{margin:0;padding:16px 22px;background:#fff;color:#000;'
-         + 'font-family:Segoe UI,Arial,sans-serif;font-size:11pt;line-height:1.5}'
-         + 'pre{white-space:pre-wrap;word-wrap:break-word;'
-         + 'font-family:Consolas,\'Courier New\',monospace;font-size:11pt;margin:0}'
-         + '.md-body{font-family:Segoe UI,Arial,sans-serif;font-size:11pt;max-width:100%}'
-         + '.md-body pre{background:#f6f8fa;padding:8px;border-radius:4px}'
-         + '.md-body code{font-family:Consolas,monospace}'
-         + '.md-body h1,.md-body h2,.md-body h3{border-bottom:1px solid #ddd;padding-bottom:4px}'
-         + '.md-body table{border-collapse:collapse}'
-         + '.md-body td,.md-body th{border:1px solid #999;padding:3px 6px}'
-         + 'img{max-width:100%}'
-         + '.tp-root{background:#fff;color:#000}'
-         + '.tp-scroll{overflow:visible}'
-         + '.tp-sheet{display:flex;align-items:flex-start}'
-         + '.tp-left{flex:0 0 auto;display:flex;flex-direction:column;background:#ececec}'
-         + '.tp-left-body{display:flex}'
-         + '.tp-right{flex:0 0 auto}'
-         + '.tp-areas{width:92px;flex:0 0 92px;background:#f3f3f3;border-right:1px solid #c8c8c8;font:11px Segoe UI,sans-serif}'
-         + '.tp-area-label{border-top:1px solid #e14c4c;border-bottom:1px solid #e14c4c;padding:2px 4px;overflow:hidden}'
-         + '.tp-rowhead{width:32px;flex:0 0 32px;background:#ececec;text-align:center;font:10px Segoe UI,sans-serif}'
-         + '.tp-grid{border-collapse:collapse;table-layout:fixed;font-family:Arial,sans-serif}'
-         + '.tp-grid td,.tp-grid th{border:1px solid #ccc;padding:0 2px;vertical-align:top}'
-         + '.tp-grid th{background:#ececec;font:10px Segoe UI,sans-serif}'
-         + '.tp-param{color:#7a2e00}'
-         + '.tp-row-area-lines{position:relative}'
-         + '.tp-row-area-line{border-top:1px solid #e14c4c}'
-         + '.tp-drawings{position:relative}'
-         + '.tp-drawing{position:absolute}';
-}
-
-// The PDF export renders through #print-frame, a sandboxed iframe with no
-// allow-scripts: the file being viewed is untrusted input, and this is the
-// one path (unlike the read-only preview pane) that used to inject it as
-// raw HTML into the viewer's own document. `done` fires only once the new
-// srcdoc has actually loaded, so the native PrintToPdf call that follows
-// never captures stale or blank content.
-function preparePrintContent(done) {
-    var frame = printFrame();
-    var content = model.getValue();
-    var body;
-    if (state.previewMode && isDocPreview() && formPreviewEl()) {
-        body = '<div class="md-body">' + formPreviewEl().innerHTML + '</div>';
-    } else if (state.previewMode && state.language === 'markdown') {
-        body = '<div class="md-body">' + renderMarkdown(content) + '</div>';
-    } else if (state.previewMode && state.language === 'html') {
-        body = '<div class="md-body">' + content + '</div>';
-    } else {
-        body = '<pre>' + esc(content) + '</pre>';
-    }
-    var onLoad = function () {
-        frame.removeEventListener('load', onLoad);
-        // An iframe with height:auto keeps its small CSS/layout viewport when
-        // it is printed. Expand it to the document's actual height first, so
-        // PrintToPdf captures every line and lets the print engine paginate.
-        var doc = frame.contentDocument;
-        var height = doc && doc.documentElement && doc.body
-            ? Math.max(doc.documentElement.scrollHeight, doc.body.scrollHeight)
-            : 0;
-        frame.style.height = Math.max(1, height) + 'px';
-        if (done) done();
+function copyText(text) {
+    text = String(text == null ? '' : text);
+    if (!text) return;
+    var fallback = function () {
+        var box = document.createElement('textarea');
+        box.value = text;
+        box.style.position = 'fixed';
+        box.style.left = '-9999px';
+        document.body.appendChild(box);
+        box.select();
+        try { document.execCommand('copy'); } catch (e) { /* nothing else to try */ }
+        document.body.removeChild(box);
     };
-    // Display the frame off-screen while measuring it; a display:none iframe
-    // reports a zero layout height even though its document has content.
-    frame.classList.add('print-me');
-    frame.style.height = '0px';
-    frame.addEventListener('load', onLoad);
-    frame.srcdoc = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>' + printCss()
-                 + '</style></head><body>' + body + '</body></html>';
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).catch(fallback);
+    else fallback();
 }
 
-function clearPrintContent() {
-    var frame = printFrame();
-    frame.removeAttribute('srcdoc');
-    frame.classList.remove('print-me');
-    frame.style.height = '0px';
+/* Объект.Description as the Designer shows it: Объект.Наименование. */
+function ruDataPath(path) {
+    return window.XmlUtil && XmlUtil.terms ? XmlUtil.terms.dataPath(path) : String(path || '');
+}
+
+function hideContextMenu() {
+    if (contextMenuEl) contextMenuEl.hidden = true;
+    hideContextSubmenu();
+}
+
+function showContextMenu(x, y, items) {
+    if (!contextMenuEl) {
+        contextMenuEl = document.createElement('div');
+        contextMenuEl.className = 'ctx-menu';
+        contextMenuEl.setAttribute('role', 'menu');
+        document.body.appendChild(contextMenuEl);
+        contextMenuEl.addEventListener('mousedown', function (e) { e.preventDefault(); });
+        wireContextMenuRows(contextMenuEl);
+        /* A row with `items` opens them beside itself. */
+        contextMenuEl.addEventListener('mouseover', function (e) {
+            var row = e.target.closest && e.target.closest('.ctx-item');
+            if (!row || row.parentNode !== contextMenuEl) return;
+            var sub = contextMenuEl._subs[+row.getAttribute('data-i')];
+            if (!sub) { hideContextSubmenu(); return; }
+            if (contextSubEl && !contextSubEl.hidden && contextSubEl._row === row) return;
+            var r = row.getBoundingClientRect();
+            if (!contextSubEl) {
+                contextSubEl = document.createElement('div');
+                contextSubEl.className = 'ctx-menu ctx-submenu';
+                contextSubEl.setAttribute('role', 'menu');
+                document.body.appendChild(contextSubEl);
+                wireContextMenuRows(contextSubEl);
+            }
+            contextSubEl._row = row;
+            fillContextMenu(contextSubEl, sub);
+            var w = contextSubEl.offsetWidth, ht = contextSubEl.offsetHeight;
+            var left = r.right + w + 2 > window.innerWidth ? r.left - w : r.right;
+            contextSubEl.style.left = Math.max(0, left) + 'px';
+            contextSubEl.style.top = Math.max(0, Math.min(r.top - 4, window.innerHeight - ht - 2)) + 'px';
+        });
+    }
+    hideContextSubmenu();
+    fillContextMenu(contextMenuEl, items);
+    var w = contextMenuEl.offsetWidth, ht = contextMenuEl.offsetHeight;
+    contextMenuEl.style.left = Math.max(0, Math.min(x, window.innerWidth - w - 2)) + 'px';
+    contextMenuEl.style.top = Math.max(0, Math.min(y, window.innerHeight - ht - 2)) + 'px';
+}
+
+var contextSubEl = null;
+
+function hideContextSubmenu() {
+    if (contextSubEl) { contextSubEl.hidden = true; contextSubEl._row = null; }
+}
+
+function wireContextMenuRows(menu) {
+    menu.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    menu.addEventListener('click', function (e) {
+        var row = e.target.closest && e.target.closest('.ctx-item');
+        if (!row || row.classList.contains('ctx-disabled')) return;
+        var i = +row.getAttribute('data-i');
+        if (menu._subs && menu._subs[i]) return;
+        var action = menu._actions[i];
+        hideContextMenu();
+        if (action) action();
+    });
+}
+
+function fillContextMenu(menu, items) {
+    var h = [];
+    var actions = [];
+    var subs = [];
+    for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (it.sep) {
+            if (h.length && i < items.length - 1) h.push('<div class="ctx-sep"></div>');
+            continue;
+        }
+        actions.push(it.action);
+        subs.push(it.items && it.items.length ? it.items : null);
+        h.push('<div class="ctx-item', it.disabled ? ' ctx-disabled' : '', '" role="menuitem" data-i="', actions.length - 1,
+            '"', it.items ? ' aria-haspopup="menu"' : '', '><span class="ctx-label', it.link ? ' ctx-link' : '', '">', esc(it.label), '</span>',
+            it.items ? '<span class="ctx-hint">›</span>'
+                : it.hint ? '<span class="ctx-hint">' + esc(it.hint) + '</span>' : '', '</div>');
+    }
+    menu._actions = actions;
+    menu._subs = subs;
+    menu.innerHTML = h.join('');
+    menu.hidden = false;
+}
+
+function shownOutlineEntry(row) {
+    var idx = parseInt(row.getAttribute('data-idx'), 10);
+    if (!isNaN(idx) && shownOutlineItems[idx]) return shownOutlineItems[idx];
+    var id = row.getAttribute('data-id');
+    for (var i = 0; id && i < allItems.length; i++) if (allItems[i].id === id) return allItems[i];
+    return null;
+}
+
+/* Shows the source line of an outline entry in the XML text. */
+function revealSourceLine(line) {
+    if (!line || !editor) return;
+    var go = function () {
+        editor.revealLineInCenter(line);
+        editor.setPosition({ lineNumber: line, column: 1 });
+        editor.focus();
+    };
+    if (state.previewMode && !(currentProvider() && currentProvider().keepsEditor)) setPreviewMode(false, go);
+    else go();
+}
+
+function textBoxItems(box) {
+    var hasSel = box.selectionStart !== box.selectionEnd;
+    var editable = !box.readOnly && !box.disabled;
+    return [
+        { label: 'Вырезать', hint: 'Ctrl+X', disabled: !hasSel || !editable, action: function () { box.focus(); document.execCommand('cut'); } },
+        { label: 'Копировать', hint: 'Ctrl+C', disabled: !hasSel, action: function () { box.focus(); document.execCommand('copy'); } },
+        { label: 'Вставить', hint: 'Ctrl+V', disabled: !editable || !(navigator.clipboard && navigator.clipboard.readText), action: function () {
+            navigator.clipboard.readText().then(function (text) {
+                box.focus();
+                box.setRangeText(text, box.selectionStart, box.selectionEnd, 'end');
+                box.dispatchEvent(new Event('input', { bubbles: true }));
+            });
+        } },
+        { sep: true },
+        { label: 'Выделить все', hint: 'Ctrl+A', action: function () { box.focus(); box.select(); } }
+    ];
+}
+
+function outlineRowItems(row) {
+    var it = shownOutlineEntry(row);
+    if (!it) return [];
+    var out = [];
+    var p = currentProvider();
+    if (row.classList.contains('form-el')) {
+        var target = it.node ? it.node.open : it.role ? it.role.path : '';
+        if (target && host && p && p.id === 'metadata')
+            out.push({ label: 'Открыть', action: function () { openRelated(target); } });
+        if (it.itemKind !== 'attribute' && it.id && p && p.id === 'form')
+            out.push({ label: 'Показать на форме', action: function () { switchFormWorkbenchView('form'); selectFormElement(it.id); } });
+        if (it.line > 1) out.push({ label: 'Показать в тексте XML', action: function () { revealSourceLine(it.line); } });
+        if (formMovingEnabled() && formMoveEntry(it.name)) {
+            var moved = formMoveEntry(it.name);
+            out.push({ sep: true });
+            var canStep = formMoveStepEnabled(moved);
+            out.push({ label: 'Переместить выше', hint: 'Ctrl+Shift+↑', disabled: !canStep,
+                action: function () { moveFormElementStep(it.name, -1); } });
+            out.push({ label: 'Переместить ниже', hint: 'Ctrl+Shift+↓', disabled: !canStep,
+                action: function () { moveFormElementStep(it.name, 1); } });
+        }
+    } else {
+        out.push({ label: 'Перейти к процедуре', action: function () { revealSourceLine(it.line); } });
+    }
+    if (docTree() && !document.getElementById('outline-fold').hidden) {
+        out.push({ sep: true });
+        out.push({ label: 'Развернуть все', action: function () { document.getElementById('outline-unfold').click(); } });
+        out.push({ label: 'Свернуть все', action: function () { document.getElementById('outline-fold').click(); } });
+    }
+    return out;
+}
+
+function inspectorItems(target) {
+    var host_ = document.getElementById('property-inspector');
+    var pair = target.closest('.attribute-property, .attribute-detail dl > div');
+    var out = [];
+    if (pair) {
+        var label = pair.querySelector('dt') ? pair.querySelector('dt').textContent : '';
+        var valueEl = pair.querySelector('.attribute-value, dd');
+        var value = valueEl ? valueEl.textContent : '';
+        var link = pair.querySelector('a[data-form-handler], a[data-attribute-id]');
+        if (link) out.push({ label: link.hasAttribute('data-form-handler') ? 'Перейти к обработчику' : 'Показать реквизит',
+            action: function () { link.click(); } });
+        out.push({ label: 'Копировать значение', action: function () { copyText(value); } });
+        out.push({ label: 'Копировать «' + label + '»', action: function () { copyText(label + ': ' + value); } });
+        out.push({ sep: true });
+    }
+    out.push({ label: 'Копировать все свойства', action: function () {
+        var lines = [];
+        var name = host_.querySelector('.attribute-inspector-head strong');
+        if (name) lines.push(name.textContent);
+        var pairs = host_.querySelectorAll('dl > div');
+        for (var i = 0; i < pairs.length; i++) {
+            var dt = pairs[i].querySelector('dt'), dd = pairs[i].querySelector('dd');
+            if (dt && dd) lines.push(dt.textContent + ': ' + dd.textContent.replace(/\s*→\s*/, ' → '));
+        }
+        copyText(lines.join('\n'));
+    } });
+    return out;
+}
+
+function formPreviewItems(target) {
+    var hit = target.closest('.fp-item[data-id], th[data-id], .fp-popup-entry[data-id]');
+    if (!hit) return [];
+    var id = hit.getAttribute('data-id');
+    var index = formElementIndex(id);
+    if (index < 0) return [];
+    var entry = formElementItems[index];
+    var out = [
+        { label: 'Свойства элемента', action: function () { selectFormElement(id); } },
+        { label: 'Показать в тексте XML', disabled: !(entry.line > 1), action: function () { revealSourceLine(entry.line); } }
+    ];
+    var handlerItems = formHandlerMenu(entry);
+    if (handlerItems.length) out.push({ sep: true });
+    out = out.concat(handlerItems);
+    /* The same move the tree offers, from the element itself. */
+    var moved = formMovingEnabled() ? formMoveEntry(entry.name) : null;
+    if (moved) {
+        out.push({ sep: true });
+        out.push({ label: 'Переместить выше', hint: 'Ctrl+Shift+↑', disabled: !formMoveStepEnabled(moved),
+            action: function () { moveFormElementStep(entry.name, -1); } });
+        out.push({ label: 'Переместить ниже', hint: 'Ctrl+Shift+↓', disabled: !formMoveStepEnabled(moved),
+            action: function () { moveFormElementStep(entry.name, 1); } });
+    }
+    out.push({ sep: true });
+    out.push({ label: 'Копировать имя', action: function () { copyText(entry.name); } });
+    if (entry.title && entry.title !== entry.name) out.push({ label: 'Копировать заголовок', action: function () { copyText(entry.title); } });
+    if (entry.dataPath) out.push({ label: 'Копировать путь к данным', action: function () { copyText(ruDataPath(entry.dataPath)); } });
+    return out;
+}
+
+/* A command or section of the configuration root: its link opens the
+ * object; data-ref carries the metadata name in Russian. */
+function configurationItems(target) {
+    var hit = target.closest('[data-ref]');
+    if (!hit) return [];
+    var out = [];
+    if (hit.tagName === 'A' || hit.hasAttribute('data-open'))
+        out.push({ label: 'Открыть', action: function () { hit.click(); } });
+    out.push({ label: 'Копировать представление', action: function () { copyText(hit.textContent.trim()); } });
+    out.push({ label: 'Копировать имя', action: function () { copyText(hit.getAttribute('data-ref')); } });
+    return out;
+}
+
+/* A row of the object window's own tree: the same entry as the structure panel. */
+function objectWindowItems(row) {
+    var id = row.getAttribute('data-id');
+    var entry = null;
+    for (var i = 0; i < allItems.length; i++) if (allItems[i].id === id) { entry = allItems[i]; break; }
+    var name = row.querySelector('.md-name');
+    var type = row.querySelector('.md-type');
+    var out = [];
+    if (row.hasAttribute('data-open') && host)
+        out.push({ label: relatedTarget(row.getAttribute('data-open')).action === 'save' ? 'Сохранить как…' : 'Открыть', action: function () { row.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); } });
+    if (entry && entry.line > 1) out.push({ label: 'Показать в тексте XML', action: function () { revealSourceLine(entry.line); } });
+    out.push({ sep: true });
+    out.push({ label: 'Копировать имя', action: function () { copyText(entry && entry.name || (name && name.textContent)); } });
+    if (type && type.textContent) out.push({ label: 'Копировать тип', action: function () { copyText(type.textContent); } });
+    return out;
+}
+
+function contextMenuItems(e) {
+    var t = e.target;
+    if (!t || !t.closest) return [];
+    /* Fields drawn inside a form mockup are the element, not a text box. */
+    var box = t.closest('input:not([type=checkbox]):not([type=radio]):not([type=button]), textarea');
+    if (box && !box.closest('#form-preview .fp-item')) return textBoxItems(box);
+    var items = [];
+    var sel = String(window.getSelection ? window.getSelection() : '');
+    if (sel.trim()) items.push({ label: 'Копировать', hint: 'Ctrl+C', action: function () { copyText(sel); } }, { sep: true });
+    var row = t.closest('#outline-list .proc-item');
+    if (row) return items.concat(outlineRowItems(row));
+    if (t.closest('#property-inspector')) return items.concat(inspectorItems(t));
+    var mdRow = t.closest('#form-preview .md-row[data-id]');
+    if (mdRow) return items.concat(objectWindowItems(mdRow));
+    if (t.closest('#form-preview')) {
+        var own = configurationItems(t);
+        if (!own.length && currentProvider() && currentProvider().id === 'form') own = formPreviewItems(t);
+        return items.concat(own);
+    }
+    var crumbs = t.closest('#sb-crumbs, #sb-element, #sb-file');
+    if (crumbs && crumbs.textContent.trim()) return items.concat([{ label: 'Копировать', action: function () { copyText(crumbs.textContent.trim()); } }]);
+    return items;
+}
+
+function wireContextMenu() {
+    document.addEventListener('contextmenu', function (e) {
+        if (e.target && e.target.closest && e.target.closest('.monaco-editor')) { hideContextMenu(); return; }
+        e.preventDefault();
+        var items = contextMenuItems(e);
+        while (items.length && items[items.length - 1].sep) items.pop();
+        if (items.length) showContextMenu(e.clientX, e.clientY, items);
+        else hideContextMenu();
+    });
+    document.addEventListener('mousedown', function (e) {
+        if (contextMenuEl && !contextMenuEl.hidden && !(e.target.closest && e.target.closest('.ctx-menu'))) hideContextMenu();
+    }, true);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') hideContextMenu(); }, true);
+    window.addEventListener('blur', hideContextMenu);
+    window.addEventListener('resize', hideContextMenu);
+    document.addEventListener('scroll', hideContextMenu, true);
 }
 
 // ------------------------------------------------------- one-time UI wiring
 
 function wireUi() {
+    wireContextMenu();
     document.getElementById('outline-list').addEventListener('click', function (e) {
         var usageLink = e.target.closest && e.target.closest('a.handler-usage[data-usage-id]');
         if (usageLink) {
@@ -4144,6 +7825,69 @@ function wireUi() {
             highlightFormOutline(rowId);
         }
     });
+
+    /* Reordering the form by dragging a row of the tree. The row is the
+     * element; the mark on the row under the pointer says where it would
+     * land, and a row that cannot take it carries no mark and no drop. */
+    var outlineList = document.getElementById('outline-list');
+    outlineList.addEventListener('dragstart', function (e) {
+        var row = e.target.closest && e.target.closest('.proc-item.form-el[draggable]');
+        var entry = row ? shownOutlineEntry(row) : null;
+        if (!row || !entry || !formMovingEnabled()) return;
+        formDrag = { name: entry.name, index: entry.outlineIndex, row: row, mode: '' };
+        row.classList.add('dragging');
+        if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            /* Chromium starts no drag without data on the transfer. */
+            try { e.dataTransfer.setData('text/plain', entry.name); } catch (err) { /* ignore */ }
+        }
+    });
+    outlineList.addEventListener('dragover', function (e) {
+        if (!formDrag.name) return;
+        var row = e.target.closest && e.target.closest('.proc-item.form-el');
+        var plan = row ? formDragPlan(row, e) : null;
+        clearFormDropMark();
+        if (!plan) {
+            if (e.dataTransfer) e.dataTransfer.dropEffect = 'none';
+            return;
+        }
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        row.classList.add('drop-' + plan.mode);
+    });
+    outlineList.addEventListener('drop', function (e) {
+        if (!formDrag.name) return;
+        var row = e.target.closest && e.target.closest('.proc-item.form-el');
+        var plan = row ? formDragPlan(row, e) : null;
+        var name = formDrag.name;
+        endFormDrag();
+        if (!plan) return;
+        e.preventDefault();
+        moveFormElement(name, plan.mode === 'into' ? { into: plan.target }
+            : plan.mode === 'before' ? { before: plan.target } : { after: plan.target });
+    });
+    outlineList.addEventListener('dragend', endFormDrag);
+    outlineList.addEventListener('dragleave', function (e) {
+        if (e.target === outlineList) clearFormDropMark();
+    });
+
+    document.getElementById('outline-move-up').addEventListener('click', function () {
+        var entry = formMoveSelection();
+        if (entry) moveFormElementStep(entry.name, -1);
+    });
+    document.getElementById('outline-move-down').addEventListener('click', function () {
+        var entry = formMoveSelection();
+        if (entry) moveFormElementStep(entry.name, 1);
+    });
+    /* Ctrl+Shift+Up/Down, as the Designer moves an element of the form. */
+    document.addEventListener('keydown', function (e) {
+        if (!e.ctrlKey || !e.shiftKey || e.altKey) return;
+        if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+        var entry = formMoveSelection();
+        if (!entry) return;
+        e.preventDefault();
+        moveFormElementStep(entry.name, e.key === 'ArrowUp' ? -1 : 1);
+    }, true);
 
     /* The Roles tab filter: a right ticked or cleared redraws the list. */
     document.getElementById('outline-list').addEventListener('change', function (e) {
@@ -4200,14 +7944,7 @@ function wireUi() {
         var handlerLink = e.target.closest && e.target.closest('a[data-form-handler]');
         if (handlerLink) {
             e.preventDefault();
-            var line = findFormHandlerLine(handlerLink.getAttribute('data-form-handler') || '');
-            if (!line) return;
-            switchFormWorkbenchView('module');
-            if (editor && formModuleModel) {
-                editor.revealLineInCenter(line);
-                editor.setPosition({ lineNumber: line, column: 1 });
-                editor.focus();
-            }
+            goToFormHandler(handlerLink.getAttribute('data-form-handler') || '');
             return;
         }
         if (!e.target.closest || !e.target.closest('#property-inspector-close')) return;
@@ -4268,8 +8005,52 @@ function wireUi() {
     document.getElementById('btn-minimap').addEventListener('click', toggleMinimap);
     document.getElementById('btn-edit').addEventListener('click', toggleEdit);
     document.getElementById('btn-save').addEventListener('click', saveFile);
+    wireCommitPrompt();
+    document.getElementById('btn-undo').addEventListener('click', function () { undoFromToolbar(false); });
+    document.getElementById('btn-redo').addEventListener('click', function () { undoFromToolbar(true); });
     document.getElementById('btn-format').addEventListener('click', formatDocument);
     document.getElementById('btn-comment').addEventListener('click', toggleLineComment);
+    document.getElementById('btn-move-line-up').addEventListener('click', function () { runEditorAction('editor.action.moveLinesUpAction'); });
+    document.getElementById('btn-move-line-down').addEventListener('click', function () { runEditorAction('editor.action.moveLinesDownAction'); });
+    document.getElementById('btn-copy-line-down').addEventListener('click', function () { runEditorAction('editor.action.copyLinesDownAction'); });
+    document.getElementById('btn-delete-line').addEventListener('click', function () { runEditorAction('editor.action.deleteLines'); });
+    document.getElementById('btn-string-bar').addEventListener('click', toggleStringBar);
+    document.getElementById('btn-diff').addEventListener('click', function () {
+        toggleDiffPanel();
+        if (!diffOpen && editor) editor.focus();
+    });
+    document.getElementById('btn-whitespace').addEventListener('click', toggleWhitespace);
+    document.getElementById('diff-close').addEventListener('click', function () {
+        closeDiffPanel();
+        if (editor) editor.focus();
+    });
+    document.getElementById('diff-base').addEventListener('change', function () {
+        setDiffBase(this.value);
+    });
+    document.getElementById('diff-rev').addEventListener('keydown', function (e) {
+        /* Поле живёт внутри панели: Esc здесь отменяет ввод, а не закрывает
+         * сравнение целиком. */
+        if (e.key === 'Enter') { e.preventDefault(); applyGitRef(this.value); }
+        else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeGitRefInput(); syncDiffBase(); }
+    });
+    document.getElementById('diff-rev').addEventListener('blur', function () {
+        if (this.value.trim()) applyGitRef(this.value); else { closeGitRefInput(); syncDiffBase(); }
+    });
+    /* Ловим до Monaco: иначе редактор съест сочетание, пока в нём фокус.
+     * e.code, а не e.key: в русской раскладке Alt+Shift+D — это «В». */
+    document.addEventListener('keydown', function (e) {
+        if (!e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey) return;
+        if (e.code === 'KeyD') { e.preventDefault(); e.stopPropagation(); toggleDiffPanel(); }
+        else if (e.code === 'KeyW') { e.preventDefault(); e.stopPropagation(); toggleWhitespace(); }
+    }, true);
+    document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape' || !diffOpen) return;
+        var input = document.getElementById('diff-rev');
+        if (input && !input.hidden) return;   /* поле ввода ревизии отменяет само себя */
+        e.preventDefault();
+        closeDiffPanel();
+        if (editor) editor.focus();
+    });
     document.getElementById('save-prompt-yes').addEventListener('click', onSavePromptYes);
     document.getElementById('save-prompt-no').addEventListener('click', onSavePromptNo);
     document.getElementById('save-prompt-cancel').addEventListener('click', onSavePromptCancel);
@@ -4277,6 +8058,11 @@ function wireUi() {
         if (!savePromptOpen()) return;
         if (e.key === 'Escape') { e.preventDefault(); onSavePromptCancel(); }
         else if (e.key === 'Enter') { e.preventDefault(); onSavePromptYes(); }
+    });
+    document.querySelectorAll('#md-layout button[data-md-layout]').forEach(function (button) {
+        button.addEventListener('click', function () {
+            setTextPreviewLayout(button.getAttribute('data-md-layout'));
+        });
     });
     document.getElementById('btn-preview').addEventListener('click', function () {
         if (state.sarifMode) toggleSarifSource();
@@ -4288,14 +8074,53 @@ function wireUi() {
         });
     });
     document.getElementById('btn-reload').addEventListener('click', reloadFromDisk);
+    document.getElementById('btn-explorer').addEventListener('click', function () {
+        send({ cmd: 'showInExplorer', target: formModuleOpen() ? 'module' : 'file' });
+    });
+    document.getElementById('btn-agent').addEventListener('click', function () {
+        send({ cmd: 'launchAgent' });
+    });
+    document.getElementById('btn-up').addEventListener('click', navigateUp);
     document.getElementById('btn-back').addEventListener('click', navigateBack);
-    document.addEventListener('keydown', function (e) {
-        if (e.altKey && !e.ctrlKey && !e.shiftKey && e.key === 'ArrowLeft' && navHistory.length) {
+    document.getElementById('btn-forward').addEventListener('click', navigateForward);
+    document.getElementById('btn-nav-history').addEventListener('click', toggleNavHistoryMenu);
+    document.getElementById('btn-settings').addEventListener('click', function () { send({ cmd: 'openSettings' }); });
+    document.addEventListener('mousedown', function (e) {
+        var box = document.getElementById('nav-history');
+        if (box && !box.contains(e.target)) closeNavHistoryMenu(false);
+    });
+    document.getElementById('nav-history-menu').addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.preventDefault(); closeNavHistoryMenu(true); return; }
+        if (e.key === 'Enter' && document.activeElement && this.contains(document.activeElement)) {
             e.preventDefault();
-            navigateBack();
+            document.activeElement.click();
+            return;
+        }
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+        e.preventDefault();
+        var items = Array.prototype.slice.call(this.querySelectorAll('.nav-history-item:not(.current)'));
+        var i = items.indexOf(document.activeElement) + (e.key === 'ArrowDown' ? 1 : -1);
+        if (items.length) items[(i + items.length) % items.length].focus();
+    });
+    document.addEventListener('keydown', function (e) {
+        var dir = historyKeyDirection(e);
+        if (!dir || !(dir === 'back' ? navHistory : navForward).length) return;
+        e.preventDefault();
+        if (dir === 'back') navigateBack(); else navigateForward();
+    }, true);
+    /* Mouse side buttons. */
+    document.addEventListener('mouseup', function (e) {
+        if (e.button === 3 && navHistory.length) { e.preventDefault(); navigateBack(); }
+        else if (e.button === 4 && navForward.length) { e.preventDefault(); navigateForward(); }
+    });
+    document.getElementById('btn-epf').addEventListener('click', openEpfPanel);
+    document.addEventListener('keydown', function (e) {
+        if (upTarget.path && isNavigateUpKey(e)) {
+            e.preventDefault();
+            navigateUp();
         }
     }, true);
-    document.getElementById('btn-help').addEventListener('click', showHelp);
+    document.addEventListener('keydown', onPreviewUndoKey, true);
     document.getElementById('help-close').addEventListener('click', hideHelp);
     document.addEventListener('keydown', function (e) {
         if (e.key === 'Escape' && !document.getElementById('help-panel').hidden) {
@@ -4303,10 +8128,33 @@ function wireUi() {
             hideHelp();
         }
     });
-    document.getElementById('btn-pdf').addEventListener('click', function () {
-        preparePrintContent(function () { send({ cmd: 'pdf' }); });
-    });
     document.getElementById('btn-form-screenshot').addEventListener('click', requestFormScreenshot);
+    initSessionAnnotations();
+    document.getElementById('btn-form-interface-mode').addEventListener('click', function () {
+        var menu = document.getElementById('form-interface-mode-menu');
+        var open = !!(menu && menu.hidden);
+        if (menu) menu.hidden = !open;
+        this.setAttribute('aria-expanded', open ? 'true' : 'false');
+        if (open && menu) {
+            var selected = menu.querySelector('[aria-checked="true"]');
+            if (selected && selected.focus) selected.focus();
+        }
+    });
+    document.getElementById('form-interface-mode-menu').addEventListener('click', function (event) {
+        var item = event.target.closest && event.target.closest('[data-form-interface-mode]');
+        if (item) setFormInterfaceMode(item.getAttribute('data-form-interface-mode'));
+    });
+    document.addEventListener('click', function (event) {
+        if (!event.target.closest || !event.target.closest('#form-interface-mode'))
+            closeFormInterfaceModeMenu(false);
+    });
+    document.addEventListener('keydown', function (event) {
+        var menu = document.getElementById('form-interface-mode-menu');
+        if (event.key === 'Escape' && menu && !menu.hidden) {
+            event.preventDefault();
+            closeFormInterfaceModeMenu(true);
+        }
+    });
     document.getElementById('btn-form-fit').addEventListener('click', function () {
         formFitWidth = !formFitWidth;
         writeStoredBool('1cFormViewer.fitWidth', formFitWidth);
@@ -4439,12 +8287,26 @@ window.ViewerInternals = {
     PreviewProviders: PreviewProviders,
     state: state,
     detectProvider: detectProvider,
+    upCandidates: upCandidates,
+    isNavigateUpKey: isNavigateUpKey,
+    historyKeyDirection: historyKeyDirection,
+    navHistoryItems: navHistoryItems,
+    navLabel: navLabel,
+    trackNavigation: trackNavigation,
+    navState: function (history, forward, pending) {
+        if (history) navHistory = history;
+        if (forward) navForward = forward;
+        if (pending !== undefined) navPending = pending;
+        return { history: navHistory, forward: navForward };
+    },
     loadThemeClass: loadThemeClass,
     providerById: providerById,
     currentProvider: currentProvider,
     previewView: previewView,
     isDocPreview: isDocPreview,
     sourceEditingActive: sourceEditingActive,
+    previewEditable: previewEditable,
+    previewEditingActive: previewEditingActive,
     isFormView: isFormView,
     docTree: docTree,
     formPreviewOpen: formPreviewOpen,
@@ -4456,6 +8318,36 @@ window.ViewerInternals = {
     ,onSarifSelect: onSarifSelect
     ,sarifRemapPath: sarifRemapPath
     ,minimapButtonVisible: minimapButtonVisible
+    ,setFormInterfaceMode: setFormInterfaceMode
+    ,storedFormInterfaceMode: storedFormInterfaceMode
+    ,epfRootKind: epfRootKind
+    ,previewUndoKey: previewUndoKey
+    ,undoDocument: undoDocument
+    ,undoTargetModel: undoTargetModel
+    ,previewUndoTarget: previewUndoTarget
+    ,syncUndoButtons: syncUndoButtons
+    ,formMovingEnabled: formMovingEnabled
+    ,formMoveTree: formMoveTree
+    ,formMoveEntry: formMoveEntry
+    ,formDropMode: formDropMode
+    ,monacoVisible: monacoVisible
+    ,whitespaceRenderOptions: whitespaceRenderOptions
+    ,diffTarget: diffTarget
+    ,diffAvailable: diffAvailable
+    ,diffEditorOptions: diffEditorOptions
+    ,hunkRestoreEdit: hunkRestoreEdit
+    ,setDiffPref: setDiffPref
+    ,diffPrefs: diffPrefs
+    ,diffWithoutHost: diffWithoutHost
+    ,diffBaseOptions: diffBaseOptions
+    ,gitBaselinesAvailable: gitBaselinesAvailable
+    ,diffBaseline: diffBaseline
+    ,gitBaseLabel: gitBaseLabel
+    ,gitRevisionLabel: gitRevisionLabel
+    ,gitColumnsHeader: gitColumnsHeader
+    ,gitState: gitState
+    ,textLayoutAvailable: textLayoutAvailable
+    ,currentTextLayout: currentTextLayout
 };
 
 function fail(text) {
@@ -4474,7 +8366,12 @@ loaderScript.onerror = function () {
     fail('Не удалось загрузить Monaco Editor из ' + VS_BASE + '. Переустановите плагин или проверьте подключение к сети.');
 };
 loaderScript.onload = function () {
-    require.config({ paths: { vs: VS_BASE } });
+    /* Russian UI strings (F1 palette, menus, find widget): editor.main pulls
+     * vs/nls.messages.ru.js through the loader before the editor starts. */
+    require.config({
+        paths: { vs: VS_BASE },
+        'vs/nls': { availableLanguages: { '*': 'ru' } }
+    });
     require(['vs/editor/editor.main'], function () {
         defineBsl(monaco);
         wireUi();

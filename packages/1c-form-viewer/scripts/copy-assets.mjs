@@ -16,7 +16,7 @@ import {
   readSprite,
   scriptTags,
   styleTags,
-} from '1c-preview-core/manifest.mjs';
+} from '../../1c-preview-core/manifest.mjs';
 
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourceUi = path.join(packageDir, 'ui');

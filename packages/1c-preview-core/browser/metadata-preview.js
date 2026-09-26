@@ -9,9 +9,15 @@
  * that has such a file carries its path relative to that folder in `open`, and
  * the host decides whether and how to open it.
  *
- * Form and template descriptors (Forms/Имя.xml) and Configuration.xml are also
- * MetaDataObject documents but are not claimed: the first ones stand for their
- * layouts, and the configuration is not an object window. */
+ * Every other kind of the configuration tree (common modules, roles, event
+ * subscriptions, subsystems, style items...) has no structure of its own: its
+ * window is the Designer's property palette, with the lists it keeps (Состав,
+ * Источники, Типы...) as groups of the tree and references that open.
+ *
+ * An object's form and template descriptors (Forms/Имя.xml) and
+ * Configuration.xml are also MetaDataObject documents but are not claimed: the
+ * first ones stand for their layouts, and the configuration is not an object
+ * window. Common forms and templates are objects of the tree and are. */
 (function (root) {
 'use strict';
 
@@ -22,10 +28,7 @@ var firstChild = XU.firstChild;
 var textOf = XU.textOf;
 var localizedFrom = XU.localizedFrom;
 
-var NOT_OBJECTS = {
-    Configuration: true, Form: true, CommonForm: true, Template: true, CommonTemplate: true,
-    Language: true, Subsystem: true, Style: true, StyleItem: true, CommonPicture: true
-};
+var NOT_OBJECTS = { Configuration: true, Form: true, Template: true };
 
 var KIND_TITLES = {
     ExternalDataProcessor: 'Внешняя обработка', ExternalReport: 'Внешний отчет',
@@ -44,8 +47,34 @@ var KIND_TITLES = {
     FunctionalOptionsParameter: 'Параметр функциональных опций', WebService: 'Web-сервис',
     HTTPService: 'HTTP-сервис', WSReference: 'WS-ссылка', Sequence: 'Последовательность',
     ExternalDataSource: 'Внешний источник данных', IntegrationService: 'Сервис интеграции',
-    DocumentNumerator: 'Нумератор документов', Subsystem: 'Подсистема'
+    DocumentNumerator: 'Нумератор документов', Subsystem: 'Подсистема', Bot: 'Бот',
+    XDTOPackage: 'XDTO-пакет', Language: 'Язык', Style: 'Стиль', StyleItem: 'Элемент стиля',
+    CommonPicture: 'Общая картинка', CommonForm: 'Общая форма', CommonTemplate: 'Общий макет',
+    PaletteColor: 'Цвет палитры', WebSocketClient: 'WebSocket-клиент'
 };
+
+/* Classes in the plural, as the Designer's tree and role editor name them. */
+var CLASS_PLURALS = {
+    Configuration: 'Конфигурация', Subsystem: 'Подсистемы', CommonModule: 'Общие модули',
+    SessionParameter: 'Параметры сеанса', Role: 'Роли', CommonAttribute: 'Общие реквизиты',
+    ExchangePlan: 'Планы обмена', FilterCriterion: 'Критерии отбора', EventSubscription: 'Подписки на события',
+    ScheduledJob: 'Регламентные задания', Bot: 'Боты', FunctionalOption: 'Функциональные опции',
+    FunctionalOptionsParameter: 'Параметры функциональных опций', DefinedType: 'Определяемые типы',
+    SettingsStorage: 'Хранилища настроек', CommonForm: 'Общие формы', CommonCommand: 'Общие команды',
+    CommandGroup: 'Группы команд', CommonTemplate: 'Общие макеты', CommonPicture: 'Общие картинки',
+    XDTOPackage: 'XDTO-пакеты', WebService: 'Web-сервисы', HTTPService: 'HTTP-сервисы',
+    WSReference: 'WS-ссылки', IntegrationService: 'Сервисы интеграции', StyleItem: 'Элементы стиля',
+    Style: 'Стили', PaletteColor: 'Цвета палитры', Language: 'Языки', Constant: 'Константы',
+    Catalog: 'Справочники', Document: 'Документы',
+    DocumentNumerator: 'Нумераторы документов', Sequence: 'Последовательности',
+    DocumentJournal: 'Журналы документов', Enum: 'Перечисления', Report: 'Отчеты', DataProcessor: 'Обработки',
+    ChartOfCharacteristicTypes: 'Планы видов характеристик', ChartOfAccounts: 'Планы счетов',
+    ChartOfCalculationTypes: 'Планы видов расчета', InformationRegister: 'Регистры сведений',
+    AccumulationRegister: 'Регистры накопления', AccountingRegister: 'Регистры бухгалтерии',
+    CalculationRegister: 'Регистры расчета', BusinessProcess: 'Бизнес-процессы', Task: 'Задачи',
+    ExternalDataSource: 'Внешние источники данных'
+};
+var CLASS_ORDER = Object.keys(CLASS_PLURALS);
 
 /* Collections in the order the Designer lists them. */
 var GROUPS = [
@@ -63,8 +92,28 @@ var GROUPS = [
     { tag: 'Template', title: 'Макеты', item: 'Макет' },
     { tag: 'Recalculation', title: 'Перерасчеты', item: 'Перерасчет' },
     { tag: 'Operation', title: 'Операции', item: 'Операция' },
-    { tag: 'URLTemplate', title: 'Шаблоны URL', item: 'Шаблон URL' }
+    { tag: 'URLTemplate', title: 'Шаблоны URL', item: 'Шаблон URL' },
+    { tag: 'IntegrationServiceChannel', title: 'Каналы', item: 'Канал' },
+    { tag: 'Table', title: 'Таблицы', item: 'Таблица' },
+    { tag: 'Cube', title: 'Кубы', item: 'Куб' },
+    { tag: 'Function', title: 'Функции', item: 'Функция' }
 ];
+
+/* Members listed below one node of a group: a tabular section's columns, a URL
+ * template's methods, an operation's parameters, an external table's fields. */
+var CHILD_GROUPS = {
+    URLTemplate: { tag: 'Method', title: 'Методы', item: 'Метод' },
+    Operation: { tag: 'Parameter', title: 'Параметры', item: 'Параметр' },
+    Table: { tag: 'Field', title: 'Поля', item: 'Поле' },
+    Cube: { tag: 'Dimension', title: 'Измерения', item: 'Измерение' }
+};
+var COLUMNS = { tag: 'Attribute', title: 'Реквизиты', item: 'Реквизит' };
+
+/* What an untyped node shows beside its name. */
+var DETAIL_KEYS = {
+    URLTemplate: 'Template', Method: 'HTTPMethod', Operation: 'XDTOReturningValueType',
+    Parameter: 'XDTOValueType', IntegrationServiceChannel: 'MessageDirection'
+};
 
 /* Collections the Designer lists for a kind even when they are empty. */
 var OBJECT_GROUPS = ['Attribute', 'TabularSection', 'Form', 'Command', 'Template'];
@@ -92,14 +141,28 @@ var STRUCTURED = {
     ChartOfCalculationTypes: true, BusinessProcess: true, Task: true, ExchangePlan: true
 };
 
+/* Modules of each kind, as Ext/<name>.bsl below the object's folder. Kinds
+ * not listed here and not structured have none. */
 var MODULES = {
     ExternalDataProcessor: ['ObjectModule'], ExternalReport: ['ObjectModule'],
-    CommonModule: ['Module'], Constant: ['ValueManagerModule', 'ManagerModule']
+    CommonModule: ['Module'], Constant: ['ValueManagerModule', 'ManagerModule'],
+    Enum: ['ManagerModule'], DocumentJournal: ['ManagerModule'], FilterCriterion: ['ManagerModule'],
+    SettingsStorage: ['ManagerModule'], Sequence: ['RecordSetModule'], CommonCommand: ['CommandModule'],
+    HTTPService: ['Module'], WebService: ['Module'], IntegrationService: ['Module'], Bot: ['Module'],
+    CommonForm: ['Form/Module']
 };
 var MODULE_TITLES = {
     ObjectModule: 'Модуль объекта', ManagerModule: 'Модуль менеджера',
     RecordSetModule: 'Модуль набора записей', ValueManagerModule: 'Модуль менеджера значения',
-    Module: 'Модуль', CommandModule: 'Модуль команды'
+    Module: 'Модуль', CommandModule: 'Модуль команды', 'Form/Module': 'Модуль формы'
+};
+
+/* The file of its Ext folder a template keeps its text content in, by its
+ * type; the other types are shown or saved (templateOpen). */
+var TEMPLATE_FILES = {
+    SpreadsheetDocument: 'Template.xml', DataCompositionSchema: 'Template.xml',
+    DataCompositionAppearanceTemplate: 'Template.xml', GraphicalSchema: 'Template.xml',
+    GeographicalSchema: 'Template.xml', TextDocument: 'Template.txt'
 };
 
 var PROPERTY_TITLES = {
@@ -125,6 +188,7 @@ var PROPERTY_TITLES = {
     FillFromFillingValue: 'Заполнять из данных заполнения', FillValue: 'Значение заполнения',
     DataHistory: 'История данных', UseStandardCommands: 'Использовать стандартные команды',
     IncludeHelpInContents: 'Включать в содержание справки', ExtendedPresentation: 'Расширенное представление',
+    UseInInterfaceCompatibilityMode: 'Использовать в режиме совместимости интерфейса', Color: 'Цвет',
     Explanation: 'Пояснение', ObjectPresentation: 'Представление объекта',
     ListPresentation: 'Представление списка', ExtendedObjectPresentation: 'Расширенное представление объекта',
     ExtendedListPresentation: 'Расширенное представление списка', TemplateType: 'Тип макета',
@@ -169,8 +233,33 @@ var PROPERTY_TITLES = {
     QuickChoiceOnInputByString: 'Быстрый выбор при вводе по строке', Addressing: 'Адресация',
     Task: 'Задача', RegisteredDocuments: 'Регистрируемые документы', DistributedInfoBase: 'Распределенная информационная база',
     BusinessProcess: 'Бизнес-процесс', BaseCalculationTypes: 'Базовые виды расчета', Schedule: 'График',
-    Periodicity: 'Периодичность'
+    Periodicity: 'Периодичность', LocationURL: 'URL расположения', LanguageCode: 'Код языка',
+    Value: 'Значение', UsePurposes: 'Назначения использования', Content: 'Состав', Source: 'Источник',
+    Event: 'Событие', Handler: 'Обработчик', MethodName: 'Имя метода', Description: 'Наименование',
+    Key: 'Ключ', Predefined: 'Предопределенное', RestartCountOnFailure: 'Количество повторов при аварийном завершении',
+    RestartIntervalOnFailure: 'Интервал повтора при аварийном завершении', Location: 'Хранение',
+    PrivilegedGetMode: 'Привилегированный режим при получении', Category: 'Категория',
+    IncludeInCommandInterface: 'Включать в командный интерфейс', UseOneCommand: 'Использовать одну команду',
+    Namespace: 'URI пространства имен', XDTOPackages: 'Пакеты XDTO', DescriptorFileName: 'Имя файла описания',
+    ReuseSessions: 'Повторное использование сеансов', SessionMaxAge: 'Время жизни сеанса',
+    RootURL: 'Корневой URL', ExternalIntegrationServiceAddress: 'Адрес внешнего сервиса интеграции',
+    AutoUse: 'Автоиспользование', DataSeparation: 'Разделение данных',
+    SeparatedDataUse: 'Использование разделяемых данных', DataSeparationValue: 'Значение разделения данных',
+    DataSeparationUse: 'Использование разделения данных', ConditionalSeparation: 'Условное разделение',
+    UsersSeparation: 'Разделение пользователей', AuthenticationSeparation: 'Разделение аутентификации',
+    ConfigurationExtensionsSeparation: 'Разделение расширений конфигурации',
+    MoveBoundaryOnPosting: 'Перемещение границы при проведении', Documents: 'Документы',
+    AvailabilityForChoice: 'Доступность для выбора', AvailabilityForAppearance: 'Доступность для оформления'
 };
+
+/* Titles of the lists a property keeps, when drawn as a group of the tree. */
+var LIST_TITLES = {
+    Content: 'Состав', Source: 'Источники', Use: 'Использование', Type: 'Типы', XDTOPackages: 'Пакеты XDTO',
+    Documents: 'Документы', RegisterRecords: 'Регистры', RegisteredDocuments: 'Регистрируемые документы',
+    CommandParameterType: 'Тип параметра команды', Owners: 'Владельцы', BasedOn: 'Ввод на основании'
+};
+/* The Type property draws as a list only where it is the object's content. */
+var TYPE_LISTS = { DefinedType: true, FilterCriterion: true };
 
 /* Metadata classes in the Designer's spelling, for lists of object references
  * (register records, input on basis, owners). */
@@ -232,7 +321,7 @@ function referencePresentation(raw) {
     if (standard >= 0 && parts[standard + 1]) return STANDARD_ATTRIBUTES[parts[standard + 1]] || parts[standard + 1];
     if (parts.length > 3) return parts[parts.length - 1];
     if (MD_CLASSES[parts[0]]) parts[0] = MD_CLASSES[parts[0]];
-    return parts.join('.');
+    return XU.terms.metadataRef(parts.join('.'));
 }
 
 var VALUE_TITLES = {
@@ -243,7 +332,7 @@ var VALUE_TITLES = {
     Variable: 'Переменная', Fixed: 'Фиксированная', Nonnegative: 'Неотрицательное', Any: 'Любой',
     SpreadsheetDocument: 'Табличный документ', BinaryData: 'Двоичные данные',
     DataCompositionSchema: 'Схема компоновки данных', TextDocument: 'Текстовый документ',
-    HTMLDocument: 'HTML документ', GeographicalSchema: 'Географическая схема',
+    HTMLDocument: 'HTML документ', ActiveDocument: 'Active document', GeographicalSchema: 'Географическая схема',
     GraphicalSchema: 'Графическая схема', AddIn: 'Внешняя компонента',
     DataCompositionAppearanceTemplate: 'Макет оформления компоновки данных',
     Managed: 'Управляемая', Ordinary: 'Обычная', Allow: 'Разрешить', Deny: 'Запретить',
@@ -263,7 +352,12 @@ var VALUE_TITLES = {
     WriteModified: 'Записывать модифицированные', AutoFill: 'Заполнять автоматически',
     AutoFillOff: 'Не заполнять автоматически', Independent: 'Независимый',
     RecorderSubordinate: 'Подчинение регистратору', Balance: 'Остатки', Turnovers: 'Обороты',
-    Second: 'В пределах секунды', RecorderPosition: 'Позиция регистратора', Whole: 'Во всей информационной базе'
+    Second: 'В пределах секунды', RecorderPosition: 'Позиция регистратора', Whole: 'Во всей информационной базе',
+    Send: 'Отправка', Receive: 'Получение', AutoUse: 'Использовать автоматически', Color: 'Цвет', Font: 'Шрифт',
+    Border: 'Рамка', PlatformApplication: 'Приложение платформы',
+    MobilePlatformApplication: 'Мобильная платформа', Independently: 'Независимо',
+    IndependentlyAndSimultaneously: 'Независимо и одновременно', Separate: 'Разделять',
+    DontSeparate: 'Не разделять', Move: 'Перемещать', DontMove: 'Не перемещать'
 };
 
 /* Designer-internal or already-shown properties never listed in the inspector. */
@@ -278,10 +372,13 @@ var SKIP_PROPERTIES = {
 var FOLDED_AT_START = ['StandardAttribute', 'Dimension', 'Resource', 'Attribute', 'AddressingAttribute',
     'AccountingFlag', 'ExtDimensionAccountingFlag', 'EnumValue', 'Column', 'TabularSection'];
 
+/* A class of a role's rights longer than this starts folded in the window. */
+var FOLD_OVER = 40;
+
 function initialViewState() {
     var collapsed = {};
     for (var i = 0; i < FOLDED_AT_START.length; i++) collapsed['group:' + FOLDED_AT_START[i]] = true;
-    return { collapsed: collapsed, selected: '' };
+    return { collapsed: collapsed, selected: '', seen: {} };
 }
 
 var viewState = initialViewState();
@@ -308,9 +405,58 @@ function detect(xml) {
     return /<(?:\w+:)?Properties[\s>]/.test(xml);
 }
 
-function valueTitle(value) {
+function valueTitle(value, key) {
     var s = String(value);
-    return Object.prototype.hasOwnProperty.call(VALUE_TITLES, s) ? VALUE_TITLES[s] : s;
+    if (Object.prototype.hasOwnProperty.call(VALUE_TITLES, s)) return VALUE_TITLES[s];
+    if (key === 'Event' && root.FormPreview && root.FormPreview.eventTitle) return root.FormPreview.eventTitle(s);
+    return XU.terms.presentValue(s, key);
+}
+
+/* A property's name: this window's list, then the shared ones, then as written. */
+function propertyTitle(key) {
+    return PROPERTY_TITLES[key] || XU.terms.propertyName(key)
+        || (root.FormPreview && root.FormPreview.propertyTitle ? root.FormPreview.propertyTitle(key) : key);
+}
+
+function kindTitle(cls) {
+    return KIND_TITLES[cls] || XU.terms.identWords(XU.terms.mdClass(cls)) || cls;
+}
+
+/* Structured property values (choice parameters and their links) as text:
+ * «Отбор.Тип = Товар, Услуга», «Отбор.Организация = Организация (очищать)».
+ * Empty when the element is not one of them. */
+function structuredValue(el) {
+    var kids = el.children || [];
+    var parts = [];
+    for (var i = 0; i < kids.length; i++) {
+        var kid = kids[i];
+        var kidTag = localName(kid);
+        if (kidTag === 'Link') {
+            var path = textOf(firstChild(kid, 'DataPath'));
+            var mode = textOf(firstChild(kid, 'ValueChange'));
+            parts.push(textOf(firstChild(kid, 'Name')) + ' = ' + referencePresentation(path)
+                + (mode ? ' (' + String(valueTitle(mode, 'ValueChange')).toLowerCase() + ')' : ''));
+        } else if (kidTag === 'item' && kid.getAttribute && kid.getAttribute('name')) {
+            parts.push(kid.getAttribute('name') + ' = ' + leafValues(kid).join(', '));
+        } else {
+            return '';
+        }
+    }
+    return parts.join('; ');
+}
+
+function leafValues(el) {
+    var out = [];
+    (function walk(node) {
+        var kids = node.children || [];
+        if (!kids.length) {
+            var text = textOf(node);
+            if (text) out.push(valueTitle(/^[A-Za-z]+\.[^.]+\.EnumValue\./.test(text) ? text.split('.').pop() : text));
+            return;
+        }
+        for (var i = 0; i < kids.length; i++) walk(kids[i]);
+    })(el);
+    return out;
 }
 
 function typeName(raw) {
@@ -322,7 +468,12 @@ function typeName(raw) {
 /* v8:TypeDescription as the Designer spells it: Строка(50), Число(15, 2),
  * Дата(дата), СправочникСсылка.Контрагенты, joined for a composite type. */
 function typePresentation(typeEl) {
-    if (!typeEl) return '';
+    return typeParts(typeEl).map(function (p) { return p.shown; }).join(', ');
+}
+
+/* Each type of a description: { raw: 'cfg:CatalogRef.Имя', shown }. */
+function typeParts(typeEl) {
+    if (!typeEl) return [];
     var parts = [];
     var stringQ = firstChild(typeEl, 'StringQualifiers');
     var numberQ = firstChild(typeEl, 'NumberQualifiers');
@@ -347,9 +498,9 @@ function typePresentation(typeEl) {
             var part = textOf(firstChild(dateQ, 'DateFractions'));
             shown += part === 'Date' ? '(дата)' : part === 'Time' ? '(время)' : '(дата и время)';
         }
-        parts.push(shown);
+        parts.push({ raw: raw, shown: shown });
     }
-    return parts.join(', ');
+    return parts;
 }
 
 function isNil(el) {
@@ -376,29 +527,43 @@ function propertyValue(el) {
     if (firstChild(el, 'item') && (firstChild(firstChild(el, 'item'), 'content')
             || firstChild(firstChild(el, 'item'), 'lang'))) return localizedFrom(el);
     if (el.children && el.children.length) {
-        /* A list of references (<xr:Item>, <xr:Field>) reads as a list. */
+        /* Types an event subscription listens to: v8:Type per line. */
+        if (firstChild(el, 'Type') || firstChild(el, 'TypeSet')) return typePresentation(el);
+        /* A picture: <xr:Ref>StdPicture.Print</xr:Ref><xr:LoadTransparent/>. */
+        if (firstChild(el, 'Ref')) return XU.terms.presentValue(textOf(firstChild(el, 'Ref')));
+        /* A link by type: the attribute and which of its types. */
+        if (firstChild(el, 'DataPath') && firstChild(el, 'LinkItem'))
+            return referencePresentation(textOf(firstChild(el, 'DataPath')));
+        /* A list of references (<xr:Item>, <xr:Field>, <xr:Object>) reads as a list. */
         var items = [];
         for (var k = 0; k < el.children.length; k++) {
             var itemTag = localName(el.children[k]);
-            if (itemTag !== 'Item' && itemTag !== 'Field') { items = null; break; }
+            if (itemTag === 'Value' && !el.children[k].children.length) {
+                items.push(valueTitle(textOf(el.children[k])));
+                continue;
+            }
+            if (itemTag !== 'Item' && itemTag !== 'Field' && itemTag !== 'Object') { items = null; break; }
             items.push(referencePresentation(textOf(el.children[k])));
         }
         if (items && items.length) return items.join(', ');
+        var structured = structuredValue(el);
+        if (structured) return structured;
         var text = textOf(el);
         return text.length > 200 ? text.slice(0, 200) + '…' : text;
     }
-    return valueTitle(textOf(el));
+    return valueTitle(textOf(el), tag);
 }
 
-function propertyRows(props) {
+function propertyRows(props, skip) {
     var rows = [];
     var kids = (props && props.children) || [];
     for (var i = 0; i < kids.length; i++) {
         var key = localName(kids[i]);
-        if (SKIP_PROPERTIES[key]) continue;
+        if (SKIP_PROPERTIES[key] || (skip && skip[key])) continue;
         var value = propertyValue(kids[i]);
         if (!value) continue;
-        rows.push({ key: key, label: PROPERTY_TITLES[key] || key, value: value });
+        var raw = kids[i].children && kids[i].children.length ? '' : textOf(kids[i]);
+        rows.push({ key: key, label: propertyTitle(key), value: value, raw: raw });
     }
     return rows;
 }
@@ -409,10 +574,31 @@ function shortFormName(ref) {
     return at >= 0 ? s.slice(at + 1) : s;
 }
 
-function readNode(el, group, parentId, objectName) {
+function childDescriptorProperties(ctx, kind, name) {
+    var descriptors = ctx && ctx.relations && ctx.relations.descriptors;
+    var xml = descriptors && descriptors[kind] && descriptors[kind][name];
+    if (!xml) return null;
+    try {
+        var doc = new DOMParser().parseFromString(String(xml), 'application/xml');
+        var object = objectElement(doc);
+        return object ? firstChild(object, 'Properties') : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function readNode(el, group, parentId, objectName, ctx) {
     var props = firstChild(el, 'Properties');
     var name = props ? textOf(firstChild(props, 'Name')) : textOf(el);
+    if (!props && !parentId && (group.tag === 'Form' || group.tag === 'Template'))
+        props = childDescriptorProperties(ctx, group.tag, name);
     var id = (parentId ? parentId + '.' : '') + group.tag + '.' + name;
+    var type = props ? typePresentation(firstChild(props, 'Type')) : '';
+    var detailKey = DETAIL_KEYS[group.tag];
+    if (!type && detailKey && props) {
+        var detail = textOf(firstChild(props, detailKey));
+        type = detailKey === 'MessageDirection' ? valueTitle(detail, detailKey) : detail;
+    }
     var node = {
         id: id,
         kind: group.tag,
@@ -420,25 +606,75 @@ function readNode(el, group, parentId, objectName) {
         name: name,
         synonym: props ? localizedFrom(firstChild(props, 'Synonym')) : '',
         comment: props ? textOf(firstChild(props, 'Comment')) : '',
-        type: props ? typePresentation(firstChild(props, 'Type')) : '',
+        type: type,
         properties: props ? propertyRows(props) : [],
         children: [],
         open: ''
     };
     if (!parentId) {
-        if (group.tag === 'Form') node.open = 'Forms/' + name + '/Ext/Form.xml';
-        else if (group.tag === 'Template') node.open = 'Templates/' + name + '/Ext/Template.xml';
-        else if (group.tag === 'Command') node.open = 'Commands/' + name + '/Ext/CommandModule.bsl';
+        var projRoot = ctx && ctx.relations && ctx.relations.proj && ctx.relations.root;
+        if (group.tag === 'Form' && projRoot && root.MetadataRelations && root.MetadataRelations.DIRS[ctx.objectKind]) {
+            var sep = String(projRoot).indexOf('\\') >= 0 ? '\\' : '/';
+            node.open = [projRoot, root.MetadataRelations.DIRS[ctx.objectKind], objectName,
+                'Forms', name, 'Form.form'].join(sep);
+        } else if (group.tag === 'Form') node.open = 'Forms/' + name + '/Ext/Form.xml';
+        else if (group.tag === 'Template' && projRoot) node.open = '';
+        else if (group.tag === 'Template') templateNode(node, ctx);
+        else if (group.tag === 'Command' && projRoot && root.MetadataRelations && root.MetadataRelations.DIRS[ctx.objectKind]) {
+            var commandSep = String(projRoot).indexOf('\\') >= 0 ? '\\' : '/';
+            node.open = [projRoot, root.MetadataRelations.DIRS[ctx.objectKind], objectName,
+                'Commands', name, 'Module.bsl'].join(commandSep);
+        } else if (group.tag === 'Command') node.open = 'Commands/' + name + '/Ext/CommandModule.bsl';
     }
-    /* A tabular section (and a register's recalculation) lists its own columns. */
+    /* A tabular section (and a register's recalculation) lists its own
+     * columns, a URL template its methods, an operation its parameters. */
     var childObjects = firstChild(el, 'ChildObjects');
     if (childObjects) {
-        var columns = namedChildren(childObjects, 'Attribute');
+        var childGroup = CHILD_GROUPS[group.tag] || COLUMNS;
+        var columns = namedChildren(childObjects, childGroup.tag);
         for (var i = 0; i < columns.length; i++) {
-            node.children.push(readNode(columns[i], GROUPS[2], id, objectName));
+            node.children.push(readNode(columns[i], childGroup, id, objectName, ctx));
         }
     }
     return node;
+}
+
+/* A template's type is kept in its own descriptor, which the relations scan
+ * reads (metadata-relations.js); until it answers the template opens as a
+ * layout. An HTML document is shown as a page ('html:' + the base of its
+ * Template.xml and Template/<lang>.html, laid out like an object's help);
+ * binary data, an add-in and an Active document are saved to a file
+ * ('save:' + type + ':' + Template.bin). */
+var SAVED_TEMPLATES = { BinaryData: true, AddIn: true, ActiveDocument: true };
+
+function templateNode(node, ctx) {
+    var types = ctx && ctx.relations && ctx.relations.templates;
+    var type = types && types[node.name];
+    var ext = 'Templates/' + node.name + '/Ext/';
+    if (!type) {
+        node.open = ext + 'Template.xml';
+        return;
+    }
+    node.type = valueTitle(type, 'TemplateType');
+    node.properties.push({ key: 'TemplateType', label: propertyTitle('TemplateType'), value: node.type, raw: type });
+    node.open = templateOpen(type, ext);
+}
+
+/* The link of a template of `type` whose Ext folder is `ext`: '' when the
+ * type keeps nothing this viewer can show or save. */
+function templateOpen(type, ext) {
+    return TEMPLATE_FILES[type] ? ext + TEMPLATE_FILES[type]
+        : type === 'HTMLDocument' ? 'html:' + ext + 'Template'
+        : SAVED_TEMPLATES[type] ? 'save:' + type + ':' + ext + 'Template.bin' : '';
+}
+
+/* What following a node's link does, for its caption. */
+function openTitle(node) {
+    if (/^save:/.test(node.open)) return 'Сохранить макет как…';
+    if (/^html:/.test(node.open)) return 'Показать HTML документ';
+    return node.kind === 'Template' ? 'Открыть макет'
+        : node.kind === 'Command' ? 'Открыть модуль команды' : node.kind === 'Form' ? 'Открыть форму'
+        : 'Открыть';
 }
 
 function boolProp(props, key) {
@@ -512,7 +748,7 @@ function standardNodes(props, kind, name) {
         var key = kids[i].getAttribute ? kids[i].getAttribute('name') : '';
         if (!key || seen[key] || !standardVisible(key, kind, props)) continue;
         seen[key] = true;
-        var shown = STANDARD_ATTRIBUTES[key] || key;
+        var shown = STANDARD_ATTRIBUTES[key] || XU.terms.stdAttribute(key) || key;
         var synonym = localizedFrom(firstChild(kids[i], 'Synonym'));
         out.push({
             id: 'StandardAttribute.' + key, kind: 'StandardAttribute', kindTitle: 'Стандартный реквизит', key: key,
@@ -530,7 +766,7 @@ function refNode(groupTag, ref, path, title, hint, hintLabel) {
     var cls = String(ref).split('.')[0];
     return {
         id: groupTag + ':' + ref, kind: 'Ref', refClass: cls, ref: ref,
-        kindTitle: KIND_TITLES[cls] || cls, name: title || referencePresentation(ref),
+        kindTitle: kindTitle(cls), name: title || referencePresentation(ref),
         synonym: hint || '', hintLabel: hintLabel || '', comment: '', type: '', properties: [], children: [],
         open: path || ''
     };
@@ -566,7 +802,7 @@ function linkGroups(props, ctx) {
         var values = el && el.children && el.children.length ? refItems(el) : [textOf(el).trim()];
         for (var v = 0; v < values.length; v++) {
             if (!values[v] || values[v].split('.').length !== 2) continue;
-            linked.push(refNode('Linked', values[v], relationsPath(ctx, values[v]), '', PROPERTY_TITLES[key] || key,
+            linked.push(refNode('Linked', values[v], relationsPath(ctx, values[v]), '', propertyTitle(key),
                 'Свойство'));
         }
     }
@@ -629,11 +865,303 @@ function predefinedGroup(ctx) {
 var WINDOW_GROUPS = {
     Dimension: true, Resource: true, Attribute: true, AddressingAttribute: true, AccountingFlag: true,
     ExtDimensionAccountingFlag: true, EnumValue: true, Column: true, TabularSection: true,
-    Form: true, Template: true
+    Form: true, Template: true, URLTemplate: true, Operation: true, IntegrationServiceChannel: true,
+    Table: true, Cube: true, Function: true
 };
 
 var CONTEXT_GROUPS = { Subsystems: true, FunctionalOptions: true, EventSubscriptions: true,
     DefinedTypes: true, FilterCriteria: true };
+
+/* Kinds whose window is the property palette: no data of their own, only
+ * settings and the lists they keep. */
+function isSimpleKind(kind) {
+    return !STRUCTURED[kind] && !ALWAYS_GROUPS[kind];
+}
+
+/* Class.Имя[.Member...] as the Designer spells it: Документ.Встреча.Участники.Контакт. */
+function fullReference(raw) {
+    var parts = String(raw || '').split('.');
+    var head = (MD_CLASSES[parts[0]] || XU.terms.mdClass(parts[0]) || parts[0]) + (parts[1] ? '.' + parts[1] : '');
+    var rest = parts.length > 2 ? memberPresentation(parts.slice(2).join('.')) : '';
+    return head + (rest ? '.' + rest : '');
+}
+
+/* The descriptor of Class.Имя (or of the object a member path starts with),
+ * when the configuration root is known. */
+function objectFile(ctx, raw) {
+    var parts = String(raw || '').split('.');
+    return parts.length >= 2 ? relationsPath(ctx, parts[0] + '.' + parts[1]) : '';
+}
+
+/* CommonModule.Имя.Процедура -> the module's text. */
+function moduleFile(ctx, raw) {
+    var parts = String(raw || '').split('.');
+    if (parts[0] !== 'CommonModule' || !parts[1]) return '';
+    var path = relationsPath(ctx, 'CommonModule.' + parts[1]);
+    if (!path) return '';
+    var sep = path.indexOf('\\') >= 0 ? '\\' : '/';
+    return path.replace(/\.xml$/i, '') + sep + 'Ext' + sep + 'Module.bsl';
+}
+
+function listNode(key, index, fields) {
+    var cls = fields.ref ? fields.ref.split('.')[0] : '';
+    return {
+        id: 'List.' + key + '.' + index, kind: fields.ref ? 'Ref' : 'Value', refClass: fields.ref ? cls : '',
+        ref: fields.ref || '', kindTitle: fields.ref ? kindTitle(cls) : fields.kindTitle || 'Значение',
+        name: fields.name, synonym: '', hintLabel: '', comment: '', type: fields.type || '',
+        properties: fields.properties || [], children: [], open: fields.open || ''
+    };
+}
+
+/* A property that keeps a list — references (<xr:Item>Class.Имя</xr:Item>),
+ * objects with their use (<xr:Metadata> + <xr:Use>), values (<xr:Value>) or
+ * types — as the members of a tree group; null for any other property. */
+function listFromProperty(el, key, kind, ctx) {
+    var kids = (el && el.children) || [];
+    if (!kids.length) return null;
+    var items = [];
+    var tag0 = localName(kids[0]);
+    if (tag0 === 'Type' || tag0 === 'TypeSet') {
+        if (key !== 'Source' && key !== 'CommandParameterType' && !(key === 'Type' && TYPE_LISTS[kind])) return null;
+        var rel = root.MetadataRelations;
+        typeParts(el).forEach(function (part, i) {
+            var bare = part.raw.replace(/^cfg:/, '');
+            var ref = /^DefinedType\.[^.]+$/.test(bare) ? bare
+                : rel && rel.typeObject ? rel.typeObject(bare) : '';
+            items.push(listNode(key, i, { name: part.shown, ref: ref, open: ref ? relationsPath(ctx, ref) : '',
+                kindTitle: 'Тип', type: '' }));
+            if (!ref) items[items.length - 1].type = part.shown;
+        });
+        return items;
+    }
+    for (var i = 0; i < kids.length; i++) {
+        if (localName(kids[i]) !== 'Item' && localName(kids[i]) !== 'Object') return null;
+        var item = kids[i];
+        var meta = firstChild(item, 'Metadata');
+        var value = firstChild(item, 'Value');
+        var raw = textOf(meta || value || item).trim();
+        if (!raw) continue;
+        var isRef = /^[A-Za-z]+\.[^.\s]+/.test(raw) && !/^[a-z]+:\/\//i.test(raw)
+            && (meta || !value || /MDObjectRef/.test(value.getAttribute ? value.getAttribute('xsi:type') || '' : ''));
+        if (!isRef && !value) return null;
+        var use = meta ? textOf(firstChild(item, 'Use')) : '';
+        items.push(listNode(key, i, {
+            name: isRef ? fullReference(raw) : raw, ref: isRef ? raw.split('.').slice(0, 2).join('.') : '',
+            open: isRef ? objectFile(ctx, raw) : '', type: use ? valueTitle(use, 'Use') : '',
+            properties: use ? [{ key: 'Use', label: 'Использование', value: valueTitle(use, 'Use') }] : []
+        }));
+    }
+    return items;
+}
+
+/* Groups of a simple kind drawn from its list properties, and the keys they
+ * take out of the property sheet. */
+function listGroups(props, kind, ctx) {
+    var groups = [];
+    var taken = {};
+    var kids = (props && props.children) || [];
+    for (var i = 0; i < kids.length; i++) {
+        var key = localName(kids[i]);
+        if (SKIP_PROPERTIES[key] && key !== 'Type') continue;
+        var items = listFromProperty(kids[i], key, kind, ctx);
+        if (!items) continue;
+        taken[key] = true;
+        groups.push({ id: 'group:List.' + key, kind: 'List', key: key, title: LIST_TITLES[key] || propertyTitle(key),
+            window: true, items: items });
+    }
+    return { groups: groups, taken: taken };
+}
+
+/* A role's rights (Ext/Rights.xml cut to 'rights-summary'): one group per
+ * class, one member per object, with the rights of its own members (commands,
+ * attributes) below it. */
+function rightsGroups(ctx) {
+    var list = ctx && ctx.relations && ctx.relations.rights;
+    if (!list || !list.length) return [];
+    var byClass = {};
+    var objects = {};
+    /* Granted rights by name; the ones taken away (a role «for new
+     * objects» lists only these) after «запрещено». */
+    function rightsText(rights) {
+        var granted = rights.filter(function (r) { return r.value !== false; });
+        var denied = rights.filter(function (r) { return r.value === false; });
+        var text = granted.map(function (r) { return rightTitle(r.name) + (r.restricted ? ' (RLS)' : ''); }).join(', ');
+        if (denied.length)
+            text += (text ? '; ' : '') + 'запрещено: ' + denied.map(function (r) { return rightTitle(r.name); }).join(', ');
+        return text;
+    }
+    function rightsRows(rights) {
+        return rights.map(function (r) {
+            return { key: r.name, label: rightTitle(r.name),
+                value: r.value === false ? 'Нет' : r.restricted ? 'Да, с ограничением (RLS)' : 'Да' };
+        });
+    }
+    list.forEach(function (entry, n) {
+        var parts = entry.object.split('.');
+        var cls = parts[0];
+        var ref = parts.slice(0, 2).join('.');
+        var own = objects[ref];
+        if (!own) {
+            own = objects[ref] = {
+                id: 'Rights.' + ref, kind: 'Ref', refClass: cls, ref: ref, kindTitle: kindTitle(cls),
+                name: parts[1] || cls, synonym: '', hintLabel: '', comment: '', type: '', properties: [],
+                children: [], open: cls === 'Configuration' ? '' : relationsPath(ctx, ref)
+            };
+            (byClass[cls] || (byClass[cls] = [])).push(own);
+        }
+        if (parts.length <= 2) {
+            own.type = rightsText(entry.rights);
+            own.properties = rightsRows(entry.rights);
+        } else {
+            own.children.push({
+                id: 'Rights.' + entry.object + '#' + n, kind: 'Right', kindTitle: 'Права', name: memberPresentation(parts.slice(2).join('.')),
+                synonym: '', comment: '', type: rightsText(entry.rights), properties: rightsRows(entry.rights),
+                children: [], open: ''
+            });
+        }
+    });
+    var classes = Object.keys(byClass).sort(function (a, b) {
+        var ia = CLASS_ORDER.indexOf(a), ib = CLASS_ORDER.indexOf(b);
+        return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+    return classes.map(function (cls) {
+        return { id: 'group:Rights.' + cls, kind: 'Rights', title: CLASS_PLURALS[cls] || cls, window: true,
+            icon: KIND_ICONS[cls], items: byClass[cls] };
+    });
+}
+
+/* The role editor's check boxes, from the head of Ext/Rights.xml. */
+var ROLE_FLAGS = [
+    ['setForNewObjects', 'Устанавливать права для новых объектов'],
+    ['setForAttributesByDefault', 'Устанавливать права для реквизитов и табличных частей по умолчанию'],
+    ['independentRightsOfChildObjects', 'Независимые права подчиненных объектов']
+];
+
+var WEEK_DAYS = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс'];
+var MONTHS = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+/* A scheduled job's Ext/Schedule.xml in words: «Каждый день; с 02:00:00 по
+ * 06:00:00; повторять каждые 600 сек.». '' when it cannot be read. */
+function schedulePresentation(xml) {
+    var m = String(xml || '').match(/<(?:\w+:)?Schedule\b([^>]*)>([\s\S]*?)<\/(?:\w+:)?Schedule>|<(?:\w+:)?Schedule\b([^>]*)\/>/);
+    if (!m) return '';
+    var attrs = {};
+    String(m[1] || m[3] || '').replace(/(\w+)="([^"]*)"/g, function (all, k, v) { attrs[k] = v; return all; });
+    var body = m[2] || '';
+    function list(tag) {
+        var t = body.match(new RegExp('<(?:\\w+:)?' + tag + '>([^<]*)<'));
+        return t ? t[1].trim().split(/\s+/).filter(Boolean).map(Number) : [];
+    }
+    function num(k) { return parseInt(attrs[k], 10) || 0; }
+    function time(k) { return attrs[k] && attrs[k] !== '00:00:00' ? attrs[k] : ''; }
+    function date(k) { return attrs[k] && attrs[k] !== '0001-01-01' ? attrs[k].split('-').reverse().join('.') : ''; }
+    var out = [];
+    var days = num('DaysRepeatPeriod');
+    if (days === 1) out.push('Каждый день');
+    else if (days > 1) out.push('Каждые ' + days + ' дн.');
+    if (num('WeeksPeriod') > 1) out.push('каждую ' + num('WeeksPeriod') + '-ю неделю');
+    var weekDays = list('WeekDays');
+    if (weekDays.length && weekDays.length < 7)
+        out.push('дни недели: ' + weekDays.map(function (d) { return WEEK_DAYS[d - 1] || d; }).join(', '));
+    var months = list('Months');
+    if (months.length && months.length < 12)
+        out.push('месяцы: ' + months.map(function (d) { return MONTHS[d - 1] || d; }).join(', '));
+    var day = num('DayInMonth');
+    if (day > 0) out.push(day + '-го числа');
+    else if (day < 0) out.push('за ' + (-day) + ' дн. до конца месяца');
+    if (num('WeekDayInMonth') > 0) out.push(num('WeekDayInMonth') + '-я неделя месяца');
+    if (time('BeginTime') || time('EndTime'))
+        out.push((time('BeginTime') ? 'с ' + time('BeginTime') : '') + (time('EndTime') ? ' по ' + time('EndTime') : ''));
+    if (num('RepeatPeriodInDay') > 0) out.push('повторять каждые ' + num('RepeatPeriodInDay') + ' сек.');
+    if (num('RepeatPause') > 0) out.push('пауза ' + num('RepeatPause') + ' сек.');
+    if (time('CompletionTime')) out.push('завершать в ' + time('CompletionTime'));
+    if (num('CompletionInterval') > 0) out.push('завершать через ' + num('CompletionInterval') + ' сек.');
+    if (date('BeginDate')) out.push('с ' + date('BeginDate'));
+    if (date('EndDate')) out.push('по ' + date('EndDate'));
+    return out.join('; ').replace(/^\s+/, '') || 'Не задано';
+}
+
+/* #RRGGBB, web:Имя and R,G,B as CSS; '' for a style or system colour. */
+function cssColor(raw) {
+    var v = String(raw || '').trim();
+    if (/^#[0-9a-f]{3}([0-9a-f]{3})?$/i.test(v)) return v;
+    if (/^web:[a-z]+$/i.test(v)) return v.slice(4);
+    var rgb = v.match(/^(\d{1,3})\s*[,;]\s*(\d{1,3})\s*[,;]\s*(\d{1,3})$/);
+    return rgb ? 'rgb(' + rgb[1] + ',' + rgb[2] + ',' + rgb[3] + ')' : '';
+}
+
+/* A style item's value: a colour, a font or a border, in words, with the
+ * colour itself for a swatch and the style item it refers to. */
+function styleValue(el) {
+    if (!el) return null;
+    var type = '';
+    var attrs = el.attributes || [];
+    var info = {};
+    for (var i = 0; i < attrs.length; i++) {
+        var name = String(attrs[i].name || '');
+        if (/(^|:)type$/.test(name)) type = String(attrs[i].value).replace(/^\w+:/, '');
+        else info[name] = attrs[i].value;
+    }
+    var text = textOf(el).trim();
+    if (type === 'Color' || /^(#|web:|style:|win:)/.test(text)) {
+        var css = cssColor(text);
+        return { value: text ? XU.terms.presentValue(text) || text : 'Авто', color: css,
+            ref: /^style:/i.test(text) ? 'StyleItem.' + text.replace(/^style:/i, '') : '' };
+    }
+    if (type === 'Font') {
+        var parts = [];
+        if (info.ref) parts.push(XU.terms.presentValue(info.ref) || info.ref);
+        if (info.faceName) parts.push(info.faceName);
+        if (info.height) parts.push(info.height + ' пт');
+        if (info.scale && info.scale !== '100') parts.push(info.scale + '%');
+        [['bold', 'жирный'], ['italic', 'курсив'], ['underline', 'подчеркнутый'], ['strikeout', 'зачеркнутый']]
+            .forEach(function (f) { if (info[f[0]] === 'true') parts.push(f[1]); });
+        return { value: parts.join(', ') || 'Авто', color: '',
+            ref: /^style:/i.test(info.ref || '') ? 'StyleItem.' + info.ref.replace(/^style:/i, '') : '' };
+    }
+    if (type === 'Border') {
+        var style = textOf(firstChild(el, 'style'));
+        return { value: (style ? XU.terms.presentValue(style) || style : 'Рамка')
+            + (info.width ? ', ширина ' + info.width : ''), color: '', ref: '' };
+    }
+    return text ? { value: text, color: '', ref: '' } : null;
+}
+
+/* The property palette of a simple kind: its type first, then every other
+ * property the lists did not take, with references that open and the flags
+ * as check boxes. */
+function sheetRows(props, kind, ctx, taken) {
+    var rows = [];
+    var typeEl = firstChild(props, 'Type');
+    if (kind === 'StyleItem') {
+        taken.Value = true;
+        if (typeEl) rows.push({ key: 'Type', label: 'Вид', value: valueTitle(textOf(typeEl), 'Type'), raw: '' });
+    } else if (typeEl && !taken.Type && typePresentation(typeEl)) {
+        rows.push({ key: 'Type', label: 'Тип', value: typePresentation(typeEl), raw: '' });
+    }
+    var base = propertyRows(props, taken);
+    for (var i = 0; i < base.length; i++) {
+        var row = base[i];
+        var el = firstChild(props, row.key);
+        if (row.raw === 'true' || row.raw === 'false') row.check = row.raw === 'true';
+        if (kind === 'PaletteColor' && row.key === 'Color') row.color = cssColor(row.raw);
+        if (row.key === 'Handler' || row.key === 'MethodName') row.open = moduleFile(ctx, row.raw);
+        else if (/^[A-Za-z]+\.[^.\s]+/.test(row.raw)) row.open = objectFile(ctx, row.raw);
+        else if (el && firstChild(el, 'Ref') && /^CommonPicture\./.test(textOf(firstChild(el, 'Ref'))))
+            row.open = objectFile(ctx, textOf(firstChild(el, 'Ref')));
+        rows.push(row);
+        if (row.key === 'MethodName' && ctx && ctx.relations && ctx.relations.schedule)
+            rows.push({ key: 'Schedule', label: 'Расписание', value: schedulePresentation(ctx.relations.schedule), raw: '' });
+    }
+    if (kind === 'StyleItem') {
+        var style = styleValue(firstChild(props, 'Value'));
+        if (style) {
+            rows.push({ key: 'Value', label: 'Значение', value: style.value, raw: '', color: style.color,
+                open: style.ref ? objectFile(ctx, style.ref) : '' });
+        }
+    }
+    return rows;
+}
 
 function parse(xml, ctx) {
     var doc;
@@ -647,19 +1175,26 @@ function parse(xml, ctx) {
     var kind = localName(obj);
     var props = firstChild(obj, 'Properties');
     var name = textOf(firstChild(props, 'Name'));
+    if (ctx) ctx.objectKind = kind;
     var childObjects = firstChild(obj, 'ChildObjects');
     var model = {
         kind: kind,
-        kindTitle: KIND_TITLES[kind] || kind,
+        kindTitle: kindTitle(kind),
         name: name,
         synonym: localizedFrom(firstChild(props, 'Synonym')),
         comment: textOf(firstChild(props, 'Comment')),
         properties: propertyRows(props),
+        type: typePresentation(firstChild(props, 'Type')),
+        simple: isSimpleKind(kind),
+        sheet: [],
+        picture: (ctx && ctx.relations && ctx.relations.picture) || null,
         forms: [],
+        formsTitle: 'Формы',
         groups: [],
         modules: [],
         nodes: {}
     };
+    var lists = model.simple ? listGroups(props, kind, ctx) : { groups: [], taken: {} };
     /* The object's own default and auxiliary forms, shown in the header. */
     var pkids = props.children || [];
     for (var p = 0; p < pkids.length; p++) {
@@ -669,8 +1204,25 @@ function parse(xml, ctx) {
         if (!ref) continue;
         var own = ref.indexOf('.Form.') >= 0 && ref.split('.')[1] === name;
         model.forms.push({
-            key: key, label: PROPERTY_TITLES[key] || key, value: shortFormName(ref),
+            key: key, label: propertyTitle(key), value: shortFormName(ref),
             ref: ref, formId: own ? 'Form.' + shortFormName(ref) : ''
+        });
+        lists.taken[key] = true;
+    }
+    /* A common form or template is itself what its window opens. */
+    var ownLayout = kind === 'CommonForm' ? 'Ext/Form.xml'
+        : kind === 'CommonTemplate' ? templateOpen(textOf(firstChild(props, 'TemplateType')), 'Ext/') : '';
+    if (kind === 'CommonForm' || kind === 'CommonTemplate') {
+        model.formsTitle = kind === 'CommonForm' ? 'Форма' : 'Макет';
+        model.forms.push({ key: 'Own', label: model.formsTitle, value: name, ref: '', formId: ownLayout ? 'Own' : '' });
+    }
+    if (model.simple) model.sheet = sheetRows(props, kind, ctx, lists.taken);
+    var roleFlags = kind === 'Role' && ctx && ctx.relations && ctx.relations.roleFlags;
+    if (roleFlags) {
+        ROLE_FLAGS.forEach(function (f) {
+            if (roleFlags[f[0]] != null)
+                model.sheet.push({ key: f[0], label: f[1], value: roleFlags[f[0]] ? 'Да' : 'Нет', raw: '',
+                    check: roleFlags[f[0]] });
         });
     }
     var standard = standardNodes(props, kind, name);
@@ -678,8 +1230,10 @@ function parse(xml, ctx) {
         model.groups.push({ id: 'group:StandardAttribute', kind: 'StandardAttribute',
             title: 'Стандартные реквизиты', items: standard });
     }
-    var relations = linkGroups(props, ctx).concat(relationGroups(ctx));
+    /* A simple kind's sheet already opens its single references. */
+    var relations = (model.simple ? [] : linkGroups(props, ctx)).concat(relationGroups(ctx));
     var predefined = predefinedGroup(ctx);
+    for (var l = 0; l < lists.groups.length; l++) model.groups.push(lists.groups[l]);
     for (var g = 0; g < GROUPS.length; g++) {
         var group = GROUPS[g];
         /* Relations of the object go between its data and its forms. */
@@ -691,20 +1245,40 @@ function parse(xml, ctx) {
         var els = childObjects ? namedChildren(childObjects, group.tag) : [];
         if (!els.length && (ALWAYS_GROUPS[kind] || []).indexOf(group.tag) < 0) continue;
         var entry = { id: 'group:' + group.tag, kind: group.tag, title: group.title, items: [] };
-        for (var i = 0; i < els.length; i++) entry.items.push(readNode(els[i], group, '', name));
+        for (var i = 0; i < els.length; i++) entry.items.push(readNode(els[i], group, '', name, ctx));
         model.groups.push(entry);
+    }
+    /* A subsystem's own subsystems, kept below its folder. */
+    var nested = kind === 'Subsystem' && childObjects ? namedChildren(childObjects, 'Subsystem') : [];
+    if (nested.length) {
+        model.groups.push({ id: 'group:Subsystem', kind: 'Subsystem', title: 'Подчиненные подсистемы',
+            window: true, icon: KIND_ICONS.Subsystem, items: nested.map(function (el) {
+                var child = textOf(el).trim();
+                return { id: 'Subsystem.' + child, kind: 'Ref', refClass: 'Subsystem', ref: 'Subsystem.' + child,
+                    kindTitle: 'Подсистема', name: child, synonym: '', hintLabel: '', comment: '', type: '',
+                    properties: [], children: [], open: 'Subsystems/' + child + '.xml' };
+            }) });
+    }
+    var rights = kind === 'Role' ? rightsGroups(ctx) : [];
+    for (var rg = 0; rg < rights.length; rg++) {
+        model.groups.push(rights[rg]);
+        /* A role's rights on subsystems share their title with the
+         * subsystems the role itself belongs to. */
+        for (var rc = 0; rc < relations.length; rc++) {
+            if (relations[rc].title === rights[rg].title) relations[rc].title = 'Входит в ' + relations[rc].title.toLowerCase();
+        }
     }
     for (var c = 0; c < relations.length; c++)
         if (CONTEXT_GROUPS[relations[c].kind]) model.groups.push(relations[c]);
     var modules = MODULES[kind] || (STRUCTURED[kind] ? ['ObjectModule', 'ManagerModule']
-        : /Register$/.test(kind) ? ['RecordSetModule', 'ManagerModule'] : ['ManagerModule']);
+        : /Register$/.test(kind) ? ['RecordSetModule', 'ManagerModule'] : []);
     for (var m = 0; m < modules.length; m++) {
         model.modules.push({ id: 'module:' + modules[m], title: MODULE_TITLES[modules[m]] || modules[m],
             open: 'Ext/' + modules[m] + '.bsl' });
     }
     model.object = {
         id: 'object', kind: kind, kindTitle: model.kindTitle, name: name, synonym: model.synonym,
-        comment: model.comment, type: '', properties: model.properties, children: [], open: ''
+        comment: model.comment, type: model.type, properties: model.properties, children: [], open: ''
     };
     function index(node) {
         model.nodes[node.id] = node;
@@ -712,6 +1286,10 @@ function parse(xml, ctx) {
     }
     for (var gi = 0; gi < model.groups.length; gi++) {
         for (var ii = 0; ii < model.groups[gi].items.length; ii++) index(model.groups[gi].items[ii]);
+    }
+    if (ownLayout) {
+        model.nodes.Own = { id: 'Own', kind: kind === 'CommonForm' ? 'Form' : 'Template', kindTitle: model.kindTitle,
+            name: name, synonym: '', comment: '', type: '', properties: [], children: [], open: ownLayout };
     }
     return { model: model };
 }
@@ -860,16 +1438,31 @@ var ICONS = {
     Command: 82, Template: 81, Recalculation: 52, Operation: 52, URLTemplate: 52,
     StandardAttribute: 52, Predefined: 1, Owners: 4, Subordinates: 4, RegisterRecords: 14, Registrars: 5,
     BasedOn: 5, BasisFor: 5, Linked: 3, Journals: 6, Sequences: 94, Subsystems: 2, FunctionalOptions: 26,
-    EventSubscriptions: 83, DefinedTypes: 29, FilterCriteria: 25
+    EventSubscriptions: 83, DefinedTypes: 29, FilterCriteria: 25,
+    Method: 52, Parameter: 52, Field: 52, IntegrationServiceChannel: 52, Table: 4, Cube: 13, Function: 82,
+    Value: 1, Right: 44
 };
+/* Groups drawn from a list property. */
+var LIST_ICONS = { Content: 3, Source: 83, Type: 29, CommandParameterType: 29, Use: 1, XDTOPackages: 45,
+    Documents: 5, RegisterRecords: 14, RegisteredDocuments: 5 };
 var KIND_ICONS = {
     Constant: 3, Catalog: 4, Document: 5, DocumentJournal: 6, Enum: 7, Report: 8, ExternalReport: 8,
     DataProcessor: 9, ExternalDataProcessor: 9, ChartOfCharacteristicTypes: 10, ChartOfAccounts: 11,
     ChartOfCalculationTypes: 12, InformationRegister: 13, AccumulationRegister: 14,
     AccountingRegister: 15, CalculationRegister: 16, BusinessProcess: 17, Task: 18,
     CommonModule: 21, Role: 22, ExchangePlan: 23, Subsystem: 2, FilterCriterion: 25, EventSubscription: 83,
-    DocumentNumerator: 94, DefinedType: 29, FunctionalOption: 26, Sequence: 94
+    DocumentNumerator: 94, DefinedType: 29, FunctionalOption: 26, Sequence: 94,
+    CommonPicture: 50, StyleItem: 51, PaletteColor: 51, Style: 103, Language: 105, XDTOPackage: 45, WebService: 92,
+    HTTPService: 98, WSReference: 89, CommonForm: 48, CommonTemplate: 55, CommonCommand: 82, CommandGroup: 84,
+    ScheduledJob: 83, SessionParameter: 60, ExternalDataSource: 87, CommonAttribute: 1
 };
+
+function groupFrame(group) {
+    if (!group) return null;
+    if (group.icon != null) return group.icon;
+    if (group.kind === 'List') return LIST_ICONS[group.key];
+    return ICONS[group.kind];
+}
 
 function spriteStyle(frame) {
     return frame == null ? '' : 'background-image:url("' + STRIP + '");background-position:-' + (frame * 16) + 'px 0';
@@ -887,7 +1480,7 @@ function outlineIcon(it) {
     var typed = it && !it.object && !it.group ? typeIcon(it.typeName) : null;
     if (typed) return typed;
     var frame = it && it.object ? KIND_ICONS[it.mdKind] : it && it.refClass ? KIND_ICONS[it.refClass]
-        : ICONS[it && it.mdKind];
+        : it && it.group ? groupFrame(it.group_) : ICONS[it && it.mdKind];
     return frame == null ? { cls: 'md-icon', icon: 'box' } : { cls: 'md-icon md-sprite', sprite: spriteStyle(frame) };
 }
 
@@ -924,7 +1517,21 @@ var RIGHT_TITLES = {
     UpdateDataHistoryVersionComment: 'Изменение комментария версии истории данных',
     EditDataHistoryVersionComment: 'Редактирование комментария версии истории данных',
     SwitchToDataHistoryVersion: 'Переход на версию истории данных',
-    ReadDataHistoryOfMissingData: 'Чтение истории данных отсутствующих данных'
+    ReadDataHistoryOfMissingData: 'Чтение истории данных отсутствующих данных',
+    Administration: 'Администрирование', DataAdministration: 'Администрирование данных',
+    UpdateDataBaseConfiguration: 'Обновление конфигурации базы данных', ExclusiveMode: 'Монопольный режим',
+    ActiveUsers: 'Активные пользователи', EventLog: 'Журнал регистрации', ThinClient: 'Тонкий клиент',
+    WebClient: 'Веб-клиент', MobileClient: 'Мобильный клиент', ThickClient: 'Толстый клиент',
+    ExternalConnection: 'Внешнее соединение', Automation: 'Automation', Output: 'Вывод',
+    SaveUserData: 'Сохранение данных пользователя', InteractiveOpenExtDataProcessors: 'Интерактивное открытие внешних обработок',
+    InteractiveOpenExtReports: 'Интерактивное открытие внешних отчетов',
+    MainWindowModeNormal: 'Режим основного окна «Обычный»', MainWindowModeWorkplace: 'Режим основного окна «Рабочее место»',
+    MainWindowModeEmbeddedWorkplace: 'Режим основного окна «Встроенное рабочее место»',
+    MainWindowModeFullscreenWorkplace: 'Режим основного окна «Рабочее место на весь экран»',
+    MainWindowModeKiosk: 'Режим основного окна «Киоск»', AnalyticsSystemClient: 'Клиент системы аналитики',
+    CollaborationSystemInfoBaseRegistration: 'Регистрация информационной базы системы взаимодействия',
+    ConfigurationExtensionsAdministration: 'Администрирование расширений конфигурации',
+    TechnicalSpecialistMode: 'Режим технического специалиста'
 };
 
 /* The Roles tab of the structure panel: one row per role that grants
@@ -991,6 +1598,7 @@ function inspector(entry) {
         var own = [{ label: 'Имя', value: node.name }];
         if (node.synonym) own.push({ label: 'Синоним', value: node.synonym });
         if (node.comment) own.push({ label: 'Комментарий', value: node.comment });
+        if (node.type) own.push({ label: 'Тип', value: node.type });
         return {
             name: node.name, typeName: node.kindTitle, heading: 'Свойства', rows: own,
             groups: node.properties.length ? [{
@@ -1002,8 +1610,18 @@ function inspector(entry) {
     if (node.kind === 'Ref') {
         var refRows = [{ label: 'Объект', value: node.name }, { label: 'Вид', value: node.kindTitle }];
         if (node.synonym) refRows.push({ label: node.hintLabel || 'Синоним', value: node.synonym });
+        /* A role's object lists its rights, each member of it below. */
+        var refGroups = [];
+        if (node.properties.length) {
+            refGroups.push({ label: entry.mdKind === 'Ref' && /^Rights\./.test(node.id) ? 'Права' : 'Свойства',
+                open: true, items: node.properties.map(function (r) { return { label: r.label, value: r.value }; }) });
+        }
+        node.children.forEach(function (c) {
+            refGroups.push({ label: c.name, open: false,
+                items: c.properties.map(function (r) { return { label: r.label, value: r.value }; }) });
+        });
         return {
-            name: node.name, typeName: node.kindTitle, heading: 'Свойства', rows: refRows, groups: [],
+            name: node.name, typeName: node.kindTitle, heading: 'Свойства', rows: refRows, groups: refGroups,
             open: node.open, openTitle: 'Открыть объект'
         };
     }
@@ -1014,7 +1632,7 @@ function inspector(entry) {
     var groups = [];
     if (node.children.length) {
         groups.push({
-            label: 'Реквизиты (' + node.children.length + ')', open: true,
+            label: ((CHILD_GROUPS[node.kind] || COLUMNS).title) + ' (' + node.children.length + ')', open: true,
             items: node.children.map(function (c) { return { label: c.name, value: c.type || '' }; })
         });
     }
@@ -1026,8 +1644,7 @@ function inspector(entry) {
     }
     return {
         name: node.name, typeName: node.kindTitle, heading: 'Свойства', rows: rows, groups: groups,
-        open: node.open, openTitle: node.kind === 'Template' ? 'Открыть макет'
-            : node.kind === 'Command' ? 'Открыть модуль команды' : 'Открыть форму'
+        open: node.open, openTitle: openTitle(node)
     };
 }
 
@@ -1046,7 +1663,8 @@ function spriteEl(frame) {
     return span;
 }
 
-function iconEl(kind, typeName, refClass) {
+function iconEl(kind, typeName, refClass, frame) {
+    if (frame != null) return spriteEl(frame);
     if (refClass) return spriteEl(KIND_ICONS[refClass]);
     var typed = typeIcon(typeName);
     if (!typed) return spriteEl(ICONS[kind]);
@@ -1066,13 +1684,172 @@ function iconEl(kind, typeName, refClass) {
     return svg;
 }
 
-function field(label, value) {
+function field(label, value, prop, onEdit) {
     var row = el('div', 'md-field');
     row.appendChild(el('label', 'md-field-label', label));
+    if (prop && onEdit) {
+        row.appendChild(editBox(prop, value, onEdit));
+        return row;
+    }
     var box = el('div', 'md-input', value || '');
     box.title = value || '';
     row.appendChild(box);
     return row;
+}
+
+/* An object's name, synonym or comment while the window is edited: the
+ * change goes to the host on commit, and a refused value stays marked with
+ * the reason until it is corrected. */
+function editBox(prop, value, onEdit) {
+    var input = el('input', 'md-input md-edit');
+    input.type = 'text';
+    input.value = value || '';
+    input.setAttribute('data-prop', prop);
+    var committed = input.value;
+    input.addEventListener('change', function () {
+        if (input.value === committed) return;
+        var result = onEdit(prop, input.value);
+        var error = result && result.error;
+        input.classList.toggle('md-edit-error', !!error);
+        input.title = error || '';
+        if (!error) committed = input.value;
+    });
+    input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+        else if (e.key === 'Escape') {
+            input.value = committed;
+            input.classList.remove('md-edit-error');
+            input.title = '';
+        }
+    });
+    return input;
+}
+
+var OBJECT_NAME = /^[A-Za-zА-Яа-яЁё_][0-9A-Za-zА-Яа-яЁё_]*$/;
+
+function xmlText(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/* The text edit that sets the object's Name, Synonym (its Russian item) or
+ * Comment in the export XML: { start, end, text } over the source, or
+ * { error }. Only the object's own Properties are touched — they open the
+ * document, before any child object carries a Name of its own. */
+function propertyEdit(source, prop, value) {
+    source = String(source || '');
+    value = String(value == null ? '' : value);
+    if (prop !== 'Name' && prop !== 'Synonym' && prop !== 'Comment') return { error: 'Свойство не редактируется' };
+    if (prop === 'Name' && !OBJECT_NAME.test(value)) return { error: 'Имя должно быть идентификатором: буквы, цифры и _, не с цифры' };
+    var open = /<Properties>/.exec(source);
+    if (!open || !/<MetaDataObject[\s>]/.test(source)) return { error: 'Редактируются только объекты в формате выгрузки конфигурации' };
+    var from = open.index + open[0].length;
+    var re = new RegExp('<' + prop + '\\s*/>|<' + prop + '>([\\s\\S]*?)</' + prop + '>', 'g');
+    re.lastIndex = from;
+    var m = re.exec(source);
+    if (!m) return { error: 'В свойствах объекта нет ' + prop };
+    var start = m.index, end = start + m[0].length;
+    if (prop !== 'Synonym') {
+        return { start: start, end: end, text: value ? '<' + prop + '>' + xmlText(value) + '</' + prop + '>' : '<' + prop + '/>' };
+    }
+    var body = m[1] || '';
+    var bodyStart = start + '<Synonym>'.length;
+    var items = /<v8:item>([\s\S]*?)<\/v8:item>/g, it, ru = null;
+    while ((it = items.exec(body))) {
+        if (/<v8:lang>ru<\/v8:lang>/.test(it[1])) { ru = it; break; }
+    }
+    if (ru) {
+        if (!value) {
+            /* The last item gone leaves an empty synonym. */
+            var others = body.slice(0, ru.index) + body.slice(ru.index + ru[0].length);
+            if (!/<v8:item>/.test(others)) return { start: start, end: end, text: '<Synonym/>' };
+            var lineStart = body.lastIndexOf('\n', ru.index - 1);
+            var cut = lineStart >= 0 && !body.slice(lineStart, ru.index).trim() ? lineStart : ru.index;
+            return { start: bodyStart + cut, end: bodyStart + ru.index + ru[0].length, text: '' };
+        }
+        var content = /<v8:content>[\s\S]*?<\/v8:content>|<v8:content\s*\/>/.exec(ru[1]);
+        var itemBody = bodyStart + ru.index + '<v8:item>'.length;
+        if (content) {
+            return { start: itemBody + content.index, end: itemBody + content.index + content[0].length,
+                text: '<v8:content>' + xmlText(value) + '</v8:content>' };
+        }
+    }
+    if (!value) return { start: start, end: end, text: m[0] };
+    /* A new item, indented the way the Designer writes it. */
+    var lineHead = source.lastIndexOf('\n', start - 1) + 1;
+    var indent = /^[ \t]*/.exec(source.slice(lineHead, start))[0];
+    var step = indent.indexOf('\t') >= 0 || !indent ? '\t' : '    ';
+    var item = '\n' + indent + step + '<v8:item>'
+        + '\n' + indent + step + step + '<v8:lang>ru</v8:lang>'
+        + '\n' + indent + step + step + '<v8:content>' + xmlText(value) + '</v8:content>'
+        + '\n' + indent + step + '</v8:item>';
+    if (/\/>$/.test(m[0]))
+        return { start: start, end: end, text: '<Synonym>' + item + '\n' + indent + '</Synonym>' };
+    var close = end - '</Synonym>'.length;
+    var tail = source.slice(start, close);
+    var trimmed = tail.replace(/\s+$/, '');
+    return { start: start + trimmed.length, end: close, text: item + '\n' + indent };
+}
+
+/* The property palette of a simple kind: label and value per row, flags as
+ * check boxes, references as links, a colour with its swatch. */
+function sheetEl(rows, open, onEdit) {
+    var box = el('div', 'md-sheet');
+    rows.forEach(function (row) {
+        box.appendChild(el('label', 'md-field-label', row.label + ':'));
+        if (row.edit && onEdit) {
+            box.appendChild(editBox(row.edit, row.value, onEdit));
+            return;
+        }
+        var value = el('div', 'md-input' + (row.check != null ? ' md-check-cell' : ''));
+        value.title = row.value;
+        if (row.check != null) {
+            value.appendChild(el('span', 'md-check' + (row.check ? ' md-checked' : '')));
+        } else {
+            if (row.color) {
+                var swatch = el('span', 'md-swatch');
+                swatch.style.background = row.color;
+                value.appendChild(swatch);
+            }
+            if (row.open && open) {
+                var link = el('a', 'md-link', row.value);
+                link.href = '#';
+                link.title = 'Открыть';
+                link.addEventListener('click', function (e) { e.preventDefault(); open(row.open); });
+                value.appendChild(link);
+            } else {
+                value.appendChild(document.createTextNode(row.value));
+            }
+        }
+        box.appendChild(value);
+    });
+    return box;
+}
+
+/* A common picture's image; Picture.zip holds its scalable variants. */
+function pictureEl(picture) {
+    var box = el('div', 'md-picture');
+    var img = el('img', '');
+    img.alt = picture.file || '';
+    /* A 16x16 button picture is shown twice its size, pixel for pixel. */
+    img.addEventListener('load', function () {
+        if (img.naturalWidth && img.naturalWidth <= 32 && img.naturalHeight <= 32) {
+            img.style.width = img.naturalWidth * 2 + 'px';
+            img.style.imageRendering = 'pixelated';
+        }
+    });
+    box.appendChild(img);
+    var forms = root.FormPreview;
+    if (picture.mime === 'application/zip') {
+        if (forms && forms.zipPictureDataUrl) {
+            forms.zipPictureDataUrl(picture).then(function (url) {
+                if (url) img.src = url;
+                else box.appendChild(el('div', 'md-empty', 'Картинка в архиве не прочитана'));
+            });
+        }
+    } else {
+        img.src = 'data:' + picture.mime + ';base64,' + picture.data;
+    }
+    return box;
 }
 
 function render(model, container, options) {
@@ -1090,20 +1867,120 @@ function render(model, container, options) {
     caption.title = 'Свойства объекта';
     caption.addEventListener('click', function () { select('object', true); });
     win.appendChild(caption);
+    if (options.io && options.io.searchObjectFiles && root.ConfigurationPreview
+            && root.ConfigurationPreview.createLoader) {
+        var search = el('div', 'md-search');
+        var searchInput = el('input', 'md-search-input');
+        searchInput.type = 'search';
+        searchInput.placeholder = 'Найти в объекте…';
+        searchInput.setAttribute('aria-label', 'Найти в объекте');
+        var searchButton = el('button', 'md-search-button', 'Найти');
+        searchButton.type = 'button';
+        var searchResults = el('div', 'md-search-results');
+        searchResults.hidden = true;
+        search.appendChild(searchInput);
+        search.appendChild(searchButton);
+        search.appendChild(searchResults);
+        win.appendChild(search);
+        var searchToken = 0;
+        function runSearch() {
+            var query = searchInput.value;
+            var token = ++searchToken;
+            searchResults.innerHTML = '';
+            searchResults.hidden = false;
+            if (!query.trim()) {
+                searchResults.appendChild(el('div', 'md-search-message', 'Введите текст для поиска.'));
+                return;
+            }
+            searchButton.disabled = true;
+            searchResults.appendChild(el('div', 'md-search-message', 'Поиск…'));
+            var filePath = String(options.filePath || '');
+            var objectRoot = /\.mdo$/i.test(filePath)
+                ? filePath.slice(0, Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/')))
+                : filePath.replace(/\.xml$/i, '');
+            var categories = ['modules', 'formElements', 'templates', 'properties'];
+            options.io.searchObjectFiles(objectRoot, categories).then(function (paths) {
+                if (token !== searchToken) return null;
+                var all = [filePath].concat(Array.prototype.slice.call(paths || []));
+                var seen = {};
+                all = all.filter(function (path) {
+                    var key = String(path || '').toLowerCase();
+                    if (!key || seen[key]) return false;
+                    seen[key] = true;
+                    return true;
+                });
+                searchResults.innerHTML = '';
+                var loader = root.ConfigurationPreview.createLoader(options.io, {});
+                return loader.searchPaths(all, query, {
+                    categories: { modules: true, formElements: true, templates: true, properties: true },
+                    scopes: { cf: true },
+                    cancelled: function () { return token !== searchToken; },
+                    describePath: function (path) {
+                        var normalized = String(path || '').replace(/\\/g, '/');
+                        var prefix = objectRoot.replace(/\\/g, '/').replace(/\/$/, '') + '/';
+                        var relative = normalized.toLowerCase().indexOf(prefix.toLowerCase()) === 0
+                            ? normalized.slice(prefix.length) : normalized.split('/').pop();
+                        return { path: path, label: relative, relative: relative };
+                    }
+                }).then(function (result) {
+                    if (token !== searchToken) return;
+                    searchButton.disabled = false;
+                    if (result.error) {
+                        searchResults.appendChild(el('div', 'md-search-message', result.error));
+                        return;
+                    }
+                    if (!result.matches.length) {
+                        searchResults.appendChild(el('div', 'md-search-message', 'Совпадений нет. Проверено файлов: ' + result.scanned + '.'));
+                        return;
+                    }
+                    searchResults.appendChild(el('div', 'md-search-message', 'Найдено файлов: ' + result.total
+                        + (result.truncated ? '. Показаны первые ' + result.matches.length + '.' : '.')));
+                    result.matches.forEach(function (item) {
+                        var link = el('a', 'md-search-hit', item.relative + ' · строка ' + item.line);
+                        link.href = '#';
+                        link.title = item.path;
+                        link.addEventListener('click', function (e) {
+                            e.preventDefault();
+                            open(item.path, { line: item.line, search: query });
+                        });
+                        var snippet = (item.snippet || []).filter(function (line) { return line.match; })[0];
+                        var row = el('div', 'md-search-result');
+                        row.appendChild(link);
+                        if (snippet) row.appendChild(el('div', 'md-search-code', snippet.text || ' '));
+                        searchResults.appendChild(row);
+                    });
+                });
+            }).catch(function (error) {
+                if (token !== searchToken) return;
+                searchButton.disabled = false;
+                searchResults.innerHTML = '';
+                searchResults.appendChild(el('div', 'md-search-message', 'Поиск не выполнен: ' + (error && error.message || error)));
+            });
+        }
+        searchButton.addEventListener('click', runSearch);
+        searchInput.addEventListener('keydown', function (e) {
+            if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+        });
+    }
     var body = el('div', 'md-body');
     win.appendChild(body);
 
-    body.appendChild(field('Имя:', model.name));
-    body.appendChild(field('Синоним:', model.synonym));
-    body.appendChild(field('Комментарий:', model.comment));
+    /* A property palette takes the name, synonym and comment into its own
+     * grid, so every label lines up. */
+    var paletteOnly = model.sheet && model.sheet.length;
+    if (!paletteOnly) {
+        body.appendChild(field('Имя:', model.name, 'Name', options.onObjectEdit));
+        body.appendChild(field('Синоним:', model.synonym, 'Synonym', options.onObjectEdit));
+        body.appendChild(field('Комментарий:', model.comment, 'Comment', options.onObjectEdit));
+    }
 
-    function open(rel) {
-        if (rel && options.onOpen) options.onOpen(rel);
+    function open(rel, target) {
+        if (rel && options.onOpen) options.onOpen(rel, target || null);
     }
 
     if (model.forms.length) {
         var box = el('fieldset', 'md-forms');
-        box.appendChild(el('legend', '', 'Формы'));
+        box.appendChild(el('legend', '', model.formsTitle || 'Формы'));
         for (var f = 0; f < model.forms.length; f++) {
             var form = model.forms[f];
             var row = el('div', 'md-field');
@@ -1112,8 +1989,17 @@ function render(model, container, options) {
             var target = form.formId && model.nodes[form.formId];
             if (target && target.open && options.onOpen) {
                 var link = el('a', 'md-link', form.value);
+                /* A common template of a type this viewer cannot open has
+                 * no file to go to. */
+                if (options.probe && form.key === 'Own') {
+                    (function (valueBox, text, rel) {
+                        options.probe(rel).then(function (exists) {
+                            if (!exists) valueBox.textContent = text;
+                        });
+                    })(value, form.value, target.open);
+                }
                 link.href = '#';
-                link.title = 'Открыть форму';
+                link.title = openTitle(target);
                 link.addEventListener('click', (function (rel) {
                     return function (e) { e.preventDefault(); open(rel); };
                 })(target.open));
@@ -1125,7 +2011,7 @@ function render(model, container, options) {
             if (target && target.open && options.onOpen) {
                 var openBtn = el('button', 'md-field-button');
                 openBtn.type = 'button';
-                openBtn.title = 'Открыть форму';
+                openBtn.title = openTitle(target);
                 openBtn.addEventListener('click', (function (rel) {
                     return function () { open(rel); };
                 })(target.open));
@@ -1137,22 +2023,32 @@ function render(model, container, options) {
         body.appendChild(box);
     }
 
+    if (paletteOnly) {
+        body.insertBefore(sheetEl([
+            { label: 'Имя', value: model.name, edit: 'Name' },
+            { label: 'Синоним', value: model.synonym, edit: 'Synonym' },
+            { label: 'Комментарий', value: model.comment, edit: 'Comment' }
+        ].concat(model.sheet), options.onOpen ? open : null, options.onObjectEdit), body.firstChild);
+    }
+    if (model.picture) body.appendChild(pictureEl(model.picture));
+
     var tree = el('div', 'md-tree');
     tree.tabIndex = 0;
     var rowsById = {};
     var parentsOf = {};
 
-    function addRow(id, depth, kind, isGroup, label, type, hint, hasKids, openRel, refClass) {
+    function addRow(id, depth, kind, isGroup, label, type, hint, hasKids, openRel, refClass, frame) {
         var row = el('div', 'md-row' + (isGroup ? ' md-group' : ''));
         row.setAttribute('data-id', id);
         row.style.paddingLeft = (4 + depth * 18) + 'px';
         var twisty = el('span', 'md-twisty', hasKids ? (viewState.collapsed[id] ? '⊞' : '⊟') : '');
         if (hasKids) twisty.setAttribute('data-fold', id);
         row.appendChild(twisty);
-        row.appendChild(iconEl(kind, isGroup ? '' : type, refClass));
+        row.appendChild(iconEl(kind, isGroup ? '' : type, refClass, frame));
         row.appendChild(el('span', 'md-name', label));
         if (type) row.appendChild(el('span', 'md-type', type));
         if (hint) row.title = hint;
+        else if (type && !isGroup) row.title = label + ': ' + type;
         if (openRel) {
             row.setAttribute('data-open', openRel);
             /* A command need not have a module of its own. */
@@ -1172,8 +2068,14 @@ function render(model, container, options) {
         var group = model.groups[g];
         /* The window keeps the object's own structure; commands, standard
          * attributes and relations live in the structure panel only. */
-        if (!WINDOW_GROUPS[group.kind]) continue;
-        addRow(group.id, 0, group.kind, true, group.title, '', '', group.items.length > 0, '');
+        if (!WINDOW_GROUPS[group.kind] && !group.window) continue;
+        /* A role over the whole configuration lists thousands of objects:
+         * its long classes start folded. */
+        if (!viewState.seen[group.id]) {
+            viewState.seen[group.id] = true;
+            if (group.kind === 'Rights' && group.items.length > FOLD_OVER) viewState.collapsed[group.id] = true;
+        }
+        addRow(group.id, 0, group.kind, true, group.title, '', '', group.items.length > 0, '', '', groupFrame(group));
         var groupItems = ordered(group.items);
         for (var i = 0; i < groupItems.length; i++) {
             var node = groupItems[i];
@@ -1186,7 +2088,7 @@ function render(model, container, options) {
                 var col = columns[c];
                 parentsOf[col.id] = [group.id, node.id];
                 addRow(col.id, 2, col.kind, false, col.name, col.type,
-                    col.synonym && col.synonym !== col.name ? col.synonym : '', false, '');
+                    col.synonym && col.synonym !== col.name ? col.synonym : '', false, col.open, col.refClass);
             }
         }
     }
@@ -1246,7 +2148,9 @@ function render(model, container, options) {
         if (rel) { e.preventDefault(); open(rel); }
     });
 
-    body.appendChild(tree);
+    /* A kind with nothing to list is its property sheet alone. */
+    if (tree.firstChild) body.appendChild(tree);
+    else win.classList.add('md-no-tree');
 
     if ((model.modules.length && options.onOpen) || options.onHelp) {
         var footer = el('div', 'md-footer');
@@ -1304,8 +2208,11 @@ function highlight(container, id) {
 }
 
 root.MetadataPreview = {
+    classPlurals: CLASS_PLURALS,
+    classOrder: CLASS_ORDER,
     detect: detect,
     parse: parse,
+    propertyEdit: propertyEdit,
     render: render,
     outline: outline,
     outlineIcon: outlineIcon,

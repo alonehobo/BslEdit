@@ -1,10 +1,13 @@
 #include "bslcommon.h"
 #include "packages/1c-form-viewer/native/context-batch.h"
+#include "embedded-assets.h"
+#include "resource.h"
 
 #include <map>
 #include <vector>
 #include <wchar.h>
 #include <cwctype>
+#include <filesystem>
 
 namespace {
 
@@ -217,42 +220,46 @@ TextFile ReadTextFile(const wchar_t* path, DWORD maxBytes)
 
     // An empty file is a valid, successfully read file.
     result.ok = true;
+    result.text = DecodeTextBytes(data.data(), data.size(), &result.encoding);
+    return result;
+}
 
-    const BYTE* p = data.data();
-    size_t sz = data.size();
+std::wstring DecodeTextBytes(const void* bytes, size_t sz, TextEncoding* encoding)
+{
+    const BYTE* p = (const BYTE*)bytes;
+    TextEncoding ignored = ENC_UTF8;
+    if (!encoding) encoding = &ignored;
+    std::wstring text;
 
     if (sz >= 3 && p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) {
-        result.encoding = ENC_UTF8_BOM;
-        result.text = Utf8ToWide((const char*)p + 3, (int)(sz - 3));
-        return result;
+        *encoding = ENC_UTF8_BOM;
+        return Utf8ToWide((const char*)p + 3, (int)(sz - 3));
     }
     if (sz >= 2 && p[0] == 0xFF && p[1] == 0xFE) {
-        result.encoding = ENC_UTF16LE;
-        result.text.assign((const wchar_t*)(p + 2), (sz - 2) / sizeof(wchar_t));
-        return result;
+        *encoding = ENC_UTF16LE;
+        text.assign((const wchar_t*)(p + 2), (sz - 2) / sizeof(wchar_t));
+        return text;
     }
     if (sz >= 2 && p[0] == 0xFE && p[1] == 0xFF) {
-        result.encoding = ENC_UTF16BE;
-        result.text.resize((sz - 2) / sizeof(wchar_t));
-        for (size_t i = 0; i < result.text.size(); i++)
-            result.text[i] = (wchar_t)((p[2 + i * 2] << 8) | p[2 + i * 2 + 1]);
-        return result;
+        *encoding = ENC_UTF16BE;
+        text.resize((sz - 2) / sizeof(wchar_t));
+        for (size_t i = 0; i < text.size(); i++)
+            text[i] = (wchar_t)((p[2 + i * 2] << 8) | p[2 + i * 2 + 1]);
+        return text;
     }
     if (sz == 0) {
-        result.encoding = ENC_UTF8;
-        return result;
+        *encoding = ENC_UTF8;
+        return text;
     }
 
     int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, (const char*)p, (int)sz, NULL, 0);
     if (wlen > 0) {
-        result.encoding = ENC_UTF8;
-        result.text = Utf8ToWide((const char*)p, (int)sz);
-        return result;
+        *encoding = ENC_UTF8;
+        return Utf8ToWide((const char*)p, (int)sz);
     }
 
-    result.encoding = ENC_ANSI;
-    result.text = DecodeCodePage(CP_WINDOWS_1251, (const char*)p, (int)sz);
-    return result;
+    *encoding = ENC_ANSI;
+    return DecodeCodePage(CP_WINDOWS_1251, (const char*)p, (int)sz);
 }
 
 bool WriteTextFile(const wchar_t* path, const std::wstring& text, TextEncoding encoding)
@@ -325,6 +332,18 @@ TextFileWriteResult WriteTextFileIfUnchanged(
     return TEXT_FILE_WRITE_OK;
 }
 
+bool FileChangedSince(const wchar_t* path, const FileRevision& known)
+{
+    if (!path || !*path || !known.valid) return false;
+    WIN32_FILE_ATTRIBUTE_DATA data = {};
+    // A file that cannot be looked at right now - being replaced, off a
+    // disconnected share - is not reported as changed: the next tick sees it.
+    if (!GetFileAttributesExW(path, GetFileExInfoStandard, &data)) return false;
+    return data.nFileSizeHigh != known.sizeHigh
+        || data.nFileSizeLow != known.sizeLow
+        || CompareFileTime(&data.ftLastWriteTime, &known.lastWriteTime) != 0;
+}
+
 std::wstring JsonEscape(const std::wstring& src)
 {
     static const wchar_t* kHex = L"0123456789abcdef";
@@ -367,9 +386,9 @@ const char* MonacoLanguageForPath(const wchar_t* path)
 
     if (!wcscmp(ext, L"bsl") || !wcscmp(ext, L"os"))       return "bsl";
     if (!wcscmp(ext, L"sdbl") || !wcscmp(ext, L"query"))   return "bsl_query";
-    if (!wcscmp(ext, L"md") || !wcscmp(ext, L"markdown"))  return "markdown";
+    if (!wcscmp(ext, L"md") || !wcscmp(ext, L"markdown") || !wcscmp(ext, L"mdc")) return "markdown";
     if (!wcscmp(ext, L"json") || !wcscmp(ext, L"sarif")) return "json";
-    if (!wcscmp(ext, L"xml"))                              return "xml";
+    if (!wcscmp(ext, L"xml") || !wcscmp(ext, L"form") || !wcscmp(ext, L"mdo") || !wcscmp(ext, L"mxlx")) return "xml";
     if (!wcscmp(ext, L"ps1") || !wcscmp(ext, L"psm1") || !wcscmp(ext, L"psd1")) return "powershell";
     if (!wcscmp(ext, L"html") || !wcscmp(ext, L"htm"))     return "html";
     if (!wcscmp(ext, L"mxl"))                             return "plaintext";
@@ -390,6 +409,47 @@ std::wstring ModuleDirectory(HMODULE module)
     size_t slash = path.find_last_of(L"\\/");
     if (slash == std::wstring::npos) return std::wstring();
     return path.substr(0, slash + 1);
+}
+
+/* The interface is linked into each binary (see embedded-assets.h), so a
+ * release is one file. Two escape hatches come first, in this order, and both
+ * exist for development: %BSLVIEW_WEB_ROOT% points a build at a working copy,
+ * and a web\ directory beside the binary is picked up as it always was, which
+ * is what the repository root looks like. A copy of the binary on its own
+ * finds neither and unpacks the embedded tree into a per-user cache. */
+std::wstring ResolveWebRoot(HMODULE module, std::wstring* error)
+{
+    const auto usable = [](const std::wstring& dir) {
+        if (dir.empty()) return false;
+        return GetFileAttributesW((dir + L"\\viewer.html").c_str()) != INVALID_FILE_ATTRIBUTES;
+    };
+    const auto trimmed = [](std::wstring dir) {
+        while (!dir.empty() && (dir.back() == L'\\' || dir.back() == L'/')) dir.pop_back();
+        return dir;
+    };
+
+    std::vector<wchar_t> env(MAX_PATH);
+    DWORD size = GetEnvironmentVariableW(L"BSLVIEW_WEB_ROOT", env.data(), (DWORD)env.size());
+    if (size >= env.size()) {
+        env.resize(size + 1);
+        size = GetEnvironmentVariableW(L"BSLVIEW_WEB_ROOT", env.data(), (DWORD)env.size());
+    }
+    if (size > 0 && size < env.size()) {
+        std::wstring dir = trimmed(env.data());
+        if (usable(dir)) return dir;
+    }
+
+    std::wstring beside = trimmed(ModuleDirectory(module) + L"web");
+    if (usable(beside)) return beside;
+
+    /* One cache for both hosts: the plugin and the editor render from the same
+     * files, and the directory is named after their content hash anyway. */
+    std::wstring unpacked = embedded_assets::Extract(module, IDR_WEB_ASSETS, L"BSLView", error);
+    if (!unpacked.empty() && !usable(unpacked)) {
+        if (error) *error = L"the embedded interface has no viewer.html";
+        return std::wstring();
+    }
+    return unpacked;
 }
 
 static std::wstring PathDirName(const std::wstring& path)
@@ -424,6 +484,14 @@ static bool FileExistsW(const wchar_t* path)
     return attr != INVALID_FILE_ATTRIBUTES && !(attr & FILE_ATTRIBUTE_DIRECTORY);
 }
 
+/* Collections a dump nests inside an object: what lies in them belongs to the
+   object above, not to the collection. */
+static bool IsObjectCollection(const std::wstring& name)
+{
+    return NameEqualsI(name, L"Forms") || NameEqualsI(name, L"Templates")
+        || NameEqualsI(name, L"Commands") || NameEqualsI(name, L"Recalculations");
+}
+
 ObjectMetaPaths ObjectMetaCandidates(const wchar_t* formPath)
 {
     ObjectMetaPaths out;
@@ -434,25 +502,36 @@ ObjectMetaPaths ObjectMetaCandidates(const wchar_t* formPath)
         path.pop_back();
     if (path.empty()) return out;
 
-    if (!NameEqualsI(PathBaseName(path), L"Form.xml")) return out;
-
-    std::wstring extDir = PathDirName(path);
-    if (!NameEqualsI(PathBaseName(extDir), L"Ext")) return out;
-
-    std::wstring formDir = PathDirName(extDir);
-    if (formDir.empty()) return out;
-
-    std::wstring formsDir = PathDirName(formDir);
-    if (!NameEqualsI(PathBaseName(formsDir), L"Forms")) return out;
-
-    std::wstring objectDir = PathDirName(formsDir);
+    /* Everything a dump stores for an object hangs off that object: its own
+       modules and help below <object>/Ext, and a form, template, command or
+       recalculation as <object>/<collection>/<name>/Ext/<file> with a
+       descriptor <object>/<collection>/<name>.xml beside it. All of them
+       belong to the same object, and that object is what this finds. */
+    std::wstring dir = PathDirName(path);
+    std::wstring objectDir;
+    bool projForm = path.size() >= 5 && _wcsicmp(path.c_str() + path.size() - 5, L".form") == 0;
+    if (projForm
+        && NameEqualsI(PathBaseName(PathDirName(dir)), L"Forms")) {
+        /* The project format stores a form as <object>/Forms/<form>/Form.form; its object
+           descriptor is <object>/<object>.mdo. */
+        objectDir = PathDirName(PathDirName(dir));
+    } else if (NameEqualsI(PathBaseName(dir), L"Ext")) {
+        objectDir = PathDirName(dir);
+        if (IsObjectCollection(PathBaseName(PathDirName(objectDir))))
+            objectDir = PathDirName(PathDirName(objectDir));
+    } else if (IsObjectCollection(PathBaseName(dir))) {
+        objectDir = PathDirName(dir);
+    } else {
+        return out;
+    }
     std::wstring objectName = PathBaseName(objectDir);
     if (objectDir.empty() || objectName.empty()) return out;
 
     wchar_t sep = PathSep(path);
     std::wstring parent = PathDirName(objectDir);
-    out.sibling = parent.empty() ? objectName + L".xml"
-                                 : parent + sep + objectName + L".xml";
+    const wchar_t* siblingExt = projForm ? L".mdo" : L".xml";
+    out.sibling = projForm ? objectDir + sep + objectName + siblingExt
+        : parent.empty() ? objectName + siblingExt : parent + sep + objectName + siblingExt;
     out.nested = objectDir + sep + objectName + L".xml";
     return out;
 }
@@ -463,6 +542,18 @@ std::wstring FindObjectMetaFile(const wchar_t* formPath)
     if (!c.sibling.empty() && FileExistsW(c.sibling.c_str())) return c.sibling;
     if (!c.nested.empty() && FileExistsW(c.nested.c_str())) return c.nested;
     return std::wstring();
+}
+
+std::wstring FindConfigurationForDumpInfo(const wchar_t* filePath)
+{
+    if (!filePath || !*filePath) return std::wstring();
+    std::wstring path = filePath;
+    while (!path.empty() && (path.back() == L'\\' || path.back() == L'/')) path.pop_back();
+    if (path.empty() || !NameEqualsI(PathBaseName(path), L"ConfigDumpInfo.xml")) return std::wstring();
+    std::wstring directory = PathDirName(path);
+    if (directory.empty()) return std::wstring();
+    std::wstring configuration = directory + PathSep(path) + L"Configuration.xml";
+    return FileExistsW(configuration.c_str()) ? configuration : std::wstring();
 }
 
 std::vector<std::wstring> FormContextRoots(const wchar_t* formPath)
@@ -478,7 +569,9 @@ std::vector<std::wstring> FormContextRoots(const wchar_t* formPath)
     for (std::wstring directory = PathDirName(path); !directory.empty();) {
         wchar_t sep = PathSep(directory);
         if (FileExistsW((directory + sep + L"ConfigDumpInfo.xml").c_str())
-            || FileExistsW((directory + sep + L"Configuration.xml").c_str())) {
+            || FileExistsW((directory + sep + L"Configuration.xml").c_str())
+            || FileExistsW((directory + sep + L"Configuration.mdo").c_str())
+            || FileExistsW((directory + sep + L"Configuration" + sep + L"Configuration.mdo").c_str())) {
             configuration = directory;
             break;
         }
@@ -493,6 +586,38 @@ std::vector<std::wstring> FormContextRoots(const wchar_t* formPath)
         configuration = !meta.sibling.empty() ? PathDirName(meta.sibling) : PathDirName(path);
     }
     if (!configuration.empty()) roots.push_back(configuration);
+
+    /* A conventional source tree keeps the main configuration, extensions
+     * and external reports/processors side by side under src. Global search
+     * may explicitly include any of those roots, so expose the existing
+     * siblings to the same read-only context boundary. */
+    if (!configuration.empty()) {
+        std::wstring scope = configuration;
+        std::wstring source;
+        for (;;) {
+            std::wstring name = PathBaseName(scope);
+            if (_wcsicmp(name.c_str(), L"cf") == 0 || _wcsicmp(name.c_str(), L"cfe") == 0
+                    || _wcsicmp(name.c_str(), L"epf") == 0 || _wcsicmp(name.c_str(), L"erf") == 0) {
+                source = PathDirName(scope);
+                break;
+            }
+            std::wstring parent = PathDirName(scope);
+            if (parent.empty() || parent == scope) break;
+            scope.swap(parent);
+        }
+        if (!source.empty() && _wcsicmp(PathBaseName(source).c_str(), L"src") == 0) {
+            wchar_t sep = PathSep(source);
+            static const wchar_t* const names[] = { L"cf", L"cfe", L"epf", L"erf" };
+            for (const wchar_t* name : names) {
+                std::wstring candidate = source + sep + name;
+                DWORD attributes = GetFileAttributesW(candidate.c_str());
+                bool known = false;
+                for (const std::wstring& root : roots) known = known || _wcsicmp(root.c_str(), candidate.c_str()) == 0;
+                if (!known && attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY))
+                    roots.push_back(candidate);
+            }
+        }
+    }
 
     /* An extension also reads the base form and metadata of the configuration
      * it extends, wherever the export put it. */
@@ -530,7 +655,12 @@ bool PathIsUnderRoot(const std::wstring& root, const std::wstring& path)
     DWORD rootLen = GetFullPathNameW(root.c_str(), 32768, rootBuf, NULL);
     DWORD pathLen = GetFullPathNameW(path.c_str(), 32768, pathBuf, NULL);
     if (!rootLen || rootLen >= 32768 || !pathLen || pathLen >= 32768) return false;
-    std::wstring normalizedRoot(rootBuf), normalizedPath(pathBuf);
+    /* GetFullPathNameW removes ".." but does not follow a junction. Resolve
+     * existing path components before authorizing WebView2 context reads. */
+    std::error_code rootError, pathError;
+    std::wstring normalizedRoot = std::filesystem::weakly_canonical(rootBuf, rootError).wstring();
+    std::wstring normalizedPath = std::filesystem::weakly_canonical(pathBuf, pathError).wstring();
+    if (rootError || pathError) return false;
     while (normalizedRoot.size() > 3 &&
            (normalizedRoot.back() == L'\\' || normalizedRoot.back() == L'/'))
         normalizedRoot.pop_back();
@@ -540,6 +670,59 @@ bool PathIsUnderRoot(const std::wstring& root, const std::wstring& path)
     return normalizedPath.size() == normalizedRoot.size() ||
            normalizedPath[normalizedRoot.size()] == L'\\' ||
            normalizedPath[normalizedRoot.size()] == L'/';
+}
+
+std::wstring AgentWorkingDirectoryForPath(const wchar_t* filePath)
+{
+    if (!filePath || !*filePath) return std::wstring();
+    wchar_t absolute[32768];
+    DWORD length = GetFullPathNameW(filePath, _countof(absolute), absolute, NULL);
+    if (!length || length >= _countof(absolute)) return std::wstring();
+
+    std::wstring directory(absolute, length);
+    size_t slash = directory.find_last_of(L"\\/");
+    if (slash == std::wstring::npos) return std::wstring();
+    directory.resize(slash);
+    for (wchar_t& c : directory) if (c == L'/') c = L'\\';
+
+    /* A Designer source tree has a stable root of its own. Starting in
+     * <workspace> would mix unrelated bases; starting beside Form.xml would
+     * hide Configuration.xml and the rest of the dump. */
+    size_t part = 0;
+    while (part < directory.size()) {
+        size_t end = directory.find(L'\\', part);
+        if (end == std::wstring::npos) end = directory.size();
+        std::wstring name = directory.substr(part, end - part);
+        if (_wcsicmp(name.c_str(), L"src") == 0) {
+            size_t nextStart = end < directory.size() ? end + 1 : end;
+            size_t nextEnd = directory.find(L'\\', nextStart);
+            if (nextEnd == std::wstring::npos) nextEnd = directory.size();
+            std::wstring next = directory.substr(nextStart, nextEnd - nextStart);
+            if (_wcsicmp(next.c_str(), L"cf") == 0 || _wcsicmp(next.c_str(), L"cfe") == 0)
+                return directory.substr(0, end);
+            std::wstring project = directory.substr(0, part > 0 ? part - 1 : 0);
+            return project.empty() ? directory : project;
+        }
+        if (end == directory.size()) break;
+        part = end + 1;
+    }
+
+    const std::wstring fallback = directory;
+    static const wchar_t* markers[] = {
+        L".git", L".hg", L".svn", L"AGENTS.md", L"package.json",
+        L"pyproject.toml", L"Cargo.toml", L"pom.xml", L"go.mod"
+    };
+    for (;;) {
+        for (size_t i = 0; i < _countof(markers); ++i) {
+            std::wstring candidate = directory + L"\\" + markers[i];
+            if (GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
+                return directory;
+        }
+        size_t parentSlash = directory.find_last_of(L'\\');
+        if (parentSlash == std::wstring::npos || parentSlash < 3) break;
+        directory.resize(parentSlash);
+    }
+    return fallback;
 }
 
 bool IsSarifSourcePath(const std::wstring& path)
@@ -557,8 +740,16 @@ std::wstring FindFormModuleFile(const wchar_t* formPath)
     if (!formPath || !*formPath) return std::wstring();
     std::wstring path = formPath;
     std::wstring name = PathBaseName(path);
-    if (!NameEqualsI(name, L"Form.xml")) return std::wstring();
+    if (!NameEqualsI(name, L"Form.xml") && !NameEqualsI(name, L"Form.form")) return std::wstring();
     std::wstring extDir = PathDirName(path);
+    /* The project format stores the form module next to Form.form in Forms/<name>/.
+       Configurator dumps use Ext/Form/Module.bsl instead. */
+    if (NameEqualsI(name, L"Form.form")
+        && (NameEqualsI(PathBaseName(PathDirName(extDir)), L"Forms")
+            || NameEqualsI(PathBaseName(PathDirName(extDir)), L"CommonForms"))) {
+        std::wstring candidate = extDir + PathSep(path) + L"Module.bsl";
+        return FileExistsW(candidate.c_str()) ? candidate : std::wstring();
+    }
     if (extDir.empty() || !NameEqualsI(PathBaseName(extDir), L"Ext")) return std::wstring();
     wchar_t sep = PathSep(path);
     std::wstring candidate = extDir + sep + L"Form" + sep + L"Module.bsl";
@@ -577,10 +768,19 @@ std::wstring FindFormLayoutForModule(const wchar_t* modulePath)
     std::wstring path = modulePath;
     if (!NameEqualsI(PathBaseName(path), L"Module.bsl")) return std::wstring();
     std::wstring formDir = PathDirName(path);
+    /* Project-format form modules are siblings of Form.form. */
+    if (!formDir.empty()
+        && (NameEqualsI(PathBaseName(PathDirName(formDir)), L"Forms")
+            || NameEqualsI(PathBaseName(PathDirName(formDir)), L"CommonForms"))) {
+        std::wstring layout = formDir + PathSep(path) + L"Form.form";
+        return FileExistsW(layout.c_str()) ? layout : std::wstring();
+    }
     if (formDir.empty() || !NameEqualsI(PathBaseName(formDir), L"Form")) return std::wstring();
     std::wstring extDir = PathDirName(formDir);
     if (extDir.empty() || !NameEqualsI(PathBaseName(extDir), L"Ext")) return std::wstring();
     std::wstring layout = extDir + PathSep(path) + L"Form.xml";
+    if (FileExistsW(layout.c_str())) return layout;
+    layout = extDir + PathSep(path) + L"Form.form";
     return FileExistsW(layout.c_str()) ? layout : std::wstring();
 }
 

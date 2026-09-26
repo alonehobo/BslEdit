@@ -1,0 +1,41 @@
+#annotation-toggle { display: none; flex: 0 0 auto; height: 24px; margin-left: auto; padding: 0 8px; border: 1px solid #c8c8c8; border-radius: 3px; background: #fff; color: #333; cursor: pointer; font-size: 12px; white-space: nowrap; }
+body.browser-ui #annotation-toggle:not([hidden]) { display: block; }
+#annotation-toggle:hover { background: #f0f0f0; }
+/* The pencil that follows a click on a form element. */
+#annotation-pencil { position: absolute; z-index: 4; width: 24px; height: 24px; padding: 0; border: 1px solid #b8751a; border-radius: 50%; background: #fff; color: #b8751a; cursor: pointer; font: 14px/22px Arial, sans-serif; box-shadow: 0 1px 4px #0004; }
+#annotation-pencil:hover { background: #b8751a; color: #fff; }
+#annotation-pencil[hidden] { display: none; }
+/* BSLEdit: the button sits among the form view's own actions, and the
+ * annotation panels follow the form view out when the source is shown. */
+#form-preview-actions #annotation-toggle { display: none; height: auto; margin: 0; }
+#form-preview-actions #annotation-toggle:not([hidden]) { display: block; }
+#form-preview[hidden] ~ #annotation-editor, #form-preview[hidden] ~ #annotation-tray, #form-preview[hidden] ~ #annotation-pencil { display: none; }
+.annotation-anchor { position: absolute; z-index: 2; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #b8751a; color: #fff; font: bold 12px Arial, sans-serif; pointer-events: none; box-shadow: 0 1px 4px #0005; }
+.annotation-anchor.revealable { pointer-events: auto; cursor: pointer; }
+.annotation-anchor[hidden], #annotation-editor[hidden], #annotation-tray[hidden], #annotation-list[hidden] { display: none; }
+#annotation-editor, #annotation-tray { position: absolute; z-index: 4; box-sizing: border-box; width: min(300px, calc(100% - 16px)); border: 1px solid #d2d2d2; border-radius: 8px; background: #fff; box-shadow: 0 4px 16px #0003; font-size: 12px; }
+#annotation-editor { z-index: 5; left: 8px; top: 8px; padding: 12px; display: grid; gap: 8px; }
+#annotation-target { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#annotation-text, .annotation-edit-text { box-sizing: border-box; width: 100%; resize: vertical; font: inherit; }
+.annotation-actions, .annotation-edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
+#annotation-tray { right: 8px; bottom: 8px; max-height: min(240px, 45%); display: flex; flex-direction: column; overflow: hidden; }
+.annotation-tray-header { flex: 0 0 auto; display: flex; align-items: center; background: #fff; }
+#annotation-clear { flex: 0 0 auto; margin-right: 8px; padding: 2px 6px; border: 1px solid #d2d2d2; border-radius: 3px; background: #fff; color: #a22; cursor: pointer; font-size: 11px; }
+#annotation-clear:hover:not(:disabled) { background: #fbeaea; }
+#annotation-tray-toggle { flex: 1 1 auto; min-width: 0; width: 100%; padding: 8px 10px; border: 0; background: #fff; text-align: left; cursor: move; font-weight: bold; touch-action: none; user-select: none; }
+#annotation-list { margin: 0; padding: 0; overflow: auto; list-style: none; }
+.annotation-row { display: flex; gap: 8px; align-items: start; padding: 8px 10px; border-top: 1px solid #eee; }
+.annotation-number { flex: 0 0 24px; display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: #b8751a; color: #fff; font-weight: bold; }
+.annotation-row.revealable { cursor: pointer; }
+.annotation-row.revealable:hover { background: #f4f7fb; }
+.annotation-content { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.annotation-content strong { display: block; margin-bottom: 3px; }
+.annotation-anchor.resolved, .annotation-row.resolved .annotation-number { background: #8a8a8a; }
+.annotation-row.resolved .annotation-note { color: #777; text-decoration: line-through; }
+.annotation-missing { display: block; margin-top: 3px; color: #a22; font-style: italic; }
+.annotation-resolution { display: block; margin-top: 3px; color: #2e7d32; }
+.ann-edit, .ann-delete, .ann-reopen { flex: 0 0 auto; border: 0; background: transparent; color: #666; cursor: pointer; font-size: 18px; }
+.annotation-edit-text { min-height: 70px; }
+.annotation-error { display: block; color: #a22; }
+/* Notes the agent left for the user. */
+.annotation-anchor.agent, .annotation-row.agent .annotation-number { background: #2f6fb3; }

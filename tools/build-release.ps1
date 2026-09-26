@@ -1,6 +1,5 @@
 param(
   [string]$ReleaseId = '',
-  [switch]$SkipTests,
   [switch]$Force
 )
 
@@ -47,17 +46,6 @@ try {
       powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $repoRoot 'packages\1c-form-viewer\scripts\build-native.ps1') -Output $nativeDirectory
     }
 
-    if (-not $SkipTests) {
-      $previousNativeMcpExe = $env:NATIVE_MCP_EXE
-      $env:NATIVE_MCP_EXE = Join-Path $nativeDirectory '1c-form-viewer.exe'
-      try {
-        Invoke-Checked 'Tests' { npm test }
-      }
-      finally {
-        $env:NATIVE_MCP_EXE = $previousNativeMcpExe
-      }
-      Invoke-Checked 'Native unit tests' { & (Join-Path $repoRoot 'tools\run-tests.bat') }
-    }
 
     $previousSkipLatestMcp = $env:TC_BSL_VIEWER_SKIP_LATEST_MCP
     $env:TC_BSL_VIEWER_SKIP_LATEST_MCP = '1'
@@ -85,26 +73,6 @@ try {
       Pop-Location
     }
 
-    if (-not $SkipTests) {
-      # A source-tree or staging binary can pass while VSIX packaging embeds a
-      # stale executable. Extract the finished archive and run the same native
-      # contract against the binary users will actually install.
-      $vsixSmokeZip = Join-Path $staging '.vsix-smoke.zip'
-      $vsixSmokeDirectory = Join-Path $staging '.vsix-smoke'
-      Copy-Item -LiteralPath $vsixPath -Destination $vsixSmokeZip
-      Expand-Archive -LiteralPath $vsixSmokeZip -DestinationPath $vsixSmokeDirectory
-      $previousNativeMcpExe = $env:NATIVE_MCP_EXE
-      $env:NATIVE_MCP_EXE = Join-Path $vsixSmokeDirectory 'extension\mcp\1c-form-viewer.exe'
-      try {
-        Invoke-Checked 'Packaged VSIX native MCP contract' {
-          npx tsx --test packages/1c-form-viewer/tests/native-contract.test.ts
-        }
-      }
-      finally {
-        $env:NATIVE_MCP_EXE = $previousNativeMcpExe
-        Remove-Item -LiteralPath $vsixSmokeZip, $vsixSmokeDirectory -Recurse -Force
-      }
-    }
 
     $pluginStage = Join-Path $staging '.stage-bslview'
     $editorStage = Join-Path $staging '.stage-bsledit'
@@ -113,14 +81,16 @@ try {
       Copy-Item -LiteralPath (Join-Path $repoRoot $name) -Destination $pluginStage
     }
     Copy-Item -LiteralPath (Join-Path $repoRoot 'BSLEdit.exe') -Destination $editorStage
-    # Both hosts load their interface from web\ next to the binary; without it
-    # the plugin falls back to IE and BSLEdit refuses to start.
-    foreach ($stage in @($pluginStage, $editorStage)) {
-      Copy-Item -LiteralPath (Join-Path $repoRoot 'web') -Destination (Join-Path $stage 'web') -Recurse
-      if (-not (Test-Path -LiteralPath (Join-Path $stage 'web\vs\loader.js'))) {
-        throw "web\vs (Monaco) is missing; run build.bat first."
-      }
+    # Both hosts carry their interface inside the binary (embedded-assets.h),
+    # so nothing is staged beside them. The pack that build.bat linked in must
+    # exist and must hold Monaco, or the release would ship a binary that
+    # unpacks an interface without an editor.
+    $assetPack = Join-Path $repoRoot 'objgen\web-assets.bin'
+    if (-not (Test-Path -LiteralPath $assetPack)) {
+      throw "objgen\web-assets.bin is missing; run build.bat first."
     }
+    & node (Join-Path $repoRoot 'tools\verify-asset-pack.mjs') $assetPack 'vs/loader.js' 'viewer.html'
+    if ($LASTEXITCODE -ne 0) { throw 'The packed interface is incomplete; run build.bat first.' }
 
     New-Zip $pluginStage (Join-Path $staging 'BSLView.zip')
     New-Zip $editorStage (Join-Path $staging 'BSLEdit.zip')

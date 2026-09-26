@@ -55,6 +55,7 @@ class NativeRpcClient {
     this.nextId = 0;
     this.buffer = '';
     this.disposed = false;
+    this.exited = false;
     this.process = spawn(executable, args, {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -63,8 +64,12 @@ class NativeRpcClient {
     this.process.stderr.setEncoding('utf8');
     this.process.stdout.on('data', (chunk) => this.accept(chunk));
     this.process.stderr.on('data', (chunk) => output.append(String(chunk)));
-    this.process.once('error', (error) => this.failAll(error));
+    this.process.once('error', (error) => {
+      this.exited = true;
+      this.failAll(error);
+    });
     this.process.once('exit', (code) => {
+      this.exited = true;
       if (!this.disposed) this.failAll(new Error(`Native preview завершился с кодом ${code}.`));
     });
   }
@@ -109,6 +114,10 @@ class NativeRpcClient {
         reject(error);
       });
     });
+  }
+
+  get alive() {
+    return !this.disposed && !this.exited;
   }
 
   async callTool(name, args = {}) {
@@ -156,7 +165,8 @@ class ManualPreviewController {
     }
     const uri = await resolveDocumentUri(selected);
     const key = uri.toString();
-    if (this.state?.key === key) {
+    /* A preview whose native process has died is started again. */
+    if (this.state?.key === key && this.state.client.alive) {
       await showInternalPreview(this.state.url);
       await this.state.client.callTool('reload_preview');
       return;
@@ -353,4 +363,4 @@ function activate(context) {
 
 function deactivate() {}
 
-module.exports = { activate, deactivate };
+module.exports = { activate, deactivate, _test: { ManualPreviewController } };

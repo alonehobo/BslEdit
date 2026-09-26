@@ -1,12 +1,14 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <cstdint>
@@ -22,9 +24,17 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <regex>
 #include <string>
 #include <string_view>
 #include <thread>
+
+/* The preview interface is linked into this executable as an RCDATA
+ * resource and unpacked into a per-user cache on the first run of a build,
+ * so the server ships as a single file with no app\web beside it. */
+#include "../../../embedded-assets.h"
+/* open_preview base_revision reads the earlier version with BSLEdit's git code. */
+#include "../../../gitquery.h"
 
 /* This build's identity. Like the Node server, the version comes from
  * package.json: build-native.ps1 generates native-version.h from it and
@@ -299,6 +309,8 @@ fs::path long_path(const fs::path& path) {
     return fs::path(L"\\\\?\\" + wide);
 }
 
+std::wstring decode_text_bytes(const unsigned char* data, std::size_t size, std::string& encoding);
+
 std::string read_text_file(const fs::path& rawPath, std::size_t maxBytes, std::string& encoding) {
     const fs::path path = long_path(rawPath);
     std::ifstream input(path, std::ios::binary);
@@ -309,11 +321,16 @@ std::string read_text_file(const fs::path& rawPath, std::size_t maxBytes, std::s
     input.seekg(0, std::ios::beg);
     std::vector<unsigned char> bytes(static_cast<std::size_t>(length));
     if (!bytes.empty()) input.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return utf8_from_wide(decode_text_bytes(bytes.data(), bytes.size(), encoding));
+}
 
+/* Also decodes a blob git hands back for base_revision. */
+std::wstring decode_text_bytes(const unsigned char* data, std::size_t size, std::string& encoding) {
+    const std::vector<unsigned char> bytes(data, data + size);
     std::wstring wide;
     if (bytes.size() >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf) {
         encoding = "utf8-bom";
-        wide = wide_from_utf8(std::string_view(reinterpret_cast<char*>(bytes.data() + 3), bytes.size() - 3));
+        wide = wide_from_utf8(std::string_view(reinterpret_cast<const char*>(bytes.data() + 3), bytes.size() - 3));
     } else if (bytes.size() >= 2 && bytes[0] == 0xff && bytes[1] == 0xfe) {
         encoding = "utf16le";
         wide.resize((bytes.size() - 2) / 2);
@@ -323,21 +340,77 @@ std::string read_text_file(const fs::path& rawPath, std::size_t maxBytes, std::s
         wide.resize((bytes.size() - 2) / 2);
         for (std::size_t i = 0; i < wide.size(); ++i) wide[i] = static_cast<wchar_t>((bytes[2 + i * 2] << 8) | bytes[3 + i * 2]);
     } else {
-        wide = wide_from_utf8(std::string_view(reinterpret_cast<char*>(bytes.data()), bytes.size()));
+        wide = wide_from_utf8(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
         if (!wide.empty() || bytes.empty()) encoding = "utf8";
         else {
             encoding = "windows-1251";
-            const int size = MultiByteToWideChar(1251, 0, reinterpret_cast<char*>(bytes.data()), static_cast<int>(bytes.size()), nullptr, 0);
+            const int size = MultiByteToWideChar(1251, 0, reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), nullptr, 0);
             wide.resize(size);
-            MultiByteToWideChar(1251, 0, reinterpret_cast<char*>(bytes.data()), static_cast<int>(bytes.size()), wide.data(), size);
+            MultiByteToWideChar(1251, 0, reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()), wide.data(), size);
         }
     }
-    return utf8_from_wide(wide);
+    return wide;
 }
 
 std::wstring lower_wide(std::wstring value) {
     std::transform(value.begin(), value.end(), value.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
     return value;
+}
+
+/* The file's canonical DOS path: short names, relative spellings and junctions
+ * all collapse to one text, so both sides of the BSLEdit marker below agree on
+ * what "the same file" means. */
+std::wstring final_path_name(const fs::path& path) {
+    std::wstring result = path.wstring();
+    const HANDLE file = CreateFileW(result.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                    nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (file != INVALID_HANDLE_VALUE) {
+        std::wstring buffer(MAX_PATH, L'\0');
+        DWORD length = GetFinalPathNameByHandleW(file, buffer.data(), static_cast<DWORD>(buffer.size()), VOLUME_NAME_DOS);
+        if (length >= buffer.size()) {
+            buffer.resize(length + 1);
+            length = GetFinalPathNameByHandleW(file, buffer.data(), static_cast<DWORD>(buffer.size()), VOLUME_NAME_DOS);
+        }
+        CloseHandle(file);
+        if (length && length < buffer.size()) result.assign(buffer.data(), length);
+    }
+    if (result.rfind(L"\\\\?\\UNC\\", 0) == 0) result = L"\\\\" + result.substr(8);
+    else if (result.rfind(L"\\\\?\\", 0) == 0) result.erase(0, 4);
+    return result;
+}
+
+/* The name BSLEdit publishes while it holds a file open. The editing tools step
+ * aside while it exists: the window in front of the user owns the file, and an
+ * agent's write would be lost by the next save there anyway.
+ *
+ * Its twin lives in bsledit.cpp (BSLEditOpenMutexName) and the two spellings
+ * must stay identical - a difference disables the protection silently instead
+ * of failing, so native-contract.test.ts recomputes the name independently. */
+std::wstring bsledit_open_mutex_name(const fs::path& path) {
+    std::wstring text = final_path_name(path);
+    if (!text.empty()) {
+        /* The invariant locale, not the process one: the same path must hash
+         * the same way in the editor and here, whatever either has set. */
+        std::wstring lowered(text.size(), L'\0');
+        const int mapped = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_LOWERCASE, text.c_str(), static_cast<int>(text.size()),
+                                         lowered.data(), static_cast<int>(lowered.size()), nullptr, nullptr, 0);
+        if (mapped > 0) text.assign(lowered.data(), static_cast<std::size_t>(mapped));
+    }
+    std::uint64_t hash = 14695981039346656037ull;
+    for (const wchar_t character : text) {
+        hash = (hash ^ static_cast<std::uint8_t>(character & 0xff)) * 1099511628211ull;
+        hash = (hash ^ static_cast<std::uint8_t>((character >> 8) & 0xff)) * 1099511628211ull;
+    }
+    wchar_t hex[17] = {};
+    swprintf(hex, 17, L"%016llx", static_cast<unsigned long long>(hash));
+    return std::wstring(L"Local\\BSLEdit.Open.") + hex;
+}
+
+bool open_in_bsledit(const fs::path& path) {
+    const HANDLE marker = OpenMutexW(SYNCHRONIZE, FALSE, bsledit_open_mutex_name(path).c_str());
+    if (!marker) return false;
+    CloseHandle(marker);
+    return true;
 }
 
 std::string mime_type(const fs::path& path) {
@@ -409,11 +482,24 @@ std::string url_encode_component(std::string_view value) {
 }
 
 std::string make_http_response(int status, std::string_view contentType, std::string_view body) {
-    const char* reason = status == 200 ? "OK" : status == 204 ? "No Content" : status == 400 ? "Bad Request" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" : "Internal Server Error";
+    const char* reason = status == 200 ? "OK" : status == 204 ? "No Content" : status == 400 ? "Bad Request" : status == 403 ? "Forbidden" : status == 404 ? "Not Found" : status == 409 ? "Conflict" : "Internal Server Error";
     std::ostringstream output;
     output << "HTTP/1.1 " << status << ' ' << reason << "\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Type: " << contentType << "\r\nContent-Length: " << body.size() << "\r\n\r\n";
     output << body;
     return output.str();
+}
+
+/* Opens `target` in BSLEdit. The editor takes the file from the command line
+ * and watches it from there; nothing is handed back, because what both the
+ * page and the agent go by is the file on disk. `session`, the preview's own
+ * base URL, lets the editor keep the user's annotations where the agent reads
+ * them. */
+bool launch_editor(const fs::path& editor, const fs::path& target, const std::string& session = {}) {
+    std::wstring parameters = L"\"" + target.wstring() + L"\"";
+    if (!session.empty()) parameters += L" --preview-session \"" + wide_from_utf8(session) + L"\"";
+    const auto started = reinterpret_cast<INT_PTR>(
+        ShellExecuteW(nullptr, L"open", editor.wstring().c_str(), parameters.c_str(), nullptr, SW_SHOWNORMAL));
+    return started > 32;
 }
 
 struct Document {
@@ -422,9 +508,56 @@ struct Document {
     std::string content;
     std::string encoding;
     std::uintmax_t size = 0;
+    /* open_preview base_path: the earlier version the page compares against. */
+    bool hasBase = false;
+    fs::path basePath;
+    std::string baseRevision;  /* base_revision as given; basePath is then the file itself */
+    std::string baseDescription;  /* the commit behind baseRevision: short sha, date, subject */
+    std::string baseContent;
 };
 
+/* How a comparison is named to the page and in replies: a file, or a revision
+ * of the same file ("index" for what is staged). */
+std::string baseLabelOf(const Document& document) {
+    if (!document.baseRevision.empty()) return "git:" + document.baseRevision;
+    return utf8_from_wide(document.basePath.wstring());
+}
+
 class PreviewServer {
+    struct Pending { std::string id; std::string op; std::string args; bool delivered; std::uint64_t revision; };
+    /* Size and write time: enough to notice a save, cheap enough to ask for
+     * twice a second. ReadDirectoryChangesW would be the obvious tool, but the
+     * forms people edit sit on Yandex.Disk and network shares, where it both
+     * invents changes and misses them. */
+    struct Stamp {
+        bool valid = false;
+        std::uintmax_t size = 0;
+        fs::file_time_type written{};
+        bool operator==(const Stamp& other) const {
+            return valid == other.valid && size == other.size && written == other.written;
+        }
+    };
+    struct Result { std::string id; std::string value; };
+    /* resolved: the agent marked it done; the user accepts (deletes) it or
+     * reopens it, so the agent never removes the user's notes itself. */
+    struct Annotation { std::string id; std::string elementId; std::string elementName; std::string text; bool resolved = false; std::string resolution; bool agent = false; std::string endElementId; };
+    struct Session {
+        std::optional<Document> document;
+        std::function<Document()> reloader;
+        std::string interfaceMode = "Any";
+        std::uint64_t revision = 0;
+        std::uint64_t touched = 0;
+        std::optional<Pending> pending;
+        std::optional<Result> lastResult;
+        std::optional<std::chrono::steady_clock::time_point> lastPoll;
+        Stamp stamp;
+        bool externalChange = false;
+        std::uint64_t annotationCounter = 0;
+        /* Bumped on every change of the list, so pages polling it notice a
+         * change made elsewhere (the agent resolving a note) without a reload. */
+        std::uint64_t annotationVersion = 0;
+        std::vector<Annotation> annotations;
+    };
 public:
     explicit PreviewServer(fs::path assets) : assets_(std::move(assets)), token_(random_token()) {}
     ~PreviewServer() { close(); }
@@ -448,11 +581,18 @@ public:
         port_ = ntohs(address.sin_port);
         accepting_ = true;
         thread_ = std::thread([this] { acceptLoop(); });
+        watcher_ = std::thread([this] { watchLoop(); });
     }
 
     /* Every opened file is its own preview with its own page URL
      * (/<token>/<previewId>/index.html), so several previews stay open side by
      * side. Reopening a file reuses its preview and link. */
+    /* The preview's directory, where its annotations endpoint lives. */
+    std::string sessionUrl(const std::string& id) const {
+        if (!port_) return {};
+        return "http://127.0.0.1:" + std::to_string(port_) + "/" + token_ + "/" + id + "/";
+    }
+
     std::string url(const std::string& id) const {
         if (!port_) throw std::runtime_error("Preview server is not running");
         return "http://127.0.0.1:" + std::to_string(port_) + "/" + token_ + "/" + id + "/index.html?internal=1";
@@ -460,12 +600,18 @@ public:
 
     /* The reloader lets the page's refresh button re-read the file from disk,
      * so an agent's edit shows without reopening the preview. */
-    std::string openSession(Document document, std::function<Document()> reloader) {
+    std::string openSession(Document document, std::function<Document()> reloader, std::string interfaceMode = "Any") {
         std::lock_guard lock(mutex_);
         const std::wstring key = lower_wide(document.resolvedPath.wstring());
         std::string id;
+        /* A comparison is its own preview: the same file may be open plainly
+         * and against one or several earlier versions at once. */
+        const auto baseKeyOf = [](const Document& d) { return lower_wide(d.basePath.wstring()) + L"|" + wide_from_utf8(d.baseRevision); };
+        const std::wstring baseKey = document.hasBase ? baseKeyOf(document) : std::wstring();
         for (const auto& [candidate, session] : sessions_) {
-            if (session.document && lower_wide(session.document->resolvedPath.wstring()) == key) { id = candidate; break; }
+            if (session.document && lower_wide(session.document->resolvedPath.wstring()) == key
+                && session.document->hasBase == document.hasBase
+                && (!document.hasBase || baseKeyOf(*session.document) == baseKey)) { id = candidate; break; }
         }
         /* An authoring transform may have started a page before any file was open. */
         if (id.empty()) {
@@ -475,8 +621,19 @@ public:
         }
         if (id.empty()) id = "p" + std::to_string(++sessionCounter_);
         Session& session = sessions_[id];
+        /* Reopening the same file keeps the user's notes; a slot reused for
+         * another file starts empty. */
+        const bool sameFile = session.document
+            && lower_wide(session.document->resolvedPath.wstring()) == lower_wide(document.resolvedPath.wstring());
         session.document = std::move(document);
         session.reloader = std::move(reloader);
+        session.interfaceMode = std::move(interfaceMode);
+        session.stamp = stampOf(session.document->resolvedPath);
+        if (!sameFile) {
+            session.annotations.clear();
+            session.annotationCounter = 0;
+            ++session.annotationVersion;
+        }
         ++session.revision;
         session.touched = ++touchCounter_;
         active_ = id;
@@ -508,12 +665,228 @@ public:
         return requested;
     }
 
+    std::string baseLabel(const std::string& id) const {
+        std::lock_guard lock(mutex_);
+        const auto found = sessions_.find(id);
+        return found != sessions_.end() && found->second.document && found->second.document->hasBase
+            ? baseLabelOf(*found->second.document) : std::string();
+    }
+
     void setDocument(const std::string& id, Document document) {
         std::lock_guard lock(mutex_);
         const auto found = sessions_.find(id);
         if (found == sessions_.end()) return;
         found->second.document = std::move(document);
+        found->second.stamp = stampOf(found->second.document->resolvedPath);
+        /* Annotations outlive a re-read of the file (reload, edit_form, a save
+         * in BSLEdit): the agent resolves them after its edit. One whose
+         * element is gone stays listed, and the page marks it. */
         ++found->second.revision;
+    }
+
+    /* The watcher reloaded this preview because someone else - BSLEdit, as a
+     * rule - wrote the file. Reported once, to the next tool call that touches
+     * the preview, so the agent does not reason about a layout it never saw. */
+    bool takeExternalChange(const std::string& id) {
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session || !session->externalChange) return false;
+        session->externalChange = false;
+        return true;
+    }
+
+    /* Closing every preview at once names no single target, so the note of any
+     * preview still carrying one is reported by that call. */
+    bool takeExternalChangeAny() {
+        std::lock_guard lock(mutex_);
+        bool any = false;
+        for (auto& [id, session] : sessions_) {
+            if (!session.externalChange) continue;
+            session.externalChange = false;
+            any = true;
+        }
+        return any;
+    }
+
+    /* openOnly: the agent's default view, the notes still waiting for it. */
+    std::string annotationsJson(const std::string& id, bool openOnly = false) const {
+        std::lock_guard lock(mutex_);
+        const auto found = sessions_.find(id);
+        if (found == sessions_.end()) return "{\"annotations\":[]}";
+        /* revision lets a page that polls (BSLEdit) notice a reload that
+         * cleared the list, and send it back with each change; version
+         * changes with the list itself. */
+        return "{\"revision\":" + std::to_string(found->second.revision)
+            + ",\"version\":" + std::to_string(found->second.annotationVersion)
+            + ",\"annotations\":" + annotationItemsJson(found->second.annotations, openOnly) + "}";
+    }
+
+    static std::string annotationJson(const Annotation& annotation) {
+        return "{\"id\":" + json_string(annotation.id)
+            + ",\"elementId\":" + json_string(annotation.elementId)
+            + (annotation.endElementId.empty() ? std::string() : ",\"endElementId\":" + json_string(annotation.endElementId))
+            + ",\"elementName\":" + json_string(annotation.elementName)
+            + ",\"text\":" + json_string(annotation.text)
+            + ",\"status\":" + (annotation.resolved ? "\"resolved\"" : "\"open\"")
+            + (annotation.resolved && !annotation.resolution.empty() ? ",\"resolution\":" + json_string(annotation.resolution) : std::string())
+            + (annotation.agent ? ",\"author\":\"agent\"" : "")
+            + "}";
+    }
+
+    static std::string annotationItemsJson(const std::vector<Annotation>& annotations, bool openOnly = false) {
+        std::string output = "[";
+        for (const auto& annotation : annotations) {
+            if (openOnly && annotation.resolved) continue;
+            if (output.back() != '[') output += ',';
+            output += annotationJson(annotation);
+        }
+        return output + "]";
+    }
+
+    static std::uint64_t annotationRevision(const Json& value) {
+        const Json* revision = value.get("revision");
+        if (!revision || revision->kind != Json::Kind::Number || !std::isfinite(revision->number)
+            || revision->number < 0 || revision->number > 9007199254740991.0
+            || std::floor(revision->number) != revision->number)
+            throw std::runtime_error("A non-negative integer revision is required.");
+        return static_cast<std::uint64_t>(revision->number);
+    }
+
+    std::string addAnnotation(const std::string& id, const Json& value) {
+        const auto revision = annotationRevision(value);
+        const std::string elementId = value.get("elementId") ? value.get("elementId")->asString() : std::string();
+        const std::string elementName = value.get("elementName") ? value.get("elementName")->asString() : std::string();
+        const std::string text = value.get("text") ? value.get("text")->asString() : std::string();
+        if (elementId.empty() || elementName.empty() || text.empty())
+            throw std::runtime_error("elementId, elementName and non-empty text are required");
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) throw std::runtime_error("The preview is closed.");
+        if (session->revision != revision) throw std::logic_error("The preview revision has changed.");
+        Annotation annotation{"a" + std::to_string(++session->annotationCounter), elementId, elementName, text};
+        /* The far corner of a spreadsheet range the user dragged over. */
+        if (const Json* end = value.get("endElementId")) annotation.endElementId = end->asString();
+        session->annotations.push_back(annotation);
+        ++session->annotationVersion;
+        return annotationJson(annotation);
+    }
+
+    bool removeAnnotation(const std::string& id, const std::string& annotationId, std::uint64_t revision) {
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) return false;
+        if (session->revision != revision) throw std::logic_error("The preview revision has changed.");
+        const auto found = std::find_if(session->annotations.begin(), session->annotations.end(), [&annotationId](const Annotation& item) {
+            return item.id == annotationId;
+        });
+        if (found == session->annotations.end()) return false;
+        session->annotations.erase(found);
+        ++session->annotationVersion;
+        return true;
+    }
+
+    /* The user's "clear all". */
+    bool clearAnnotations(const std::string& id, std::uint64_t revision) {
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) return false;
+        if (session->revision != revision) throw std::logic_error("The preview revision has changed.");
+        session->annotations.clear();
+        ++session->annotationVersion;
+        return true;
+    }
+
+    std::optional<std::string> updateAnnotation(const std::string& id, const std::string& annotationId, const Json& value) {
+        const auto revision = annotationRevision(value);
+        /* The user edits the text, reopens a note the agent resolved
+         * (status "open"), or both. */
+        const bool hasText = value.get("text") != nullptr;
+        const std::string text = hasText ? value.get("text")->asString() : std::string();
+        const std::string status = value.get("status") ? value.get("status")->asString() : std::string();
+        if (!status.empty() && status != "open")
+            throw std::runtime_error("status can only be set to \"open\"");
+        if ((hasText || status.empty()) && text.find_first_not_of(" \t\r\n") == std::string::npos)
+            throw std::runtime_error("Non-empty text is required");
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) return std::nullopt;
+        if (session->revision != revision) throw std::logic_error("The preview revision has changed.");
+        const auto found = std::find_if(session->annotations.begin(), session->annotations.end(), [&annotationId](const Annotation& item) {
+            return item.id == annotationId;
+        });
+        if (found == session->annotations.end()) return std::nullopt;
+        if (hasText) found->text = text;
+        if (!status.empty()) { found->resolved = false; found->resolution.clear(); }
+        ++session->annotationVersion;
+        return annotationJson(*found);
+    }
+
+    /* The agent's side: no revision, it acts on the note by id alone. */
+    std::string resolveAnnotation(const std::string& id, const std::string& annotationId, const std::string& resolution) {
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) throw std::runtime_error("The preview is closed.");
+        const auto found = std::find_if(session->annotations.begin(), session->annotations.end(), [&annotationId](const Annotation& item) {
+            return item.id == annotationId;
+        });
+        if (found == session->annotations.end())
+            throw std::runtime_error("No annotation " + annotationId + " on this preview; list them with operation=annotations.");
+        found->resolved = true;
+        found->resolution = resolution;
+        ++session->annotationVersion;
+        return annotationJson(*found);
+    }
+
+    /* A note the agent leaves for the user. A spreadsheet cell rNcM, or a
+     * range up to toElementId, is named R1C1 or R1C1:R2C2 the way the page
+     * names the user's own. */
+    std::string agentAddAnnotation(const std::string& id, const std::string& elementId, const std::string& toElementId,
+                                   const std::string& elementName, const std::string& text) {
+        if (elementId.empty() || text.find_first_not_of(" \t\r\n") == std::string::npos)
+            throw std::runtime_error("element_id and non-empty text are required");
+        std::string name = elementName;
+        const std::regex cell("^r(\\d+)c(\\d+)$");
+        std::smatch from, to;
+        if (name.empty() && std::regex_match(elementId, from, cell)) {
+            auto label = [](unsigned long row, unsigned long column) {
+                return "R" + std::to_string(row + 1) + "C" + std::to_string(column + 1);
+            };
+            unsigned long r0 = std::stoul(from[1]), c0 = std::stoul(from[2]), r1 = r0, c1 = c0;
+            if (!toElementId.empty()) {
+                if (!std::regex_match(toElementId, to, cell)) throw std::runtime_error("to_element_id must be a cell rNcM");
+                r1 = std::stoul(to[1]); c1 = std::stoul(to[2]);
+            }
+            name = label((std::min)(r0, r1), (std::min)(c0, c1));
+            if (r0 != r1 || c0 != c1) name += ":" + label((std::max)(r0, r1), (std::max)(c0, c1));
+        }
+        if (name.empty()) name = elementId;
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) throw std::runtime_error("The preview is closed.");
+        Annotation annotation{"a" + std::to_string(++session->annotationCounter), elementId, name, text};
+        annotation.agent = true;
+        /* The page selects the cells by id, whatever name the agent gave them. */
+        annotation.endElementId = toElementId;
+        session->annotations.push_back(annotation);
+        ++session->annotationVersion;
+        return annotationJson(annotation);
+    }
+
+    /* The agent removes only the notes it left; the user's stay. */
+    std::string agentRemoveAnnotation(const std::string& id, const std::string& annotationId) {
+        std::lock_guard lock(mutex_);
+        Session* session = findSession(id);
+        if (!session) throw std::runtime_error("The preview is closed.");
+        const auto found = std::find_if(session->annotations.begin(), session->annotations.end(), [&annotationId](const Annotation& item) {
+            return item.id == annotationId;
+        });
+        if (found == session->annotations.end())
+            throw std::runtime_error("No annotation " + annotationId + " on this preview; list them with operation=annotations.");
+        if (!found->agent)
+            throw std::runtime_error("Annotation " + annotationId + " is the user's; resolve it with operation=resolve_annotation instead.");
+        session->annotations.erase(found);
+        ++session->annotationVersion;
+        return "{\"removed\":" + json_string(annotationId) + "}";
     }
 
     bool hasDocument(const std::string& id) const {
@@ -531,6 +904,7 @@ public:
             if (output.size() > 1) output += ',';
             output += "{\"previewId\":" + json_string(id)
                 + ",\"path\":" + json_string(utf8_from_wide(session.document->resolvedPath.wstring()))
+                + (session.document->hasBase ? ",\"base\":" + json_string(baseLabelOf(*session.document)) : std::string())
                 + ",\"previewUrl\":" + json_string("http://127.0.0.1:" + std::to_string(port_) + "/" + token_ + "/" + id + "/index.html?internal=1")
                 + ",\"active\":" + (id == active_ ? "true" : "false") + "}";
         }
@@ -566,7 +940,14 @@ public:
         const auto found = sessions_.find(id);
         if (found == sessions_.end() || !found->second.document) return "{}";
         const Session& session = found->second;
-        return "{\"revision\":" + std::to_string(session.revision) + ",\"path\":" + json_string(utf8_from_wide(session.document->resolvedPath.wstring())) + ",\"content\":" + json_string(session.document->content) + ",\"resolveContext\":true}";
+        return "{\"revision\":" + std::to_string(session.revision) + ",\"path\":" + json_string(utf8_from_wide(session.document->resolvedPath.wstring())) + ",\"content\":" + json_string(session.document->content) + ",\"resolveContext\":true,\"interfaceMode\":" + json_string(session.interfaceMode)
+            + ",\"annotations\":" + annotationItemsJson(session.annotations)
+            + (session.document->hasBase
+                ? ",\"basePath\":" + json_string(utf8_from_wide(session.document->basePath.wstring()))
+                    + ",\"baseRevision\":" + json_string(session.document->baseRevision)
+                    + ",\"baseDescription\":" + json_string(session.document->baseDescription)
+                    + ",\"baseContent\":" + json_string(session.document->baseContent)
+                : std::string()) + "}";
     }
 
     /* The shared resolver reads configuration files through this server with
@@ -577,10 +958,27 @@ public:
     }
 
     std::string metaJson(const std::string& id) const {
+        std::function<fs::path()> locator;
+        std::string meta;
+        {
+            std::lock_guard lock(mutex_);
+            const auto found = sessions_.find(id);
+            const bool available = found != sessions_.end() && found->second.document;
+            meta = "{\"revision\":" + std::to_string(available ? found->second.revision : 0)
+                + ",\"annotationVersion\":" + std::to_string(found != sessions_.end() ? found->second.annotationVersion : 0)
+                + ",\"available\":" + (available ? "true" : "false");
+            locator = editorLocator_;
+        }
+        /* Reads the registry, so it happens off the lock. */
+        const bool editor = locator && !locator().empty();
+        return meta + ",\"editor\":" + (editor ? "true" : "false") + "}";
+    }
+
+    /* Where BSLEdit is, looked up by the app (registry or --editor) and cached
+     * there; an empty path means the button stays hidden. */
+    void setEditorLocator(std::function<fs::path()> locator) {
         std::lock_guard lock(mutex_);
-        const auto found = sessions_.find(id);
-        const bool available = found != sessions_.end() && found->second.document;
-        return "{\"revision\":" + std::to_string(available ? found->second.revision : 0) + ",\"available\":" + (available ? "true" : "false") + "}";
+        editorLocator_ = std::move(locator);
     }
 
     /* needsDocument is false for the authoring transforms: the page runs the
@@ -627,22 +1025,11 @@ public:
             condition_.notify_all();
         }
         if (thread_.joinable()) thread_.join();
+        if (watcher_.joinable()) watcher_.join();
         if (port_) { WSACleanup(); port_ = 0; }
     }
 
 private:
-    struct Pending { std::string id; std::string op; std::string args; bool delivered; std::uint64_t revision; };
-    struct Result { std::string id; std::string value; };
-    struct Session {
-        std::optional<Document> document;
-        std::function<Document()> reloader;
-        std::uint64_t revision = 0;
-        std::uint64_t touched = 0;
-        std::optional<Pending> pending;
-        std::optional<Result> lastResult;
-        std::optional<std::chrono::steady_clock::time_point> lastPoll;
-    };
-
     fs::path assets_;
     std::string token_;
     SOCKET socket_ = INVALID_SOCKET;
@@ -656,7 +1043,69 @@ private:
     std::uint64_t touchCounter_ = 0;
     std::map<std::string, Session> sessions_;
     std::string active_;
+    std::thread watcher_;
     std::function<bool(const fs::path&)> contextAccess_;
+    std::function<fs::path()> editorLocator_;
+
+    static Stamp stampOf(const fs::path& path) {
+        std::error_code error;
+        Stamp stamp;
+        stamp.size = fs::file_size(path, error);
+        if (error) return {};
+        stamp.written = fs::last_write_time(path, error);
+        if (error) return {};
+        stamp.valid = true;
+        return stamp;
+    }
+
+    /* The file on disk is the one source of truth this design has: the user
+     * edits a form in BSLEdit, saves, and both the open page and the agent see
+     * the result. Nothing travels the other way - what is not saved is nobody
+     * else's business. */
+    void watchLoop() {
+        struct Job { std::string id; fs::path path; Stamp stamp; std::function<Document()> reloader; };
+        for (;;) {
+            {
+                std::unique_lock lock(mutex_);
+                if (condition_.wait_for(lock, std::chrono::milliseconds(500), [this] { return !accepting_; })) return;
+            }
+            std::vector<Job> jobs;
+            {
+                std::lock_guard lock(mutex_);
+                for (const auto& [id, session] : sessions_) {
+                    if (!session.document || !session.reloader) continue;
+                    jobs.push_back({id, session.document->resolvedPath, session.stamp, session.reloader});
+                }
+            }
+            for (const Job& job : jobs) {
+                const Stamp current = stampOf(job.path);
+                /* Unreadable right now (a save in flight, a lock): next tick. */
+                if (!current.valid || current == job.stamp) continue;
+                Document document;
+                try {
+                    document = job.reloader();
+                } catch (const std::exception&) {
+                    continue;
+                }
+                std::lock_guard lock(mutex_);
+                Session* session = findSession(job.id);
+                if (!session || !session->document) continue;
+                /* setDocument may have run while the file was being read - an
+                 * edit_form, edit_template or reload of its own. That revision
+                 * is newer than this one, so the read is dropped and the next
+                 * tick compares against the stamp it left behind; applying it
+                 * would show a stale layout and report the agent's own write
+                 * as an external change. */
+                if (session->document->resolvedPath != job.path || !(session->stamp == job.stamp)) continue;
+                session->document = std::move(document);
+                /* The stamp was taken before the read: a write that lands in
+                 * between differs from it and is picked up on the next tick. */
+                session->stamp = current;
+                ++session->revision;
+                session->externalChange = true;
+            }
+        }
+    }
 
     /* Callers hold mutex_. std::map keeps element addresses stable. */
     Session* findSession(const std::string& id) {
@@ -724,6 +1173,29 @@ private:
         }
     }
 
+    static constexpr const char* kEditorOrigin = "https://bslview.invalid";
+
+    /* A request header's value, `name` in lower case; empty when absent. */
+    static std::string headerValue(const std::string& head, const std::string& name) {
+        std::size_t line = head.find("\r\n");
+        while (line != std::string::npos && line + 2 < head.size()) {
+            const std::size_t start = line + 2;
+            const std::size_t end = head.find("\r\n", start);
+            const std::string text = head.substr(start, end == std::string::npos ? std::string::npos : end - start);
+            const auto colon = text.find(':');
+            if (colon != std::string::npos) {
+                std::string key = text.substr(0, colon);
+                std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                if (key == name) {
+                    const auto first = text.find_first_not_of(" \t", colon + 1);
+                    return first == std::string::npos ? std::string() : text.substr(first, text.find_last_not_of(" \t") - first + 1);
+                }
+            }
+            line = end;
+        }
+        return {};
+    }
+
     void handleClient(SOCKET client) {
         try {
             std::string request;
@@ -736,7 +1208,25 @@ private:
             const std::string target = firstLine.substr(firstSpace + 1, secondSpace - firstSpace - 1);
             const auto bodyStart = request.find("\r\n\r\n") + 4;
             const std::string body = bodyStart <= request.size() ? request.substr(bodyStart) : std::string();
-            reply(client, route(method, target, body));
+            /* BSLEdit's viewer page (https://bslview.invalid) edits the
+             * annotations of the preview it was launched with. Only that
+             * origin and only those endpoints are opened to it; the token in
+             * the path stays the secret. */
+            const bool editorAnnotations = headerValue(request.substr(0, bodyStart), "origin") == kEditorOrigin
+                && target.find("/annotations") != std::string::npos;
+            if (editorAnnotations && method == "OPTIONS") {
+                reply(client, "HTTP/1.1 204 No Content\r\nConnection: close\r\nAccess-Control-Allow-Origin: " + std::string(kEditorOrigin)
+                    + "\r\nAccess-Control-Allow-Methods: GET, POST, PATCH, DELETE\r\nAccess-Control-Allow-Headers: Content-Type"
+                    + "\r\nAccess-Control-Allow-Private-Network: true\r\nAccess-Control-Max-Age: 600\r\nContent-Length: 0\r\n\r\n");
+            } else {
+                std::string response = route(method, target, body);
+                if (editorAnnotations) {
+                    const auto lineEnd = response.find("\r\n");
+                    if (lineEnd != std::string::npos)
+                        response.insert(lineEnd + 2, "Access-Control-Allow-Origin: " + std::string(kEditorOrigin) + "\r\n");
+                }
+                reply(client, response);
+            }
         } catch (...) {
             reply(client, make_http_response(400, "text/plain; charset=utf-8", "Bad request"));
         }
@@ -761,6 +1251,51 @@ private:
         }
         const std::string relative = url_decode(rest.substr(slash + 1));
         if (method == "GET" && relative == "state-meta.json") return make_http_response(200, "application/json; charset=utf-8", metaJson(sessionId));
+        if (method == "GET" && relative == "annotations")
+            return make_http_response(200, "application/json; charset=utf-8", annotationsJson(sessionId));
+        if (method == "POST" && relative == "annotations") {
+            try {
+                return make_http_response(200, "application/json; charset=utf-8", addAnnotation(sessionId, JsonParser(body).parse()));
+            } catch (const std::logic_error& error) {
+                return make_http_response(409, "text/plain; charset=utf-8", error.what());
+            } catch (const std::exception& error) {
+                return make_http_response(400, "text/plain; charset=utf-8", error.what());
+            }
+        }
+        if (method == "PATCH" && relative.rfind("annotations/", 0) == 0) {
+            try {
+                const auto updated = updateAnnotation(sessionId, relative.substr(12), JsonParser(body).parse());
+                return updated
+                    ? make_http_response(200, "application/json; charset=utf-8", *updated)
+                    : make_http_response(404, "text/plain", "Not found");
+            } catch (const std::logic_error& error) {
+                return make_http_response(409, "text/plain; charset=utf-8", error.what());
+            } catch (const std::exception& error) {
+                return make_http_response(400, "text/plain; charset=utf-8", error.what());
+            }
+        }
+        if (method == "DELETE" && relative == "annotations") {
+            try {
+                return clearAnnotations(sessionId, annotationRevision(JsonParser(body).parse()))
+                    ? make_http_response(204, "text/plain", "")
+                    : make_http_response(404, "text/plain", "Not found");
+            } catch (const std::logic_error& error) {
+                return make_http_response(409, "text/plain; charset=utf-8", error.what());
+            } catch (const std::exception& error) {
+                return make_http_response(400, "text/plain; charset=utf-8", error.what());
+            }
+        }
+        if (method == "DELETE" && relative.rfind("annotations/", 0) == 0) {
+            try {
+                return removeAnnotation(sessionId, relative.substr(12), annotationRevision(JsonParser(body).parse()))
+                    ? make_http_response(204, "text/plain", "")
+                    : make_http_response(404, "text/plain", "Not found");
+            } catch (const std::logic_error& error) {
+                return make_http_response(409, "text/plain; charset=utf-8", error.what());
+            } catch (const std::exception& error) {
+                return make_http_response(400, "text/plain; charset=utf-8", error.what());
+            }
+        }
         if (method == "POST" && relative == "reload") {
             std::function<Document()> reloader;
             {
@@ -774,6 +1309,32 @@ private:
                 return make_http_response(500, "text/plain; charset=utf-8", error.what());
             }
             return make_http_response(200, "application/json; charset=utf-8", metaJson(sessionId));
+        }
+        /* The page's "Открыть в BSLEdit" button. The editor opens the file
+         * itself; nothing is handed back through this server, because a save
+         * on disk is what both the page and the agent watch for. */
+        if (method == "POST" && relative == "open-editor") {
+            fs::path target;
+            std::function<fs::path()> locator;
+            {
+                std::lock_guard lock(mutex_);
+                const Session* session = findSession(sessionId);
+                if (!session || !session->document)
+                    return make_http_response(404, "text/plain; charset=utf-8", "No preview");
+                target = session->document->resolvedPath;
+                locator = editorLocator_;
+            }
+            const fs::path editor = locator ? locator() : fs::path();
+            if (editor.empty())
+                return make_http_response(404, "text/plain; charset=utf-8",
+                                          u8"BSLEdit не найден. Выполните BSLEdit.exe --register-protocol для копии, которую считаете основной, "
+                                          u8"или укажите путь ключом --editor.");
+            if (!launch_editor(editor, target))
+                return make_http_response(500, "text/plain; charset=utf-8",
+                                          u8"Не удалось запустить BSLEdit: " + utf8_from_wide(editor.wstring()));
+            return make_http_response(200, "application/json; charset=utf-8",
+                                      "{\"opened\":true,\"path\":" + json_string(utf8_from_wide(target.wstring()))
+                                          + ",\"editor\":" + json_string(utf8_from_wide(editor.wstring())) + "}");
         }
         if (method == "GET" && relative == "state.json") {
             if (!hasDocument(sessionId)) return make_http_response(404, "text/plain", "No preview");
@@ -891,7 +1452,70 @@ struct Options {
     /* edit_form; --no-form-edit-tools hides it. list_form_elements and
      * validate_form stay available. */
     bool formEditTools = true;
+    /* BSLEdit for the preview page's "open in the editor" button; empty means
+     * the registration BSLEdit writes for its bsledit: protocol is used. */
+    fs::path editor;
+    /* An explicit --editor that exists also decides what a preview meant for
+     * the user opens in: the editor instead of a browser window. Only the flag
+     * does this, never the registry lookup - an installed BSLEdit must not
+     * quietly take every preview away from the browser. A preview for the
+     * agent stays headless either way: inspect, select, scroll and
+     * capture_preview all run in the page. */
+    bool editorPresents = false;
+    /* --assets: a working copy of the preview interface, for developing it
+     * without relinking the server. Empty means the embedded one. */
+    fs::path assets;
 };
+
+const int kEmbeddedAssetsResourceId = 201;
+
+/* Where the preview page is read from. --assets and an app\web directory
+ * beside the executable come first and exist for development; a copy of the
+ * executable on its own finds neither and unpacks what is linked into it. */
+fs::path resolve_assets(const Options& options) {
+    std::error_code error;
+    if (!options.assets.empty()) {
+        if (!fs::is_regular_file(options.assets / L"index.html", error))
+            throw std::runtime_error("--assets has no index.html: " + options.assets.string());
+        return options.assets;
+    }
+    const fs::path beside = options.base / L"app" / L"web";
+    if (fs::is_regular_file(beside / L"index.html", error)) return beside;
+    std::wstring failure;
+    const std::wstring unpacked = embedded_assets::Extract(
+        GetModuleHandleW(nullptr), kEmbeddedAssetsResourceId, L"1c-form-viewer", &failure);
+    if (unpacked.empty())
+        throw std::runtime_error("Cannot prepare the preview interface: " + utf8_from_wide(failure)
+            + ". It is unpacked into %LOCALAPPDATA%\\1c-form-viewer; pass --assets DIR to use a directory instead.");
+    return fs::path(unpacked);
+}
+
+/* The bsledit: protocol handler names the editor. BSLEdit claims it only when
+ * the registration is free, dead or already its own, so a temporary build cannot
+ * take it over; --register-protocol moves it deliberately. */
+fs::path locate_bsledit(const Options& options) {
+    std::error_code error;
+    if (!options.editor.empty())
+        return fs::is_regular_file(options.editor, error) ? options.editor : fs::path();
+    static const wchar_t* key = L"Software\\Classes\\bsledit\\shell\\open\\command";
+    DWORD size = 0;
+    if (RegGetValueW(HKEY_CURRENT_USER, key, nullptr, RRF_RT_REG_SZ, nullptr, nullptr, &size) != ERROR_SUCCESS || !size)
+        return {};
+    std::wstring value(size / sizeof(wchar_t), L'\0');
+    if (RegGetValueW(HKEY_CURRENT_USER, key, nullptr, RRF_RT_REG_SZ, nullptr, value.data(), &size) != ERROR_SUCCESS)
+        return {};
+    value.resize(wcsnlen(value.c_str(), value.size()));
+    /* "C:\\Tools\\BSLEdit.exe" "%1" */
+    std::wstring executable;
+    if (!value.empty() && value.front() == L'"') {
+        const auto end = value.find(L'"', 1);
+        if (end == std::wstring::npos) return {};
+        executable = value.substr(1, end - 1);
+    } else {
+        executable = value.substr(0, value.find(L' '));
+    }
+    return fs::is_regular_file(executable, error) ? fs::path(executable) : fs::path();
+}
 
 bool validUriScheme(const std::wstring& value) {
     if (value.empty() || !iswalpha(value.front())) return false;
@@ -900,15 +1524,18 @@ bool validUriScheme(const std::wstring& value) {
     });
 }
 
-void openPreviewUrl(const Options& options, const std::string& url) {
+bool openPreviewUrl(const Options& options, const std::string& url) {
     if (options.openInVsCode) {
         const std::string handler = utf8_from_wide(options.vscodeUriScheme)
             + "://alonehobo.1c-form-viewer-vscode/open-preview?url="
             + url_encode_component(url);
-        ShellExecuteW(nullptr, L"open", wide_from_utf8(handler).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", wide_from_utf8(handler).c_str(),
+            nullptr, nullptr, SW_SHOWNORMAL)) > 32;
     } else if (options.openBrowser) {
-        ShellExecuteW(nullptr, L"open", wide_from_utf8(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", wide_from_utf8(url).c_str(),
+            nullptr, nullptr, SW_SHOWNORMAL)) > 32;
     }
+    return false;
 }
 
 /* The default presentation. The preview page runs in a headless Edge or Chrome,
@@ -1023,9 +1650,7 @@ void assertAllowed(const Options& options, const fs::path& candidate) {
     if (allowed(options, candidate)) return;
     throw std::runtime_error(
         "Path is outside the allowed roots: " + utf8_from_wide(candidate.wstring())
-        + ". In VS Code, add its parent directory to the setting "
-          "\"1cFormViewer.mcp.additionalRoots\" and restart the MCP server; "
-          "for a standalone server, add --root PATH.");
+        + ". Add its parent directory with --root PATH, or launch the server with --allow-any-path.");
 }
 
 struct DocumentPaths {
@@ -1041,7 +1666,10 @@ DocumentPaths resolveDocument(const Options& options, const std::string& input) 
     requested = fs::weakly_canonical(requested);
     assertAllowed(options, requested);
     if (!fs::is_regular_file(requested)) throw std::runtime_error("File does not exist: " + input);
-    if (lower_wide(requested.extension().wstring()) != L".xml" && lower_wide(requested.extension().wstring()) != L".mxl") throw std::runtime_error("Unsupported file extension.");
+    if (lower_wide(requested.extension().wstring()) != L".xml"
+            && lower_wide(requested.extension().wstring()) != L".form"
+            && lower_wide(requested.extension().wstring()) != L".mxl"
+            && lower_wide(requested.extension().wstring()) != L".mxlx") throw std::runtime_error("Unsupported file extension.");
     fs::path resolved = requested;
     if (lower_wide(requested.extension().wstring()) == L".xml"
         && lower_wide(requested.parent_path().filename().wstring()) == L"forms") {
@@ -1064,6 +1692,77 @@ Document loadDocument(const Options& options, const std::string& input) {
     document.resolvedPath = paths.resolved;
     document.content = read_text_file(document.resolvedPath, options.maxBytes, document.encoding);
     document.size = fs::file_size(document.resolvedPath);
+    return document;
+}
+
+std::string documentKind(const fs::path& resolvedPath, const std::string& content);
+
+/* open_preview with base_path: the file at path compared with base_path, the
+ * earlier version (a copy from git, another branch or configuration). */
+/* base_revision: the same file as git holds it at a revision, read with
+ * BSLEdit's git code (gitquery.cpp) - "index" or an empty name for what is
+ * staged, otherwise anything git accepts: HEAD, HEAD~2, a branch, a tag, a sha. */
+Document loadRevision(const Options& options, const Document& document, const std::string& revision) {
+    const std::wstring rev = revision == "index" ? std::wstring() : wide_from_utf8(revision);
+    if (!git::ValidRevision(rev)) throw std::runtime_error("base_revision is not a valid git revision name: " + revision);
+    if (git::Executable().empty()) throw std::runtime_error("base_revision needs git: git.exe was not found in PATH.");
+    git::FileInfo info = git::Describe(document.resolvedPath.wstring(), 1);
+    if (!info.ok) throw std::runtime_error("base_revision: " + utf8_from_wide(info.error) + ": " + utf8_from_wide(document.resolvedPath.wstring()));
+    const git::RunResult shown = git::Run(info.root, {L"show", rev + L":" + info.relative}, options.maxBytes + 1, 15000);
+    if (!shown.started) throw std::runtime_error("base_revision: git could not be started.");
+    if (shown.timedOut) throw std::runtime_error("base_revision: git did not answer in time.");
+    if (shown.code != 0)
+        throw std::runtime_error(rev.empty() ? "base_revision: the file is not in the git index."
+                                             : "base_revision: git has no such revision of this file: " + revision
+                                                   + " (" + utf8_from_wide(info.relative) + ").");
+    if (shown.out.size() > options.maxBytes) throw std::runtime_error("base_revision: that version of the file is too large.");
+    Document base;
+    base.requestedPath = document.resolvedPath;
+    base.resolvedPath = document.resolvedPath;
+    base.content = utf8_from_wide(decode_text_bytes(reinterpret_cast<const unsigned char*>(shown.out.data()),
+                                                        shown.out.size(), base.encoding));
+    base.baseRevision = revision.empty() ? "index" : revision;
+    if (!rev.empty()) {
+        /* The page names the commit, not only the ref: "HEAD" says nothing
+         * about which version it is. */
+        const git::RunResult described = git::Run(info.root,
+            {L"log", L"-1", L"--date=format:%d.%m.%Y %H:%M", L"--format=%h %ad %s", rev, L"--"}, 4096, 15000);
+        if (described.started && !described.timedOut && described.code == 0) {
+            std::string line = described.out;
+            while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+            base.baseDescription = line;
+        }
+    }
+    return base;
+}
+
+Document loadComparison(const Options& options, const std::string& input, const std::string& baseInput,
+                        const std::string& baseRevision = {}) {
+    Document document = loadDocument(options, input);
+    if (!baseInput.empty() && !baseRevision.empty()) throw std::runtime_error("Pass either base_path or base_revision, not both.");
+    if (!baseRevision.empty()) {
+        Document base = loadRevision(options, document, baseRevision);
+        if (lower_wide(document.resolvedPath.extension().wstring()) == L".mxl")
+            throw std::runtime_error("base_revision: a binary MXL file cannot be compared; use Template.xml.");
+        document.hasBase = true;
+        document.basePath = base.resolvedPath;
+        document.baseRevision = base.baseRevision;
+        document.baseDescription = base.baseDescription;
+        document.baseContent = std::move(base.content);
+        return document;
+    }
+    if (baseInput.empty()) return document;
+    Document base = loadDocument(options, baseInput);
+    if (lower_wide(document.resolvedPath.extension().wstring()) == L".mxl"
+        || lower_wide(base.resolvedPath.extension().wstring()) == L".mxl")
+        throw std::runtime_error("base_path: a binary MXL file cannot be compared; use Template.xml.");
+    const std::string kind = documentKind(document.resolvedPath, document.content);
+    const std::string baseKind = documentKind(base.resolvedPath, base.content);
+    if (kind != baseKind)
+        throw std::runtime_error("base_path must be the same kind of document as path: " + baseKind + " vs " + kind + ".");
+    document.hasBase = true;
+    document.basePath = base.resolvedPath;
+    document.baseContent = std::move(base.content);
     return document;
 }
 
@@ -1131,36 +1830,39 @@ void write_file_replacing(const fs::path& rawPath, const std::string& bytes) {
 std::string argString(const Json* args, const std::string& name) { const auto* value = args && args->kind == Json::Kind::Object ? args->get(name) : nullptr; return value ? value->asString() : std::string(); }
 bool argBool(const Json* args, const std::string& name) { const auto* value = args && args->kind == Json::Kind::Object ? args->get(name) : nullptr; return value && value->asBool(); }
 
-std::string documentKind(const fs::path& resolvedPath) {
+/* A data composition schema is also stored as Template.xml; its root element
+ * tells it apart from a spreadsheet template. */
+std::string documentKind(const fs::path& resolvedPath, const std::string& content) {
     const auto filename = lower_wide(resolvedPath.filename().wstring());
-    if (filename == L"form.xml") return "managed-form";
-    if (filename == L"template.xml") return "spreadsheet-template";
+    if (filename == L"form.xml" || lower_wide(resolvedPath.extension().wstring()) == L".form") return "managed-form";
+    if (content.substr(0, 1024).find("<DataCompositionSchema") != std::string::npos) return "dcs";
+    if (filename == L"template.xml" || lower_wide(resolvedPath.extension().wstring()) == L".mxlx") return "spreadsheet-template";
     if (lower_wide(resolvedPath.extension().wstring()) == L".mxl") return "mxl";
     return "xml";
 }
 
 std::string viewingToolSchemas() {
-    return u8R"JSON({"name":"open_preview","description":"Open and render a visual preview of a 1C:Enterprise managed form, form layout, spreadsheet template, or MXL file. Use this when the user asks to show a 1C form visually, open a form layout, inspect the form interface, or see how the form looks. Do not launch 1C:Enterprise or the configurator, and do not show XML source when a visual preview is requested. A metadata descriptor such as Forms/ФормаДокумента.xml is automatically resolved to Forms/ФормаДокумента/Ext/Form.xml. Показывает визуальное представление формы или макета 1С, а не исходный XML. Используйте для запросов «покажи форму», «открой макет формы», «покажи визуально» и «посмотри внешний вид формы». Не запускайте 1С и не открывайте XML-редактор. Decide the audience before calling: audience=\"user\" when the user asks to show, open or see a form or template (\"покажи\", \"открой\", \"хочу посмотреть\") — it opens a window on the user's screen; audience=\"agent\" when you only need the preview yourself (inspect_preview, capture_preview, checking your own edit) — it renders in a hidden browser the user never sees, and your screenshots are not shown to the user either. Each opened file is a separate preview with its own preview_id and URL; opening another file does not replace earlier previews, so several can be shown at once. Reopening the same file reuses its preview. Сначала решите, для кого открываете: audience=\"user\" — пользователь просит показать или открыть (окно на его экране); audience=\"agent\" — превью нужно только вам (скрытый браузер, пользователь ничего не видит). Каждый файл открывается отдельным превью со своей ссылкой.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Absolute or workspace-relative path to Form.xml, a Forms/ИмяФормы.xml descriptor, Template.xml, or an MXL file."},"audience":{"type":"string","enum":["user","agent"],"description":"user: the user asked to see it, open a window on their screen. agent: for your own inspection, render hidden."},"show":{"type":"boolean","description":"Deprecated spelling of audience: true = user, false = agent. Ignored when audience is given."}},"required":["path","audience"]},"outputSchema":{"type":"object","properties":{"requestedPath":{"type":"string"},"resolvedPath":{"type":"string"},"path":{"type":"string"},"previewId":{"type":"string"},"audience":{"type":"string","enum":["user","agent"]},"previewUrl":{"type":"string"},"presentation":{"type":"string","enum":["hidden","window","client","unavailable"]},"kind":{"type":"string","enum":["managed-form","spreadsheet-template","mxl","xml"]},"size":{"type":"integer"},"encoding":{"type":"string"}},"required":["requestedPath","resolvedPath","previewUrl","kind","size","encoding"]},"annotations":{"readOnlyHint":true}},{"name":"preview","description":"Work with an open 1C preview; pass operation and that operation's arguments. Open a file with open_preview first and take screenshots with capture_preview; preview_id picks one of several open previews, the last used one by default. Operations: inspect — element and page ids, captions, visibility, nesting, tabs and scroll areas, narrowed by query and visible_only; use it to discover ids before navigating or capturing; switch_tab — activate a page by page_id (pages_id for a nested set); select — reveal the parent pages of element_id, highlight it and scroll it into view; scroll — move target document, active-page, table or spreadsheet by delta_x/delta_y or to x/y (element_id picks the table or field); reload — re-read the file after it changed, keeping the current view; url — the loopback URL of that preview plus every open preview with its previewId, path and previewUrl; close — end one preview (preview_id) or all of them, leaving every source file alone and their URLs dead. Инспекция, вкладки, выделение, прокрутка, перечитывание и закрытие превью.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["inspect","switch_tab","select","scroll","reload","url","close"]},"preview_id":{"type":"string","description":"Preview to act on, from open_preview; the last used preview by default."},"query":{"type":"string","description":"inspect: narrow the listing to matching names and captions."},"visible_only":{"type":"boolean","description":"inspect: skip hidden elements."},"page_id":{"type":"string","description":"switch_tab: the page to activate."},"pages_id":{"type":"string","description":"switch_tab: the nested page set that owns page_id."},"element_id":{"type":"string","description":"select: the element to highlight; scroll: the table or spreadsheet field to move."},"target":{"type":"string","enum":["document","active-page","table","spreadsheet"],"description":"scroll: what to move."},"delta_x":{"type":"number"},"delta_y":{"type":"number"},"x":{"type":"number"},"y":{"type":"number"}},"required":["operation"]},"annotations":{"readOnlyHint":true}},{"name":"capture_preview","description":"Capture the opened 1C preview viewport, full document, or one visible element as PNG. Use this for screenshots and visual comparison after navigating to the requested area.","inputSchema":{"type":"object","properties":{"preview_id":{"type":"string","description":"Preview to act on, from open_preview; the last used preview by default."},"scope":{"type":"string","enum":["viewport","document","element"]},"element_id":{"type":"string"}}},"annotations":{"readOnlyHint":true}})JSON";
+    return u8R"JSON({"name":"open_preview","description":"Render a visual preview of a 1C managed form (Form.xml, Form.form), spreadsheet template (Template.xml, .mxlx), data composition schema (СКД, Template.xml with a DataCompositionSchema root) or MXL file. Use it whenever the user wants to show a 1C form visually or see how a form or template looks (\"покажи форму\", \"открой форму\", \"как выглядит макет\"); do not show XML source and do not launch 1C:Enterprise or the configurator. A descriptor Forms/Name.xml resolves to Forms/Name/Ext/Form.xml. audience is required: \"user\" when the user asked to show or open it (a window on their screen); \"agent\" when only you need it, e.g. to check your own edit (a hidden browser the user never sees; your capture_preview images do not reach the user either). Each file gets its own preview_id and URL; earlier previews stay open and reopening a file reuses its preview. base_path or base_revision shows changes instead of the plain preview.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Form.xml, Form.form, a Forms/Name.xml descriptor, Template.xml (spreadsheet template or data composition schema), .mxlx or .mxl; absolute or workspace-relative."},"audience":{"type":"string","enum":["user","agent"],"description":"user: the user asked to see it, a window opens on their screen. agent: your own inspection, rendered hidden."},"interface_mode":{"type":"string","enum":["Auto","Taxi","Version85"],"description":"Managed forms: Auto (default) infers the interface from the form; Taxi forces the legacy interface, Version85 the clean 8.5 one."},"base_path":{"type":"string","description":"Earlier version of the same form, Template.xml or data composition schema (e.g. a copy from git or another configuration). The preview then shows what changed from base_path to path: changed properties, moved, added and removed items, cells and areas, side by side where possible."},"base_revision":{"type":"string","description":"Compare with the same file in git instead of base_path: HEAD, HEAD~1, a branch, tag or commit, or index for the staged version. Needs a git working tree and git.exe on PATH."}},"required":["path","audience"]},"outputSchema":{"type":"object","properties":{"requestedPath":{"type":"string"},"resolvedPath":{"type":"string"},"path":{"type":"string"},"previewId":{"type":"string"},"audience":{"type":"string","enum":["user","agent"]},"previewUrl":{"type":"string"},"presentation":{"type":"string","enum":["hidden","window","editor","client","unavailable"]},"kind":{"type":"string","enum":["managed-form","spreadsheet-template","dcs","mxl","xml"]},"size":{"type":"integer"},"encoding":{"type":"string"}},"required":["requestedPath","resolvedPath","previewUrl","kind","size","encoding"]},"annotations":{"readOnlyHint":true}},{"name":"preview","description":"Act on an open 1C preview; open it with open_preview first. preview_id picks the preview, the last used one by default. Operations:\ninspect — page and element ids, captions, visibility, nesting, tabs and scroll areas (narrow with query, visible_only); run it first to learn ids.\nswitch_tab — activate page_id (pages_id for a nested page set).\nselect — reveal the pages holding element_id, highlight it and scroll it into view.\nscroll — move target by delta_x/delta_y or to x/y, in pixels; element_id picks the table or spreadsheet field.\nreload — re-read the file after it changed, keeping the view.\nannotations — the user's open annotations on this preview; include_resolved adds the resolved ones.\nresolve_annotation — after handling annotation_id, mark it resolved with a short resolution; the user accepts or reopens it. Never delete the user's annotations.\nadd_annotation — pin an annotation for the user on element_id (a spreadsheet cell rNcM, to_element_id for a range) with text, to point something out; element_name labels it in the list.\nremove_annotation — delete annotation_id, only one you added.\nurl — URL of this preview and of every open one.\nclose — close preview_id, or every preview when omitted; source files are not touched.\nAnnotations (\"аннотации\", \"пометки\" in a form or template) always mean these operations: they live in the preview, not in Form.xml or Template.xml, so never add cell notes or comments to the file for them. To add some for the user: open_preview with audience=\"user\", inspect for ids (cells are rNcM), then add_annotation.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["inspect","switch_tab","select","scroll","reload","annotations","resolve_annotation","add_annotation","remove_annotation","url","close"]},"preview_id":{"type":"string","description":"Preview to act on, from open_preview; the last used preview by default."},"query":{"type":"string","description":"inspect: narrow the listing to matching names and captions."},"visible_only":{"type":"boolean","description":"inspect: skip hidden elements."},"page_id":{"type":"string","description":"switch_tab: the page to activate."},"pages_id":{"type":"string","description":"switch_tab: the nested page set that owns page_id."},"element_id":{"type":"string","description":"select: the element to highlight; scroll: the table or spreadsheet field to move."},"target":{"type":"string","enum":["document","active-page","table","spreadsheet"],"description":"scroll: what to move."},"delta_x":{"type":"number"},"delta_y":{"type":"number"},"x":{"type":"number"},"y":{"type":"number"},"include_resolved":{"type":"boolean","description":"annotations: also list the resolved ones."},"annotation_id":{"type":"string","description":"resolve_annotation, remove_annotation: the id from operation=annotations."},"text":{"type":"string","description":"add_annotation: the note for the user."},"to_element_id":{"type":"string","description":"add_annotation: last cell of a spreadsheet range, rNcM."},"element_name":{"type":"string","description":"add_annotation: how the list names the element; cells are named R1C1 by default."},"resolution":{"type":"string","description":"resolve_annotation: what you changed, shown to the user next to the note."}},"required":["operation"]},"annotations":{"readOnlyHint":true}},{"name":"capture_preview","description":"Take a PNG of an open 1C preview after navigating with preview (switch_tab, select, scroll). The image comes back to you only; to show the user, open the preview with audience=\"user\".","inputSchema":{"type":"object","properties":{"preview_id":{"type":"string","description":"Preview to act on, from open_preview; the last used preview by default."},"scope":{"type":"string","description":"viewport (default), document — the whole page, or element — element_id only.","enum":["viewport","document","element"]},"element_id":{"type":"string","description":"scope=element: an element id from preview operation=inspect."}}},"annotations":{"readOnlyHint":true}})JSON";
 }
 
 /* Tools that convert and read a spreadsheet template (Template.xml): always on. */
 std::string templateToolSchemas() {
-    return u8R"JSON({"name":"convert_xlsx_to_template","description":"Convert an Excel workbook (.xlsx) into a 1C spreadsheet template Ext/Template.xml and open it in the preview. Use this when a print form layout is given as xlsx. Text, fonts, colors, fills, borders, alignment, column widths, row heights, merges and headers/footers are kept; Excel defined names become named areas, a cell with exactly [Name] becomes a parameter, text with [Name] inside becomes a template. The result lists areas, parameters and what was not converted. Then check it with capture_preview and list_markup, and refine the markup with edit_template (operations set_area, set_parameter) when that tool is available. Конвертирует макет печатной формы из xlsx в Template.xml 1С и сразу открывает превью.","inputSchema":{"type":"object","properties":{"xlsx_path":{"type":"string","description":"Path to the .xlsx workbook."},"output_path":{"type":"string","description":"Path of the Template.xml to write, for example Templates/ПФ_MXL_Акт/Ext/Template.xml."},"sheet":{"type":"string","description":"Sheet name; the first visible sheet by default."},"overwrite":{"type":"boolean","description":"Replace an existing output file. Default false."}},"required":["xlsx_path","output_path"]},"annotations":{"readOnlyHint":false,"destructiveHint":false}},{"name":"list_markup","description":"List the markup of a 1C spreadsheet template (Template.xml): named areas with their rows/columns, parameter cells and template cells, all with 1-based row and column numbers as the preview shows them. Показывает области, параметры и шаблоны макета.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Template.xml."}},"required":["path"]},"annotations":{"readOnlyHint":true}},{"name":"validate_template","description":"Check a 1C spreadsheet template (Template.xml) for broken structure: format, font and line references, cells and merges outside the document or column set, malformed or duplicate named areas, parameter cells without names. Run it after editing a template. Проверяет макет на ошибки структуры.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Template.xml."}},"required":["path"]},"annotations":{"readOnlyHint":true}})JSON";
+    return u8R"JSON({"name":"convert_xlsx_to_template","description":"Convert an Excel print form layout (.xlsx) into a 1C spreadsheet template Ext/Template.xml and open its preview. Keeps text, fonts, colors, fills, borders, alignment, sizes, merges and headers/footers; Excel defined names become named areas, a cell of exactly [Name] becomes a parameter, text containing [Name] a template. The result lists areas, parameters and what was not converted; check it with capture_preview and list_markup, then refine areas and parameters with edit_template.","inputSchema":{"type":"object","properties":{"xlsx_path":{"type":"string","description":"Path to the .xlsx workbook."},"output_path":{"type":"string","description":"Path of the Template.xml to write, for example Templates/ПФ_MXL_Акт/Ext/Template.xml."},"sheet":{"type":"string","description":"Sheet name; the first visible sheet by default."},"overwrite":{"type":"boolean","description":"Replace an existing output file. Default false."}},"required":["xlsx_path","output_path"]},"annotations":{"readOnlyHint":false,"destructiveHint":false}},{"name":"list_markup","description":"List the markup of a 1C spreadsheet template (Template.xml): named areas with their rows/columns, parameter and template cells, all 1-based as the preview shows them.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Template.xml."}},"required":["path"]},"annotations":{"readOnlyHint":true}},{"name":"validate_template","description":"Check a 1C spreadsheet template (Template.xml) for broken structure: dangling format, font or line references, cells and merges outside the grid or column set, malformed or duplicate named areas, parameter cells without names. Run it after a series of edits.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Template.xml."}},"required":["path"]},"annotations":{"readOnlyHint":true}})JSON";
 }
 
 /* The one tool that changes a template; --no-template-edit-tools leaves it out. */
 std::string templateEditToolSchemas() {
-    return u8R"JSON({"name":"edit_template","description":"Edit a 1C spreadsheet template (Template.xml) in place; pass path, operation and that operation's arguments. Rows and columns are 1-based as in the preview; an open preview of the file is refreshed, so check it with capture_preview, and run validate_template after a series of edits. Operations: set_area — name, begin_row/end_row and/or begin_column/end_column (rows only → Rows area, columns only → Columns, both → Rectangle), remove=true deletes the area; set_parameter — row, column and one of name (parameter), template (text with [Name]) or text (plain); detail sets the drill-down parameter, alone or together; set_format — row, column, optional to_row/to_column, and any of font{face,size,bold,italic,underline,strikeout}, horizontal_alignment, vertical_alignment, text_placement, indent, text_color, back_color, border_color (#RRGGBB or style:Name), border / left_border / top_border / right_border / bottom_border (a style name or {style,width}), format (e.g. ЧДЦ=2, ДФ=dd.MM.yyyy), protection; null resets a property; insert_rows / delete_rows / insert_columns / delete_columns — at, count, columns_id for column sets; merges, areas and drawings move with the grid; merge_cells — row, column, rows, columns, or unmerge=true; set_size — column (+to_column) with width in template units, or row (+to_row) with height in points (0 = automatic); set_print_settings — orientation, scale, fit_to_page, paper, copies, black_and_white, first_page_number, top/left/bottom/right_margin and header/footer_size in mm, print_area {begin_row,end_row,begin_column,end_column} or null; set_header_footer — kind header|footer, left/center/right texts ([&НомерСтраницы], [&СтраницВсего], [&Дата], [&Время]), font, remove. Правка макета печатной формы: области, параметры, оформление, строки и колонки, объединения, размеры, печать, колонтитулы.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Template.xml."},"operation":{"type":"string","enum":["set_area","set_parameter","set_format","insert_rows","delete_rows","insert_columns","delete_columns","merge_cells","set_size","set_print_settings","set_header_footer"]},"name":{"type":"string","description":"Area name (set_area) or parameter name (set_parameter); a 1C identifier."},"begin_row":{"type":"integer","minimum":1},"end_row":{"type":"integer","minimum":1},"begin_column":{"type":"integer","minimum":1},"end_column":{"type":"integer","minimum":1},"remove":{"type":"boolean","description":"set_area: remove the named area; set_header_footer: remove the header or footer."},"row":{"type":"integer","minimum":1},"column":{"type":"integer","minimum":1},"template":{"type":"string","description":"Text with [Name] parameters, for example «Счёт № [Номер] от [Дата]»."},"text":{"type":"string","description":"Plain text for the cell."},"detail":{"type":"string","description":"Drill-down parameter name; empty string removes it."},"to_row":{"type":"integer","minimum":1},"to_column":{"type":"integer","minimum":1},"font":{"anyOf":[{"type":"object","properties":{"face":{"type":"string"},"size":{"type":"number"},"bold":{"type":"boolean"},"italic":{"type":"boolean"},"underline":{"type":"boolean"},"strikeout":{"type":"boolean"}}},{"type":"null"}],"description":"set_format, set_header_footer: font changes; null (set_format) returns to the inherited font."},"horizontal_alignment":{"anyOf":[{"type":"string","enum":["Left","Center","Right","Justify","Auto"]},{"type":"null"}]},"vertical_alignment":{"anyOf":[{"type":"string","enum":["Top","Center","Bottom"]},{"type":"null"}]},"text_placement":{"anyOf":[{"type":"string","enum":["Auto","Wrap","Cut","Block"]},{"type":"null"}]},"indent":{"anyOf":[{"type":"integer","minimum":0},{"type":"null"}]},"text_color":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"#RRGGBB or style:/web:/win:Name."},"back_color":{"anyOf":[{"type":"string"},{"type":"null"}]},"border_color":{"anyOf":[{"type":"string"},{"type":"null"}]},"border":{"description":"Line: a style name (None, Solid, Dotted, Dashed, DashDotted, DashDottedDotted, ThinDashed, LargeDashed, ThickDashed, Double) or { style, width }.","anyOf":[{"type":"string"},{"type":"object","properties":{"style":{"type":"string"},"width":{"type":"integer","minimum":1}}},{"type":"null"}]},"left_border":{"description":"Line: a style name (None, Solid, Dotted, Dashed, DashDotted, DashDottedDotted, ThinDashed, LargeDashed, ThickDashed, Double) or { style, width }.","anyOf":[{"type":"string"},{"type":"object","properties":{"style":{"type":"string"},"width":{"type":"integer","minimum":1}}},{"type":"null"}]},"top_border":{"description":"Line: a style name (None, Solid, Dotted, Dashed, DashDotted, DashDottedDotted, ThinDashed, LargeDashed, ThickDashed, Double) or { style, width }.","anyOf":[{"type":"string"},{"type":"object","properties":{"style":{"type":"string"},"width":{"type":"integer","minimum":1}}},{"type":"null"}]},"right_border":{"description":"Line: a style name (None, Solid, Dotted, Dashed, DashDotted, DashDottedDotted, ThinDashed, LargeDashed, ThickDashed, Double) or { style, width }.","anyOf":[{"type":"string"},{"type":"object","properties":{"style":{"type":"string"},"width":{"type":"integer","minimum":1}}},{"type":"null"}]},"bottom_border":{"description":"Line: a style name (None, Solid, Dotted, Dashed, DashDotted, DashDottedDotted, ThinDashed, LargeDashed, ThickDashed, Double) or { style, width }.","anyOf":[{"type":"string"},{"type":"object","properties":{"style":{"type":"string"},"width":{"type":"integer","minimum":1}}},{"type":"null"}]},"format":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"1C format string, e.g. ЧДЦ=2 or ДФ=dd.MM.yyyy."},"protection":{"type":"boolean"},"at":{"type":"integer","minimum":1,"description":"Insert before this row/column, or delete starting from it."},"count":{"type":"integer","minimum":1,"description":"Rows or columns to insert or delete; 1 by default."},"columns_id":{"type":"string","description":"Column set id for column edits; the default set when omitted."},"rows":{"type":"integer","minimum":1},"columns":{"type":"integer","minimum":1},"unmerge":{"type":"boolean"},"width":{"type":"number","minimum":0},"height":{"type":"number","minimum":0},"orientation":{"type":"string","enum":["Portrait","Landscape"]},"scale":{"type":"integer","minimum":10,"maximum":400},"fit_to_page":{"type":"boolean"},"paper":{"type":"integer","minimum":0},"copies":{"type":"integer","minimum":0},"black_and_white":{"type":"boolean"},"first_page_number":{"type":"integer","minimum":0},"top_margin":{"type":"number","minimum":0},"left_margin":{"type":"number","minimum":0},"bottom_margin":{"type":"number","minimum":0},"right_margin":{"type":"number","minimum":0},"header_size":{"type":"number","minimum":0},"footer_size":{"type":"number","minimum":0},"print_area":{"anyOf":[{"type":"object","properties":{"begin_row":{"type":"integer","minimum":1},"end_row":{"type":"integer","minimum":1},"begin_column":{"type":"integer","minimum":1},"end_column":{"type":"integer","minimum":1}}},{"type":"null"}]},"kind":{"type":"string","enum":["header","footer"]},"left":{"type":"string"},"center":{"type":"string"},"right":{"type":"string"}},"required":["path","operation"]},"annotations":{"readOnlyHint":false,"destructiveHint":true}})JSON";
+    return u8R"JSON({"name":"edit_template","description":"Edit a 1C spreadsheet template (Template.xml) in place: path, operation and that operation's arguments. Rows and columns are 1-based as in the preview. An open preview of the file refreshes; check it with capture_preview and run validate_template after a series of edits. Operations:\nset_area — name and begin_row/end_row and/or begin_column/end_column (rows only → Rows area, columns only → Columns, both → Rectangle); remove=true deletes the area.\nset_parameter — row, column and one of name, template or text; detail alone or with them.\nset_format — row, column (to_row/to_column for a range) and any of font, alignments, text_placement, indent, colors, borders, format, protection; null resets a property.\ninsert_rows, delete_rows, insert_columns, delete_columns — at, count, columns_id; merges, areas and drawings move with the grid.\nmerge_cells — row, column, rows, columns; unmerge=true splits.\nset_size — column (+to_column) with width, or row (+to_row) with height.\nset_print_settings — orientation, scale, fit_to_page, paper, copies, black_and_white, first_page_number, margins, header_size, footer_size, print_area.\nset_header_footer — kind, left/center/right texts, font; remove=true deletes it.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Template.xml."},"operation":{"type":"string","enum":["set_area","set_parameter","set_format","insert_rows","delete_rows","insert_columns","delete_columns","merge_cells","set_size","set_print_settings","set_header_footer"]},"name":{"type":"string","description":"set_area: area name; set_parameter: parameter name. A 1C identifier."},"begin_row":{"type":"integer","minimum":1},"end_row":{"type":"integer","minimum":1},"begin_column":{"type":"integer","minimum":1},"end_column":{"type":"integer","minimum":1},"remove":{"type":"boolean","description":"set_area: remove the named area; set_header_footer: remove the header or footer."},"row":{"type":"integer","description":"The cell row (set_parameter, set_format, merge_cells) or the first row to size (set_size).","minimum":1},"column":{"type":"integer","description":"The cell column (set_parameter, set_format, merge_cells) or the first column to size (set_size).","minimum":1},"template":{"type":"string","description":"Text with [Name] parameters, for example «Счёт № [Номер] от [Дата]»."},"text":{"type":"string","description":"Plain text for the cell."},"detail":{"type":"string","description":"Drill-down parameter name; empty string removes it."},"to_row":{"type":"integer","description":"set_format, set_size: last row of the range.","minimum":1},"to_column":{"type":"integer","description":"set_format, set_size: last column of the range.","minimum":1},"font":{"anyOf":[{"type":"object","properties":{"face":{"type":"string"},"size":{"type":"number"},"bold":{"type":"boolean"},"italic":{"type":"boolean"},"underline":{"type":"boolean"},"strikeout":{"type":"boolean"}}},{"type":"null"}],"description":"set_format, set_header_footer: font changes; null (set_format) returns to the inherited font."},"horizontal_alignment":{"anyOf":[{"type":"string","enum":["Left","Center","Right","Justify","Auto"]},{"type":"null"}]},"vertical_alignment":{"anyOf":[{"type":"string","enum":["Top","Center","Bottom"]},{"type":"null"}]},"text_placement":{"anyOf":[{"type":"string","enum":["Auto","Wrap","Cut","Block"]},{"type":"null"}]},"indent":{"anyOf":[{"type":"integer","minimum":0},{"type":"null"}]},"text_color":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"#RRGGBB or style:/web:/win:Name."},"back_color":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"As text_color."},"border_color":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"As text_color."},"border":{"description":"Line: a style name (None, Solid, Dotted, Dashed, DashDotted, DashDottedDotted, ThinDashed, LargeDashed, ThickDashed, Double) or { style, width }.","anyOf":[{"type":"string"},{"type":"object","properties":{"style":{"type":"string"},"width":{"type":"integer","minimum":1}}},{"type":"null"}]},"left_border":{"description":"As border, for one side."},"top_border":{"description":"As border, for one side."},"right_border":{"description":"As border, for one side."},"bottom_border":{"description":"As border, for one side."},"format":{"anyOf":[{"type":"string"},{"type":"null"}],"description":"1C format string, e.g. ЧДЦ=2 or ДФ=dd.MM.yyyy."},"protection":{"type":"boolean","description":"set_format: protect the cell from editing."},"at":{"type":"integer","minimum":1,"description":"Insert before this row/column, or delete starting from it."},"count":{"type":"integer","minimum":1,"description":"Rows or columns to insert or delete; 1 by default."},"columns_id":{"type":"string","description":"Column set id for column edits; the default set when omitted."},"rows":{"type":"integer","description":"merge_cells: height of the merged block in rows.","minimum":1},"columns":{"type":"integer","description":"merge_cells: width of the merged block in columns.","minimum":1},"unmerge":{"type":"boolean","description":"merge_cells: split the merge starting at row, column."},"width":{"type":"number","description":"set_size: column width in template units.","minimum":0},"height":{"type":"number","description":"set_size: row height in points; 0 = automatic.","minimum":0},"orientation":{"type":"string","enum":["Portrait","Landscape"]},"scale":{"type":"integer","description":"set_print_settings: percent.","minimum":10,"maximum":400},"fit_to_page":{"type":"boolean"},"paper":{"type":"integer","description":"set_print_settings: paper size code as in Windows/Excel, 9 = A4.","minimum":0},"copies":{"type":"integer","minimum":0},"black_and_white":{"type":"boolean"},"first_page_number":{"type":"integer","minimum":0},"top_margin":{"type":"number","description":"set_print_settings: mm, like the other margins and header_size/footer_size.","minimum":0},"left_margin":{"type":"number","minimum":0},"bottom_margin":{"type":"number","minimum":0},"right_margin":{"type":"number","minimum":0},"header_size":{"type":"number","minimum":0},"footer_size":{"type":"number","minimum":0},"print_area":{"anyOf":[{"type":"object","properties":{"begin_row":{"type":"integer","minimum":1},"end_row":{"type":"integer","minimum":1},"begin_column":{"type":"integer","minimum":1},"end_column":{"type":"integer","minimum":1}}},{"type":"null"}],"description":"set_print_settings: the printed range; null clears it."},"kind":{"type":"string","description":"set_header_footer: which one to change.","enum":["header","footer"]},"left":{"type":"string","description":"set_header_footer: text; fields [&НомерСтраницы], [&СтраницВсего], [&Дата], [&Время]."},"center":{"type":"string"},"right":{"type":"string"}},"required":["path","operation"]},"annotations":{"readOnlyHint":false,"destructiveHint":true}})JSON";
 }
 
 /* Tools that read a managed form (Ext/Form.xml): always on. */
 std::string formToolSchemas() {
-    return u8R"JSON({"name":"list_form_elements","description":"List the items of a 1C managed form (Ext/Form.xml, or its Forms/Name.xml descriptor) as a tree: name, kind (InputField, UsualGroup, Page, Table, Button…), parent and data path. Use the names with edit_form. Показывает дерево элементов формы.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Ext/Form.xml or the Forms/Name.xml descriptor."}},"required":["path"]},"annotations":{"readOnlyHint":true}},{"name":"validate_form","description":"Check a 1C managed form (Ext/Form.xml) for broken structure: duplicate ids, missing companion nodes (ContextMenu, ExtendedTooltip…), data paths without a form attribute, buttons without a command, events without a handler, main attribute count, format version. Run it after editing a form. Проверяет форму на ошибки структуры.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Ext/Form.xml or the Forms/Name.xml descriptor."}},"required":["path"]},"annotations":{"readOnlyHint":true}})JSON";
+    return u8R"JSON({"name":"list_form_elements","description":"List the items of a 1C managed form (Ext/Form.xml or its Forms/Name.xml descriptor) as a tree: name, kind (InputField, UsualGroup, Page, Table, Button…), parent and data path. edit_form addresses items by these names.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Ext/Form.xml or the Forms/Name.xml descriptor."}},"required":["path"]},"annotations":{"readOnlyHint":true}},{"name":"validate_form","description":"Check a 1C managed form (Ext/Form.xml) for broken structure: duplicate ids, missing companion nodes (ContextMenu, ExtendedTooltip…), data paths without a form attribute, buttons without a command, events without a handler, main attribute count, format version. Run it after a series of edits.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Ext/Form.xml or the Forms/Name.xml descriptor."}},"required":["path"]},"annotations":{"readOnlyHint":true}})JSON";
 }
 
 /* The tool that changes a form; --no-form-edit-tools leaves it out. */
 std::string formEditToolSchemas() {
-    return u8R"JSON({"name":"edit_form","description":"Edit a 1C managed form (Ext/Form.xml) in place; pass path, operation and that operation's arguments. Items are addressed by name (see list_form_elements or preview with operation=inspect); only the touched nodes change, the rest of the file stays byte for byte. An open preview of the file is refreshed, so check it with capture_preview, and run validate_form after a series of edits. Operations: set_properties — element (omit or Form for the form itself) and properties {PropertyNode: value}: the XML node name as Designer writes it (Title, ToolTip, Visible, Enabled, ReadOnly, Width, Height, AutoMaxWidth, HorizontalStretch, VerticalStretch, TitleLocation, Group, Representation, ShowTitle…); multilingual properties take a string (ru) or {ru, en}; null returns a property to its default; enum values are checked. A color takes style:Name, web:Name, win:Name or #RRGGBB; a font takes {ref: \"style:Name\"} or {face, height, bold, italic, underline, strikeout, scale}; a picture takes CommonPicture.Name or StdPicture.Name; a choice list and the role tables are not changed. move_element — element and into (group, page, pages, table, command bar or Form) and/or after/before a sibling. add_element — element (the new name), kind (InputField, CheckBoxField, RadioButtonField, LabelField, LabelDecoration, PictureField, PictureDecoration, CalendarField, Table, UsualGroup, ColumnGroup, Pages, Page, Button, ButtonGroup, Popup, CommandBar and the document fields), into and/or after/before, and properties as in set_properties; the companion nodes (ContextMenu, ExtendedTooltip, a table's panels) and the ids are generated. remove_element — element with its companions and nested items; refused while standard commands or conditional appearance refer to it unless force=true; handlers in the form module are not touched. set_attribute — name plus type for a new form attribute, and columns for a table attribute (string, string(100), string(1,fixed), boolean, number(15,2), number(15,2,nonnegative), date, dateTime, time, CatalogRef.Имя, DocumentObject.Имя, EnumRef.Имя, DefinedType.Имя, ValueTable, several types through |, or a ready cfg:/v8:/xs: name), title, main, saved_data, fill_check; remove=true deletes it, refused while a data path uses it unless force=true. set_command — name, action (the handler name in the form module, which is not created), title, tooltip, shortcut, representation, modifies_saved_data, current_row_use; remove=true deletes it, refused while a button uses it unless force=true. Правка управляемой формы: свойства, перенос и удаление элементов.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Ext/Form.xml or the Forms/Name.xml descriptor."},"operation":{"type":"string","enum":["set_properties","add_element","move_element","remove_element","set_attribute","set_command"]},"element":{"type":"string","description":"Item name; for set_properties omit or pass Form to change the form."},"kind":{"type":"string","description":"add_element: the kind of item to create."},"name":{"type":"string","description":"set_attribute, set_command: the attribute or command name."},"type":{"type":"string","description":"set_attribute: the type spelling, for example string(100) or CatalogRef.Организации."},"title":{"description":"set_attribute, set_command: a string (ru) or { ru, en }; null removes it.","anyOf":[{"type":"string"},{"type":"object"},{"type":"null"}]},"tooltip":{"anyOf":[{"type":"string"},{"type":"object"},{"type":"null"}]},"action":{"type":"string","description":"set_command: the handler procedure name."},"shortcut":{"type":"string","description":"set_command: for example Ctrl+Enter or F5."},"representation":{"type":"string","enum":["Auto","Text","Picture","TextPicture"]},"modifies_saved_data":{"type":"boolean"},"current_row_use":{"type":"string","enum":["Auto","Use","DontUse"]},"main":{"type":"boolean","description":"set_attribute: the main attribute of the form."},"saved_data":{"type":"boolean"},"fill_check":{"type":"string","enum":["ShowError","DontCheck"]},"columns":{"type":"array","description":"set_attribute: columns of a ValueTable or ValueTree attribute, [{ name, type, title, remove }]; ids are numbered inside the attribute.","items":{"type":"object"}},"remove":{"type":"boolean","description":"set_attribute, set_command: delete the attribute or command."},"properties":{"type":"object","description":"set_properties: {PropertyNode: value}; null resets to the default.","additionalProperties":true},"into":{"type":"string","description":"move_element: target container name or Form."},"after":{"type":"string","description":"move_element: place after this sibling."},"before":{"type":"string","description":"move_element: place before this sibling."},"force":{"type":"boolean","description":"remove_element: remove even when other nodes refer to the item."}},"required":["path","operation"]},"annotations":{"readOnlyHint":false,"destructiveHint":true}})JSON";
+    return u8R"JSON({"name":"edit_form","description":"Edit a 1C managed form (Ext/Form.xml) in place: path, operation and that operation's arguments. Items are addressed by name (list_form_elements or preview operation=inspect); only the touched nodes change. An open preview of the file refreshes; check it with capture_preview and run validate_form after a series of edits. Handlers in the form module are never created or removed. Operations:\nset_properties — element (omit or Form for the form itself) and properties.\nadd_element — element (the new name), kind, into and/or after/before, optional properties; companion nodes and ids are generated.\nmove_element — element, into and/or after/before.\nremove_element — element with its companions and nested items.\nset_attribute — name, type, optional columns, title, main, saved_data, fill_check; remove=true deletes it.\nset_command — name, action, title, tooltip, shortcut, representation, modifies_saved_data, current_row_use; remove=true deletes it.\nRemoving something still referenced (by standard commands, conditional appearance, a data path or a button) is refused unless force=true.","inputSchema":{"type":"object","properties":{"path":{"type":"string","description":"Path to Ext/Form.xml or the Forms/Name.xml descriptor."},"operation":{"type":"string","enum":["set_properties","add_element","move_element","remove_element","set_attribute","set_command"]},"element":{"type":"string","description":"Item name; add_element: the new item's name; set_properties: omit or pass Form for the form itself."},"kind":{"type":"string","enum":["InputField","CheckBoxField","RadioButtonField","LabelField","LabelDecoration","PictureField","PictureDecoration","CalendarField","TextDocumentField","SpreadSheetDocumentField","FormattedDocumentField","ChartField","Table","UsualGroup","ColumnGroup","Pages","Page","Button","ButtonGroup","Popup","CommandBar"],"description":"add_element: the kind of item to create."},"name":{"type":"string","description":"set_attribute, set_command: the attribute or command name."},"type":{"type":"string","description":"set_attribute: string, string(100), string(1,fixed), boolean, number(15,2), number(15,2,nonnegative), date, dateTime, time, CatalogRef.Имя, DocumentObject.Имя, EnumRef.Имя, DefinedType.Имя, ValueTable, several joined with |, or a ready cfg:/v8:/xs: name."},"title":{"description":"set_attribute, set_command: a string (ru) or { ru, en }; null removes it.","anyOf":[{"type":"string"},{"type":"object"},{"type":"null"}]},"tooltip":{"anyOf":[{"type":"string"},{"type":"object"},{"type":"null"}],"description":"set_command: a string (ru) or { ru, en }; null removes it."},"action":{"type":"string","description":"set_command: the handler procedure name in the form module; the procedure itself is not created."},"shortcut":{"type":"string","description":"set_command: for example Ctrl+Enter or F5."},"representation":{"type":"string","enum":["Auto","Text","Picture","TextPicture"]},"modifies_saved_data":{"type":"boolean"},"current_row_use":{"type":"string","enum":["Auto","Use","DontUse"]},"main":{"type":"boolean","description":"set_attribute: the main attribute of the form."},"saved_data":{"type":"boolean"},"fill_check":{"type":"string","enum":["ShowError","DontCheck"]},"columns":{"type":"array","description":"set_attribute: columns of a ValueTable or ValueTree attribute, [{ name, type, title, remove }]; ids are numbered inside the attribute.","items":{"type":"object"}},"remove":{"type":"boolean","description":"set_attribute, set_command: delete the attribute or command."},"properties":{"type":"object","description":"set_properties, add_element: {PropertyNode: value}, the XML node names as Designer writes them (Title, ToolTip, Visible, Enabled, ReadOnly, Width, Height, AutoMaxWidth, HorizontalStretch, VerticalStretch, TitleLocation, Group, Representation, ShowTitle…); enum values are checked and null resets to the default. Multilingual text: a string (ru) or {ru, en}. Color: style:Name, web:Name, win:Name or #RRGGBB. Font: {ref: \"style:Name\"} or {face, height, bold, italic, underline, strikeout, scale}. Picture: CommonPicture.Name or StdPicture.Name. Choice lists and role tables cannot be set.","additionalProperties":true},"into":{"type":"string","description":"add_element, move_element: target container (group, page, pages, table, command bar) or Form."},"after":{"type":"string","description":"add_element, move_element: place after this sibling."},"before":{"type":"string","description":"add_element, move_element: place before this sibling."},"force":{"type":"boolean","description":"remove_element, and set_attribute/set_command with remove=true: delete even while other nodes refer to it."}},"required":["path","operation"]},"annotations":{"readOnlyHint":false,"destructiveHint":true}})JSON";
 }
 
 std::string toolSchemas(bool templateEditTools, bool formEditTools) {
@@ -1180,14 +1882,27 @@ std::string success(std::string_view id, std::string value, std::string image = 
     return output;
 }
 
+/* A note for the agent that the file was rewritten under it. It goes into the
+ * text content AND into structuredContent: a client that reads only the
+ * structured output - Claude Code does - would never see the prose line. */
+std::string withExternalChange(const std::string& value) {
+    /* The page answers with a JSON object, so the flag goes in as its first
+     * member; an empty answer becomes an object carrying only the flag. */
+    const std::string flag = "\"externalChange\":true";
+    if (value.empty() || value == "{}") return "{" + flag + "}";
+    if (value.front() != '{') return value;
+    return "{" + flag + "," + value.substr(1);
+}
+
 std::string failure(std::string_view id, const std::string& message) {
     return "{\"jsonrpc\":\"2.0\",\"id\":" + std::string(id) + ",\"result\":{\"isError\":true,\"content\":[{\"type\":\"text\",\"text\":" + json_string(message) + "}]}}";
 }
 
 class McpApp {
 public:
-    explicit McpApp(Options options) : options_(std::move(options)), preview_(options_.base / L"app" / L"web") {
+    explicit McpApp(Options options) : options_(std::move(options)), preview_(resolve_assets(options_)) {
         preview_.setContextAccess([this](const fs::path& candidate) { return allowed(options_, candidate); });
+        preview_.setEditorLocator([this] { return editor(); });
     }
 
     std::string request(const Json& request) {
@@ -1197,15 +1912,14 @@ public:
         if (!id && method.rfind("notifications/", 0) == 0) return {};
         try {
             if (method == "initialize") {
-                const std::string instructions = u8"This server provides visual inspection of 1C form layouts. When a user asks to see, show, inspect, or open a 1C form, call open_preview instead of opening XML source or launching 1C:Enterprise/configurator. Prefer and automatically resolve nested Ext/Form.xml layouts from Forms/ИмяФормы.xml descriptors. Call preview with operation=inspect after opening to discover page and element IDs; the same tool switches tabs, selects, scrolls, reloads and closes, and preview_id picks one of several open previews. Every open_preview call must state its audience: \"user\" when the user asks to show, open or see something (a window appears on the user's screen), \"agent\" when the preview is only for your own inspection (a hidden browser; neither the preview nor your capture_preview images reach the user). Each file opens as its own preview with a preview_id and URL, so several previews stay open at once; pass preview_id to the other tools to target one. Этот сервер предназначен для визуального просмотра макетов форм 1С. Если пользователь просит показать, открыть или осмотреть форму, вызовите open_preview вместо открытия XML или запуска 1С. Для описателей форм используйте вложенный Ext/Form.xml. Инспекция, вкладки, выделение, прокрутка, перечитывание и закрытие — инструмент preview с operation. Для каждого вызова open_preview решите, для кого он: audience=\"user\" — пользователь просит показать (окно на его экране), audience=\"agent\" — только для вас (скрытый браузер, пользователь ничего не видит). Каждый файл — отдельное превью со своей ссылкой и preview_id.";
-                const std::string templateNote = std::string(u8" Print form templates: convert_xlsx_to_template turns an xlsx layout into Template.xml; list_markup shows its areas and parameters, validate_template checks it.")
-                    + (options_.templateEditTools
-                        ? std::string(u8" edit_template changes it (areas, parameters, formats, rows and columns, merges, sizes, print settings, headers and footers); after each change check the refreshed preview with capture_preview.")
-                        : std::string())
-                    + u8" Макет печатной формы: convert_xlsx_to_template, разметка list_markup, проверка validate_template и capture_preview."
-                    + std::string(u8" Managed forms: list_form_elements shows the item tree, validate_form checks Form.xml.")
-                    + (options_.formEditTools
-                        ? std::string(u8" edit_form changes item and form properties, moves and removes items; after each change check the refreshed preview with capture_preview.")
+                const std::string instructions = u8"This server provides visual inspection of 1C form layouts and print templates. When the user asks to show, open or see a 1C form or template (\"покажи форму\", \"открой макет\"), call open_preview with audience=\"user\" instead of opening XML source or launching 1C; audience=\"agent\" is only for your own checks in a hidden browser the user never sees. Forms/Name.xml descriptors resolve to Ext/Form.xml. After opening, preview operation=inspect lists page and element ids for switch_tab, select and scroll; capture_preview takes a PNG. Annotations (\"аннотации\", \"пометки\", \"замечания\" on a form or template) are notes pinned to elements or cells in the open preview, kept by this server and never written to the file: add them with preview operation=add_annotation, read the user's with operation=annotations, answer with resolve_annotation. Do not put them into the XML as cell notes or comments.";
+                const std::string templateNote = std::string(" Print templates: convert_xlsx_to_template turns an xlsx layout into Template.xml; list_markup shows areas and parameters, validate_template checks it")
+                    + (options_.templateEditTools ? std::string(", edit_template changes it") : std::string())
+                    + ". Managed forms: list_form_elements shows the item tree, validate_form checks it"
+                    + (options_.formEditTools ? std::string(", edit_form changes properties, items, attributes and commands") : std::string())
+                    + "."
+                    + (options_.templateEditTools || options_.formEditTools
+                        ? std::string(" After an edit the open preview refreshes: check it with capture_preview and run the matching validate tool.")
                         : std::string());
                 return "{\"jsonrpc\":\"2.0\",\"id\":" + idRaw + ",\"result\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"" ONE_C_FORM_VIEWER_NAME "\",\"version\":\"" ONE_C_FORM_VIEWER_VERSION "\"},\"instructions\":" + json_string(instructions + templateNote) + "}}";
             }
@@ -1221,12 +1935,14 @@ public:
             if (name == "preview") {
                 static const std::map<std::string, std::string> previewOperations{
                     {"inspect", "inspect_preview"}, {"switch_tab", "switch_tab"}, {"select", "select_element"},
-                    {"scroll", "scroll_preview"}, {"reload", "reload_preview"}, {"url", "get_preview_url"},
+                    {"scroll", "scroll_preview"}, {"reload", "reload_preview"}, {"annotations", "get_annotations"},
+                    {"resolve_annotation", "resolve_annotation"}, {"add_annotation", "add_annotation"},
+                    {"remove_annotation", "remove_annotation"}, {"url", "get_preview_url"},
                     {"close", "close_preview"},
                 };
                 const auto found = previewOperations.find(argString(arguments, "operation"));
                 if (found == previewOperations.end())
-                    throw std::runtime_error("operation must be one of inspect, switch_tab, select, scroll, reload, url, close.");
+                    throw std::runtime_error("operation must be one of inspect, switch_tab, select, scroll, reload, annotations, resolve_annotation, add_annotation, remove_annotation, url, close.");
                 name = found->second;
             }
             if (name == "open_preview") {
@@ -1237,27 +1953,43 @@ public:
                 if (!audienceArg.empty() && audienceArg != "user" && audienceArg != "agent")
                     throw std::runtime_error("audience must be \"user\" or \"agent\".");
                 const bool forUser = audienceArg.empty() ? argBool(arguments, "show") : audienceArg == "user";
-                Document document = loadDocument(options_, input);
+                const std::string baseInput = argString(arguments, "base_path");
+                const std::string baseRevision = argString(arguments, "base_revision");
+                Document document = loadComparison(options_, input, baseInput, baseRevision);
+                const fs::path resolvedFile = document.resolvedPath;
                 const std::string requestedPath = utf8_from_wide(document.requestedPath.wstring());
                 const std::string resolvedPath = utf8_from_wide(document.resolvedPath.wstring());
-                const std::string kind = documentKind(document.resolvedPath);
+                const std::string kind = documentKind(document.resolvedPath, document.content);
                 const std::uintmax_t size = document.size;
                 const std::string encoding = document.encoding;
                 preview_.start();
-                const std::string previewId = openSession(std::move(document), input);
+                std::string interfaceMode = argString(arguments, "interface_mode");
+                if (interfaceMode.empty() || interfaceMode == "Auto") interfaceMode = "Any";
+                else if (interfaceMode != "Taxi" && interfaceMode != "Version85")
+                    throw std::runtime_error("interface_mode must be Auto, Taxi, or Version85.");
+                const std::string previewId = openSession(std::move(document), input, interfaceMode, baseInput, baseRevision);
                 const std::string url = preview_.url(previewId);
                 std::string presentation = "client";
-                if (clientPresents()) {
+                if (forUser && options_.editorPresents && launch_editor(options_.editor, resolvedFile, preview_.sessionUrl(previewId))) {
+                    /* --editor names the window the user watches the document in,
+                     * ahead of every other presentation, because only the flag
+                     * asks for it. The session is opened all the same and keeps
+                     * watching the file, so the agent's own tools work on the
+                     * same document and its next call is told when the file
+                     * changed underneath. An editor that will not start falls
+                     * through to whatever would have shown the preview. */
+                    if (headlessSession_ == previewId) headless_.stop();
+                    presentation = "editor";
+                } else if (clientPresents()) {
                     /* The client shows previewUrl itself (VS Code openNow, tests). */
                 } else if (forUser) {
                     if (headlessSession_ == previewId) headless_.stop();
-                    openPreviewUrl(options_, url);
-                    shownAt_[previewId] = std::chrono::steady_clock::now();
-                    presentation = "window";
+                    presentation = openPreviewUrl(options_, url) ? "window" : "unavailable";
                 } else {
                     presentation = "hidden";
                     try { ensurePage(previewId); } catch (const std::exception&) { presentation = "unavailable"; }
                 }
+                const std::string comparedPath = preview_.baseLabel(previewId);
                 const std::string value = "{\"requestedPath\":" + json_string(requestedPath)
                     + ",\"resolvedPath\":" + json_string(resolvedPath)
                     + ",\"path\":" + json_string(resolvedPath)
@@ -1267,17 +1999,23 @@ public:
                     + ",\"previewUrl\":" + json_string(url)
                     + ",\"presentation\":" + json_string(presentation)
                     + ",\"audience\":" + json_string(forUser ? "user" : "agent")
-                    + ",\"kind\":" + json_string(kind) + "}";
+                    + ",\"kind\":" + json_string(kind)
+                    + (comparedPath.empty() ? std::string() : ",\"base\":" + json_string(comparedPath)) + "}";
                 const std::string lead = presentation == "hidden"
                     ? u8"Открыто ДЛЯ АГЕНТА в скрытом браузере: пользователь этого не видит, и снимки capture_preview ему тоже не видны. "
                       u8"Если пользователь просил показать или открыть — вызовите open_preview с audience=\"user\"."
                     : presentation == "unavailable"
-                    ? u8"Визуальное представление подготовлено, но скрытый браузер (Microsoft Edge или Google Chrome) не найден. "
-                      u8"Откройте с audience=\"user\"."
+                    ? u8"Визуальное представление подготовлено, но окно не открылось. "
+                      u8"Проверьте установленный браузер или --editor."
+                    : presentation == "editor"
+                    ? u8"Открыто ДЛЯ ПОЛЬЗОВАТЕЛЯ в BSLEdit (ключ --editor): окно редактора на его экране. "
+                      u8"Редактор сам перечитывает файл после ваших правок, пока пользователь не начал править его сам."
                     : presentation == "window"
                     ? u8"Открыто ДЛЯ ПОЛЬЗОВАТЕЛЯ: отдельное окно браузера на его экране. Другие открытые превью остаются доступны по своим ссылкам."
                     : u8"Визуальное представление открыто в 1C Form Viewer.";
-                const std::string message = lead + u8"\nФактический макет: " + resolvedPath + "\npreview_id: " + previewId + "\nPreview URL: " + url;
+                const std::string message = lead
+                    + (comparedPath.empty() ? std::string() : u8"\nСравнение: было " + comparedPath + u8" → стало " + resolvedPath)
+                    + u8"\nФактический макет: " + resolvedPath + "\npreview_id: " + previewId + "\nPreview URL: " + url;
                 return success(idRaw, value, {}, message);
             }
             static const std::map<std::string, std::string> readActions{
@@ -1300,6 +2038,7 @@ public:
                 const fs::path output = resolveAuthoringPath(options_, outputInput, L".xml", false);
                 if (fs::exists(output) && !argBool(arguments, "overwrite"))
                     throw std::runtime_error("The output file already exists: " + utf8_from_wide(output.wstring()) + ". Pass overwrite=true to replace it.");
+                if (fs::exists(output)) requireNotOpenInBslEdit(output);
                 const std::string args = "{\"data\":" + json_string(base64_encode(read_binary_file(xlsx, options_.maxBytes)))
                     + ",\"sheet\":" + json_string(argString(arguments, "sheet")) + "}";
                 const Json payload = transform("xlsxToTemplate", args);
@@ -1319,6 +2058,7 @@ public:
                 if (name == "edit_form" && !options_.formEditTools)
                     throw std::runtime_error("Form editing tools are disabled for this server (--no-form-edit-tools).");
                 const fs::path target = resolveFormXml(options_, argString(arguments, "path"));
+                if (name == "edit_form") requireNotOpenInBslEdit(target);
                 std::string encoding;
                 const std::string content = read_text_file(target, options_.maxBytes, encoding);
                 static const std::map<std::string, std::string> formActions{
@@ -1359,6 +2099,9 @@ public:
             }
             if (name == "edit_template" || readActions.count(name)) {
                 const fs::path target = resolveAuthoringPath(options_, argString(arguments, "path"), L".xml", true);
+                /* Every edit_template operation writes; the read-only tools
+                 * that share this branch are welcome to the open file. */
+                if (name == "edit_template") requireNotOpenInBslEdit(target);
                 std::string encoding;
                 const std::string content = read_text_file(target, options_.maxBytes, encoding);
                 /* Tool arguments are snake_case, the shared module takes camelCase. */
@@ -1399,28 +2142,41 @@ public:
                     + (!readOnly ? std::string(",\"previewRefreshed\":") + (refreshed ? "true" : "false") : std::string()) + "}";
                 return success(idRaw, value);
             }
+            /* The note of an external save rides on every preview operation,
+             * so it cannot be lost because the agent happened to call url or
+             * close rather than inspect. */
+            const auto answer = [&](bool external, const std::string& value, const std::string& image = {}) {
+                if (!external) return success(idRaw, value, image);
+                return success(idRaw, withExternalChange(value), image, u8"Файл изменён на диске (сохранён в BSLEdit или другим редактором), превью перечитано.\n" + value);
+            };
             if (name == "close_preview") {
                 const std::string requested = argString(arguments, "preview_id");
                 if (requested.empty()) {
+                    /* Taken before the sessions go: closing must not swallow a
+                     * save the agent has not been told about. */
+                    const bool external = preview_.takeExternalChangeAny();
                     headless_.stop();
                     headlessSession_.clear();
                     preview_.close();
                     inputs_.clear();
-                    shownAt_.clear();
-                    return success(idRaw, "{\"closed\":true}");
+                    baseInputs_.clear();
+                    return answer(external, "{\"closed\":true}");
                 }
                 const std::string previewId = preview_.resolve(requested);
+                const bool external = preview_.takeExternalChange(previewId);
                 if (headlessSession_ == previewId) { headless_.stop(); headlessSession_.clear(); }
                 preview_.closeSession(previewId);
                 inputs_.erase(previewId);
-                shownAt_.erase(previewId);
-                return success(idRaw, "{\"closed\":true,\"previewId\":" + json_string(previewId) + "}");
+                baseInputs_.erase(previewId);
+                return answer(external, "{\"closed\":true,\"previewId\":" + json_string(previewId) + "}");
             }
             if (name == "get_preview_url") {
-                const std::string target = options_.openInVsCode ? "vscode-simple-browser"
+                const std::string target = options_.editorPresents ? "bsledit"
+                    : options_.openInVsCode ? "vscode-simple-browser"
                     : options_.openBrowser ? "external-browser" : "client";
                 const std::string previewId = preview_.resolve(argString(arguments, "preview_id"));
-                return success(idRaw, "{\"previewId\":" + json_string(previewId)
+                const bool external = preview_.takeExternalChange(previewId);
+                return answer(external, "{\"previewId\":" + json_string(previewId)
                     + ",\"previewUrl\":" + json_string(preview_.url(previewId))
                     + ",\"previews\":" + preview_.listJson()
                     + ",\"externalBrowser\":" + (options_.openBrowser && !options_.openInVsCode ? "true" : "false")
@@ -1428,18 +2184,39 @@ public:
             }
             /* Every remaining tool drives the page of one preview. */
             const std::string previewId = preview_.resolve(argString(arguments, "preview_id"));
+            /* Consumed here so one note is reported once, whichever of the
+             * preview tools runs first after the user saved in BSLEdit. */
+            const bool external = preview_.takeExternalChange(previewId);
+            const auto reply = [&](const std::string& value, const std::string& image = {}) {
+                return answer(external, value, image);
+            };
+            if (name == "get_annotations")
+                return reply(preview_.annotationsJson(previewId, !argBool(arguments, "include_resolved")));
+            if (name == "resolve_annotation") {
+                const std::string annotationId = argString(arguments, "annotation_id");
+                if (annotationId.empty()) throw std::runtime_error("annotation_id is required");
+                return reply(preview_.resolveAnnotation(previewId, annotationId, argString(arguments, "resolution")));
+            }
+            if (name == "add_annotation")
+                return reply(preview_.agentAddAnnotation(previewId, argString(arguments, "element_id"), argString(arguments, "to_element_id"),
+                    argString(arguments, "element_name"), argString(arguments, "text")));
+            if (name == "remove_annotation") {
+                const std::string annotationId = argString(arguments, "annotation_id");
+                if (annotationId.empty()) throw std::runtime_error("annotation_id is required");
+                return reply(preview_.agentRemoveAnnotation(previewId, annotationId));
+            }
             if (name == "reload_preview") {
-                preview_.setDocument(previewId, loadDocument(options_, inputs_.at(previewId)));
+                preview_.setDocument(previewId, loadFor(previewId));
                 ensurePage(previewId);
-                return success(idRaw, preview_.command(previewId, "state", "{}"));
+                return reply(preview_.command(previewId, "state", "{}"));
             }
             ensurePage(previewId);
             if (name == "inspect_preview") {
                 std::string args = "{\"query\":" + json_string(argString(arguments, "query")) + ",\"visibleOnly\":" + ((arguments && arguments->get("visible_only") && arguments->get("visible_only")->asBool()) ? "true" : "false") + "}";
-                return success(idRaw, preview_.command(previewId, "inspect", args));
+                return reply(preview_.command(previewId, "inspect", args));
             }
-            if (name == "switch_tab") return success(idRaw, preview_.command(previewId, "switchTab", "{\"pageId\":" + json_string(argString(arguments, "page_id")) + ",\"pagesId\":" + json_string(argString(arguments, "pages_id")) + "}"));
-            if (name == "select_element") return success(idRaw, preview_.command(previewId, "select", "{\"elementId\":" + json_string(argString(arguments, "element_id")) + "}"));
+            if (name == "switch_tab") return reply(preview_.command(previewId, "switchTab", "{\"pageId\":" + json_string(argString(arguments, "page_id")) + ",\"pagesId\":" + json_string(argString(arguments, "pages_id")) + "}"));
+            if (name == "select_element") return reply(preview_.command(previewId, "select", "{\"elementId\":" + json_string(argString(arguments, "element_id")) + "}"));
             if (name == "scroll_preview") {
                 /* Rebuild the object to rename the snake_case tool arguments to the
                  * renderer's camelCase names. This used to be a substring replace over
@@ -1456,7 +2233,7 @@ public:
                         scrollArgs.emplace(rename == renames.end() ? key : rename->second, value);
                     }
                 }
-                return success(idRaw, preview_.command(previewId, "scroll", Json::objectValue(std::move(scrollArgs)).dump()));
+                return reply(preview_.command(previewId, "scroll", Json::objectValue(std::move(scrollArgs)).dump()));
             }
             if (name == "capture_preview") {
                 const std::string scope = argString(arguments, "scope").empty() ? "viewport" : argString(arguments, "scope");
@@ -1465,7 +2242,7 @@ public:
                 const auto* data = payload.get("data");
                 const auto* mime = payload.get("mimeType");
                 if (!data || !mime) throw std::runtime_error("The browser returned no image.");
-                return success(idRaw, "{\"scope\":" + json_string(scope) + "}", data->asString());
+                return reply("{\"scope\":" + json_string(scope) + "}", data->asString());
             }
             throw std::runtime_error("Unknown tool: " + name);
         } catch (const std::exception& error) {
@@ -1473,8 +2250,23 @@ public:
         }
     }
 
+    /* After a long pause the hidden Edge is the only heavy thing left; the
+     * previews stay open, and ensurePage starts the renderer again on the next
+     * command that needs a page. */
+    void releaseIdle() {
+        headless_.stop();
+        if (!headlessSession_.empty()) preview_.forgetPoll(headlessSession_);
+        headlessSession_.clear();
+    }
+
 private:
     Options options_;
+    /* Everything the editorLocator callback reads is declared before preview_
+     * and so destroyed after it: an HTTP thread answering state-meta.json may
+     * still call the callback while ~PreviewServer stops the server. */
+    mutable std::mutex editorMutex_;
+    mutable fs::path editorPath_;
+    mutable std::optional<std::chrono::steady_clock::time_point> editorCheckedAt_;
     PreviewServer preview_;
     /* Declared after preview_: destroyed first, while the server still runs. */
     HeadlessBrowser headless_;
@@ -1482,13 +2274,45 @@ private:
      * whichever preview a command targets. */
     std::string headlessSession_;
     std::map<std::string, std::string> inputs_;
-    std::map<std::string, std::chrono::steady_clock::time_point> shownAt_;
+    std::map<std::string, std::pair<std::string, std::string>> baseInputs_;  /* base_path, base_revision */
 
-    std::string openSession(Document document, const std::string& input) {
+    /* The page asks twice a second whether the editor button has anything to
+     * open, so the registry lookup is cached; the window is short enough that
+     * installing BSLEdit while a preview is open still lights the button up. */
+    fs::path editor() const {
+        using namespace std::chrono;
+        std::lock_guard lock(editorMutex_);
+        const auto now = steady_clock::now();
+        if (!editorCheckedAt_ || now - *editorCheckedAt_ > seconds(10)) {
+            editorPath_ = locate_bsledit(options_);
+            editorCheckedAt_ = now;
+        }
+        return editorPath_;
+    }
+
+    /* BSLEdit holds the file: its window is in front of the user and its buffer
+     * wins on the next save, so an agent's write here would be lost. */
+    static void requireNotOpenInBslEdit(const fs::path& target) {
+        if (!open_in_bsledit(target)) return;
+        throw std::runtime_error("The file is open in BSLEdit, which has priority: " + utf8_from_wide(target.wstring())
+            + ". Close it there (saving first if needed) and repeat the edit. "
+            + u8"Файл открыт в BSLEdit — правка из агента отклонена, чтобы не потерять изменения пользователя.");
+    }
+
+    std::string openSession(Document document, const std::string& input, const std::string& interfaceMode = "Any",
+                            const std::string& baseInput = {}, const std::string& baseRevision = {}) {
         const std::string previewId = preview_.openSession(std::move(document),
-            [options = options_, input] { return loadDocument(options, input); });
+            [options = options_, input, baseInput, baseRevision] { return loadComparison(options, input, baseInput, baseRevision); },
+            interfaceMode);
         inputs_[previewId] = input;
+        baseInputs_[previewId] = {baseInput, baseRevision};
         return previewId;
+    }
+
+    Document loadFor(const std::string& previewId) {
+        const auto base = baseInputs_.find(previewId);
+        if (base == baseInputs_.end()) return loadDocument(options_, inputs_.at(previewId));
+        return loadComparison(options_, inputs_.at(previewId), base->second.first, base->second.second);
     }
 
     bool clientPresents() const { return !options_.openBrowser && !options_.openInVsCode; }
@@ -1515,7 +2339,7 @@ private:
         bool refreshed = false;
         for (const auto& [previewId, input] : inputs_) {
             try {
-                Document document = loadDocument(options_, input);
+                Document document = loadFor(previewId);
                 if (lower_wide(document.resolvedPath.wstring()) != lower_wide(written.wstring())) continue;
                 preview_.setDocument(previewId, std::move(document));
                 refreshed = true;
@@ -1526,14 +2350,14 @@ private:
 
     /* Commands need a page running the preview. Start the hidden renderer when
      * no page of this preview has polled recently: never opened, the user
-     * closed the visible window, or the renderer shows another preview. A
-     * just-requested window gets a grace period to start polling. */
+     * closed the visible window, or the renderer shows another preview. Do not
+     * wait for a newly launched editor/browser window here: the command being
+     * handled may be the first capture or inspection, and it would otherwise
+     * sit pending until its timeout while no page is polling yet. */
     void ensurePage(const std::string& previewId) {
         using namespace std::chrono;
         if (clientPresents() || preview_.pageActive(previewId, seconds(3))) return;
         if (headlessSession_ == previewId && headless_.running()) return;
-        const auto shown = shownAt_.find(previewId);
-        if (shown != shownAt_.end() && steady_clock::now() - shown->second < seconds(15)) return;
         headless_.stop();
         if (!headlessSession_.empty()) preview_.forgetPoll(headlessSession_);
         headlessSession_.clear();
@@ -1543,6 +2367,32 @@ private:
         headlessSession_ = previewId;
     }
 };
+
+/* The process that started this server. Its handle is opened once, so a
+ * later process reusing the same id is never mistaken for it. */
+HANDLE openParentProcess() {
+    const DWORD self = GetCurrentProcessId();
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return nullptr;
+    DWORD parent = 0;
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
+        if (entry.th32ProcessID == self) { parent = entry.th32ParentProcessID; break; }
+    }
+    CloseHandle(snapshot);
+    return parent ? OpenProcess(SYNCHRONIZE, FALSE, parent) : nullptr;
+}
+
+std::chrono::milliseconds idleReleaseDelay() {
+    wchar_t buffer[32]{};
+    const DWORD length = GetEnvironmentVariableW(L"ONE_C_FORM_VIEWER_IDLE_MS", buffer, 32);
+    if (length && length < 32) {
+        try { if (const auto value = std::stoull(buffer); value) return std::chrono::milliseconds(value); }
+        catch (const std::exception&) {}
+    }
+    return std::chrono::minutes(15);
+}
 
 fs::path executableDirectory() {
     std::vector<wchar_t> buffer(MAX_PATH);
@@ -1556,6 +2406,11 @@ fs::path executableDirectory() {
 
 } // namespace
 
+/* gitquery.cpp decodes through this (git-shim.cpp). */
+std::wstring mcp_decode_text_bytes(const unsigned char* bytes, std::size_t size, std::string& encoding) {
+    return decode_text_bytes(bytes, size, encoding);
+}
+
 int wmain(int argc, wchar_t** argv) {
     Options options;
     options.base = executableDirectory();
@@ -1566,17 +2421,33 @@ int wmain(int argc, wchar_t** argv) {
         else if (argument == L"--allow-any-path") options.allowAnyPath = true;
         else if (argument == L"--no-template-edit-tools") options.templateEditTools = false;
         else if (argument == L"--no-form-edit-tools") options.formEditTools = false;
+        else if (argument == L"--editor" && index + 1 < argc) options.editor = fs::weakly_canonical(argv[++index]);
+        else if (argument == L"--assets" && index + 1 < argc) options.assets = fs::weakly_canonical(argv[++index]);
         else if (argument == L"--no-open-browser") options.openBrowser = false;
         else if (argument == L"--open-vscode-browser") options.openInVsCode = true;
         else if (argument == L"--vscode-uri-scheme" && index + 1 < argc) {
             options.vscodeUriScheme = argv[++index];
             if (!validUriScheme(options.vscodeUriScheme)) { std::wcerr << L"Invalid VS Code URI scheme\n"; return 2; }
         }
-        else if (argument == L"--max-bytes" && index + 1 < argc) options.maxBytes = std::stoull(argv[++index]);
+        else if (argument == L"--max-bytes" && index + 1 < argc) {
+            const std::wstring value = argv[++index];
+            try {
+                size_t consumed = 0;
+                const auto parsed = std::stoull(value, &consumed);
+                if (value.empty() || value.front() == L'-' || consumed != value.size() || !parsed
+                        || parsed > static_cast<unsigned long long>(SIZE_MAX))
+                    throw std::invalid_argument("out of range");
+                options.maxBytes = static_cast<std::size_t>(parsed);
+            } catch (const std::exception&) {
+                std::wcerr << L"Invalid --max-bytes value: " << value << L"\n";
+                return 2;
+            }
+        }
         else if (argument == L"--stdio") continue;
         else if (argument == L"--help" || argument == L"-h") {
-            std::wcout << L"1c-form-viewer-native --stdio [--root PATH ... | --allow-any-path] [--no-open-browser | --open-vscode-browser [--vscode-uri-scheme SCHEME]] [--no-template-edit-tools] [--no-form-edit-tools]\n"
-                          L"Previews render in a hidden headless Edge/Chrome; open_preview show=true opens a visible window.\n";
+            std::wcout << L"1c-form-viewer-native --stdio [--root PATH ... | --allow-any-path] [--no-open-browser | --open-vscode-browser [--vscode-uri-scheme SCHEME]] [--no-template-edit-tools] [--no-form-edit-tools] [--editor PATH] [--assets DIR]\n"
+                          L"Previews render in a hidden headless Edge/Chrome; open_preview show=true opens a visible window.\n"
+                          L"--editor PATH also opens a preview meant for the user in that editor instead of a browser window.\n";
             return 0;
         } else if (argument == L"--version" || argument == L"-v") { std::wcout << ONE_C_FORM_VIEWER_VERSION_W << std::endl; return 0; }
         else if (argument.rfind(L"--", 0) == 0) { std::wcerr << L"Unknown option: " << argument << L"\n"; return 2; }
@@ -1586,17 +2457,82 @@ int wmain(int argc, wchar_t** argv) {
     // exact and must not be widened by the process launch directory.
     if (options.roots.empty()) options.roots.push_back(fs::current_path());
 
-    McpApp app(options);
+    /* A path that is not there is a mistake worth naming, not a reason to
+     * refuse to start: the preview still opens, in the browser. */
+    if (!options.editor.empty()) {
+        std::error_code editorError;
+        const auto extension = lower_wide(options.editor.extension().wstring());
+        options.editorPresents = (extension == L".exe" || extension == L".com"
+                || extension == L".cmd" || extension == L".bat")
+            && fs::is_regular_file(options.editor, editorError);
+        if (!options.editorPresents)
+            std::wcerr << L"--editor is not a launchable file, previews for the user open in a browser: "
+                       << options.editor.wstring() << L"\n";
+    }
+
+    /* Without the interface nothing can be previewed, and the failure is a
+     * sentence the user can act on rather than a terminated process. */
+    std::optional<McpApp> app;
+    try {
+        app.emplace(options);
+    } catch (const std::exception& error) {
+        std::cerr << "1c-form-viewer-native: " << error.what() << '\n';
+        return 1;
+    }
+    /* The client normally closes stdin and the loop below ends. A client that
+     * crashed or was killed may leave the pipe open, so the parent is watched
+     * too; the hidden Edge dies with its job object when the process exits. */
+    if (HANDLE parent = openParentProcess()) {
+        std::thread([parent] {
+            WaitForSingleObject(parent, INFINITE);
+            ExitProcess(0);
+        }).detach();
+    }
+
+    /* An idle session (a client window left open for hours) keeps its
+     * previews but gives the hidden browser back. The process itself stays:
+     * the client does not restart a stdio server that went away. */
+    std::mutex requestMutex;
+    std::condition_variable idleWake;
+    auto lastActivity = std::chrono::steady_clock::now();
+    bool released = true;
+    bool finished = false;
+    std::thread idleThread([&] {
+        const auto delay = idleReleaseDelay();
+        std::unique_lock lock(requestMutex);
+        while (!finished) {
+            if (released) { idleWake.wait(lock); continue; }
+            if (idleWake.wait_until(lock, lastActivity + delay) == std::cv_status::timeout
+                    && !released && std::chrono::steady_clock::now() - lastActivity >= delay) {
+                app->releaseIdle();
+                released = true;
+            }
+        }
+    });
+
     std::string line;
     while (std::getline(std::cin, line)) {
         if (line.empty()) continue;
         try {
             Json request = JsonParser(line).parse();
-            const std::string response = app.request(request);
+            std::string response;
+            {
+                std::lock_guard lock(requestMutex);
+                response = app->request(request);
+                lastActivity = std::chrono::steady_clock::now();
+                released = false;
+            }
+            idleWake.notify_one();
             if (!response.empty()) std::cout << response << std::endl;
         } catch (const std::exception& error) {
             std::cerr << "1c-form-viewer-native: " << error.what() << '\n';
         }
     }
+    {
+        std::lock_guard lock(requestMutex);
+        finished = true;
+    }
+    idleWake.notify_one();
+    idleThread.join();
     return 0;
 }

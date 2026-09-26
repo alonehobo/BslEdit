@@ -33,6 +33,13 @@
  *        extension. Only a host can list directories; without this method an
  *        extension finds its configuration only in the <root>/cfe/<ext> ->
  *        <root>/cf layout
+ *   io.extensionConfigurations(configurationRoot) -> Promise<string[]>
+ *        the mirror image: the directories near configurationRoot whose
+ *        Configuration.xml is an extension. The configuration window shows
+ *        what they add; without this method it shows the configuration alone
+ *   io.moduleFiles(configurationRoot) -> Promise<string[]>
+ *        the `*Module.bsl` files below the configuration root. The host lists
+ *        them on demand for global module search; no persistent index is kept
  *
  * Plain script: in a browser it defines window.FormContext; in Node it is
  * imported for its side effect and read from globalThis.FormContext. It uses
@@ -42,12 +49,8 @@
     'use strict';
 
     var OBJECT_META_MARKER = 'MetaDataObject';
-    /* Appended to the owner descriptor when the object has Ext/Help.xml. The
-     * descriptor itself does not record it, and the reference paints the form's «?»
-     * button exactly for such objects. A trailing comment keeps every host's
-     * objectMeta a plain XML string. */
     var OBJECT_HELP_MARKER = '<!--fp-object-help-->';
-    var SUPPORTED_EXTENSIONS = ['.xml', '.mxl'];
+    var SUPPORTED_EXTENSIONS = ['.xml', '.form', '.mxl', '.mxlx'];
     var PICTURE_BYTES_LIMIT = 16 * 1024 * 1024;
     var PICTURE_COUNT_LIMIT = 256;
     /* Every lookup is one host round trip (a WebView2 virtual-host fetch in
@@ -56,18 +59,15 @@
      * into their maximum; results are still collected in the original order,
      * so the rendered command order never depends on timing. */
     var DEFAULT_CONCURRENCY = 16;
-    /* With a batching host the window only bounds memory: the lookups of one
-     * pass leave together and the host fans them out itself. */
+    /* With a batching host, queue many lookups together, then cap native
+     * requests separately so each batch cannot multiply host worker threads. */
     var BATCH_CONCURRENCY = 4096;
     var BATCH_PATHS = 512;
-    var CATALOG_CACHE_KEY = 'command-catalog:v2';
+    var BATCH_REQUEST_CONCURRENCY = 4;
+    var CATALOG_CACHE_KEY = 'command-catalog:v3';
     var MD_LINK_TAGS = ['RegisterRecords', 'BasedOn', 'Owners', 'Content', 'Source',
         'RegisteredDocuments', 'Documents', 'Type'];
 
-    /* Hosts cut a file down to what the resolver reads from it before it
-     * crosses the process boundary. The rules are plain tag scans so the
-     * native hosts implement them byte for byte; filterText is the reference
-     * and is always applied, so an ignored filter only costs transfer. */
     var TEXT_FILTERS = {
         /* ConfigDumpInfo.xml: `<Metadata name="X"` for every X that is a
          * command or command group (`CommonCommand.`, `CommandGroup.` or with a
@@ -104,6 +104,26 @@
          * it, every `<Subsystem>...</Subsystem>` (a subsystem's children). One
          * element per line, in file order. */
         'md-links': function (text) {
+            if (text.indexOf('http://g5.1c.ru/v8/dt/metadata/mdclass') >= 0) {
+                var projTags = { registerRecords: 'RegisterRecords', basedOn: 'BasedOn', owners: 'Owners',
+                    content: 'Content', source: 'Source', registeredDocuments: 'RegisteredDocuments',
+                    documents: 'Documents', subsystems: 'Subsystems' };
+                var projOut = [];
+                Object.keys(projTags).forEach(function (sourceTag) {
+                    var re = new RegExp('<' + sourceTag + '>([^<]*)</' + sourceTag + '>', 'g'), match;
+                    while ((match = re.exec(text))) {
+                        var value = match[1].trim();
+                        if (!value) continue;
+                        var targetTag = projTags[sourceTag];
+                        if (sourceTag === 'subsystems') projOut.push('<Subsystem>' + value + '</Subsystem>');
+                        else projOut.push('<' + targetTag + '><xr:Item>' + value + '</xr:Item></' + targetTag + '>');
+                    }
+                });
+                var types = /<types>([^<]*)<\/types>/g, typeMatch, typeItems = [];
+                while ((typeMatch = types.exec(text))) if (typeMatch[1].trim()) typeItems.push('<v8:Type>' + typeMatch[1].trim() + '</v8:Type>');
+                if (typeItems.length) projOut.push('<Type>' + typeItems.join('') + '</Type>');
+                return projOut.join('\n');
+            }
             var out = [];
             var split = text.indexOf('<ChildObjects>');
             var head = split < 0 ? text : text.slice(0, split);
@@ -207,6 +227,24 @@
         var batching = typeof io.existsMany === 'function' && typeof io.readMany === 'function';
         var queues = {};
         var scheduled = false;
+        var pendingBatches = [];
+        var runningBatches = 0;
+
+        function drain() {
+            while (runningBatches < BATCH_REQUEST_CONCURRENCY && pendingBatches.length) {
+                (function (batch) {
+                    runningBatches++;
+                    Promise.resolve().then(function () { return batch.send(batch.paths); })
+                        .then(function (values) {
+                            batch.items.forEach(function (item, index) {
+                                item.resolve(values && index < values.length ? values[index] : null);
+                            });
+                        }, function (error) {
+                            batch.items.forEach(function (item) { item.reject(error); });
+                        }).then(function () { runningBatches--; drain(); });
+                })(pendingBatches.shift());
+            }
+        }
 
         function flush() {
             scheduled = false;
@@ -215,20 +253,12 @@
             Object.keys(pending).forEach(function (key) {
                 var queue = pending[key];
                 for (var start = 0; start < queue.items.length; start += BATCH_PATHS) {
-                    (function (chunk) {
-                        var paths = chunk.map(function (item) { return item.path; });
-                        Promise.resolve()
-                            .then(function () { return queue.send(paths); })
-                            .then(function (values) {
-                                chunk.forEach(function (item, index) {
-                                    item.resolve(values && index < values.length ? values[index] : null);
-                                });
-                            }, function (error) {
-                                chunk.forEach(function (item) { item.reject(error); });
-                            });
-                    })(queue.items.slice(start, start + BATCH_PATHS));
+                    var chunk = queue.items.slice(start, start + BATCH_PATHS);
+                    pendingBatches.push({ send: queue.send, items: chunk,
+                        paths: chunk.map(function (item) { return item.path; }) });
                 }
             });
+            drain();
         }
 
         function enqueue(key, send, filePath) {
@@ -403,10 +433,25 @@
         return join(directory, name, 'Ext', 'Form.xml');
     }
 
+    /* In the dump the renderer layout and the form metadata are siblings:
+     *   Forms/Card/Ext/Form.xml  ->  Forms/Card.xml
+     * Interface compatibility belongs to the descriptor, not to Form.xml. */
+    function formDescriptorFor(formPath) {
+        if (!/^form\.(?:xml|form)$/i.test(basename(formPath))) return '';
+        var extDir = dirname(formPath);
+        if (basename(extDir).toLowerCase() !== 'ext') return '';
+        var formDir = dirname(extDir);
+        var formsDir = dirname(formDir);
+        var owner = basename(formsDir).toLowerCase();
+        if (owner !== 'forms' && owner !== 'commonforms') return '';
+        var name = basename(formDir);
+        return name ? join(formsDir, name + '.xml') : '';
+    }
+
     /* Only `<Object>/Forms/<Form>/Ext/Form.xml` has an owning object
      * descriptor; 1C puts it beside or inside the object directory. */
     function objectMetaCandidates(formPath) {
-        if (basename(formPath).toLowerCase() !== 'form.xml') return [];
+        if (!/^form\.(?:xml|form)$/i.test(basename(formPath))) return [];
         var extDir = dirname(formPath);
         if (basename(extDir).toLowerCase() !== 'ext') return [];
         var formsDir = dirname(dirname(extDir));
@@ -432,7 +477,7 @@
              * binds Объект.* paths (a CatalogObject attribute in a
              * SettingsStorage form). */
             || String(formXml || '').match(
-                /<Attribute name="(?:Объект|Object)"[^>]*>\s*<Type>\s*<v8:Type>cfg:(\w+Object)\.([^<\s]+)<\/v8:Type>\s*<\/Type>/);
+                /<Attribute name="(?:Объект|Object)"[^>]*>(?:\s*<Title>[\s\S]*?<\/Title>)?\s*<Type>\s*<v8:Type>cfg:(\w+Object)\.([^<\s]+)<\/v8:Type>\s*<\/Type>/);
         if (!match || !MAIN_OBJECT_DIRS[match[1]]) return [];
         var own = objectMetaCandidates(formPath);
         if (!own.length) return [];
@@ -530,6 +575,62 @@
         return out;
     }
 
+    /* The tables a dynamic list reads: its MainTable and every
+     * `<Kind>.<Name>` of its QueryText (written in Russian or English). A
+     * list column without a Title is captioned by the source field's
+     * presentation, so those descriptors are loaded as refMeta
+     * `<Kind>.<Name>`. */
+    var QUERY_SOURCE_KINDS = {
+        Catalog: 'Catalog', 'Справочник': 'Catalog', Document: 'Document', 'Документ': 'Document',
+        DocumentJournal: 'DocumentJournal', 'ЖурналДокументов': 'DocumentJournal',
+        ChartOfCharacteristicTypes: 'ChartOfCharacteristicTypes', 'ПланВидовХарактеристик': 'ChartOfCharacteristicTypes',
+        ChartOfAccounts: 'ChartOfAccounts', 'ПланСчетов': 'ChartOfAccounts',
+        ChartOfCalculationTypes: 'ChartOfCalculationTypes', 'ПланВидовРасчета': 'ChartOfCalculationTypes',
+        InformationRegister: 'InformationRegister', 'РегистрСведений': 'InformationRegister',
+        AccumulationRegister: 'AccumulationRegister', 'РегистрНакопления': 'AccumulationRegister',
+        AccountingRegister: 'AccountingRegister', 'РегистрБухгалтерии': 'AccountingRegister',
+        CalculationRegister: 'CalculationRegister', 'РегистрРасчета': 'CalculationRegister',
+        BusinessProcess: 'BusinessProcess', 'БизнесПроцесс': 'BusinessProcess',
+        Task: 'Task', 'Задача': 'Task', ExchangePlan: 'ExchangePlan', 'ПланОбмена': 'ExchangePlan',
+        FilterCriterion: 'FilterCriterion', 'КритерийОтбора': 'FilterCriterion'
+    };
+    var QUERY_SOURCE_DIRECTORIES = {
+        Catalog: 'Catalogs', Document: 'Documents', DocumentJournal: 'DocumentJournals',
+        ChartOfCharacteristicTypes: 'ChartsOfCharacteristicTypes', ChartOfAccounts: 'ChartsOfAccounts',
+        ChartOfCalculationTypes: 'ChartsOfCalculationTypes', InformationRegister: 'InformationRegisters',
+        AccumulationRegister: 'AccumulationRegisters', AccountingRegister: 'AccountingRegisters',
+        CalculationRegister: 'CalculationRegisters', BusinessProcess: 'BusinessProcesses', Task: 'Tasks',
+        ExchangePlan: 'ExchangePlans', FilterCriterion: 'FilterCriteria'
+    };
+    var QUERY_SOURCE_LIMIT = 24;
+
+    function dynamicListSources(xml) {
+        var out = [];
+        var seen = {};
+        function add(kindWord, name) {
+            var kind = QUERY_SOURCE_KINDS[kindWord];
+            if (!kind || badName(name) || out.length >= QUERY_SOURCE_LIMIT) return;
+            var key = (kind + '.' + name).toLowerCase();
+            if (!seen[key]) { seen[key] = true; out.push({ kind: kind, name: name }); }
+        }
+        var text = String(xml || '');
+        var ident = '[A-Za-z\\u0410-\\u044F\\u0401\\u0451_][A-Za-z0-9\\u0410-\\u044F\\u0401\\u0451_]*';
+        var match;
+        var mainRe = new RegExp('<MainTable>\\s*(' + ident + ')\\.(' + ident + ')', 'g');
+        while ((match = mainRe.exec(text))) add(match[1], match[2]);
+        var queryRe = /<QueryText>([\s\S]*?)<\/QueryText>/g;
+        var sourceRe = new RegExp('(?:^|[^.A-Za-z0-9\\u0410-\\u044F\\u0401\\u0451_])(' + ident + ')\\.(' + ident + ')', 'g');
+        while ((match = queryRe.exec(text))) {
+            var query = match[1];
+            var source;
+            sourceRe.lastIndex = 0;
+            while ((source = sourceRe.exec(query))) {
+                if (Object.prototype.hasOwnProperty.call(QUERY_SOURCE_KINDS, source[1])) add(source[1], source[2]);
+            }
+        }
+        return out;
+    }
+
     function referencedCommonCommands(xml) { return referencedNames(xml, 'CommonCommand'); }
     function referencedCommonPictures(xml) { return referencedNames(xml, 'CommonPicture'); }
     function referencedCatalogs(xml) { return referencedNames(xml, 'CatalogRef'); }
@@ -576,7 +677,8 @@
 
     function catalogMetaCandidates(formPath, name, basePath) {
         if (badName(name)) return [];
-        return candidatesUpwards([formPath, basePathOf(formPath, basePath)], ['Catalogs', name + '.xml']);
+        return candidatesUpwards([formPath, basePathOf(formPath, basePath)], ['Catalogs', name + '.xml'])
+            .concat(candidatesUpwards([formPath], ['Catalogs', name, name + '.mdo']));
     }
 
     function commonPictureDescriptorCandidates(formPath, name, basePath) {
@@ -587,9 +689,8 @@
 
     function styleItemCandidates(formPath, name) {
         if (badName(name)) return [];
-        return ancestors(formPath).map(function (directory) {
-            return join(directory, 'StyleItems', name + '.xml');
-        });
+        return candidatesUpwards([formPath], ['StyleItems', name + '.xml'])
+            .concat(candidatesUpwards([formPath], ['StyleItems', name, name + '.mdo']));
     }
 
     var PICTURE_MIME = {
@@ -648,8 +749,22 @@
     }
 
     function styleItemValue(xml) {
-        var match = String(xml || '').match(/<Value\b[^>]*>([^<]*)<\/Value>/);
-        return match ? match[1].trim() : '';
+        var text = String(xml || '');
+        var match = text.match(/<Value\b[^>]*>([^<]*)<\/Value>/);
+        if (match) return match[1].trim();
+        var valueStart = text.indexOf('<Value');
+        var valueEnd = text.indexOf('</Value>', valueStart);
+        if (valueStart >= 0 && valueEnd > valueStart) {
+            var value = text.slice(valueStart, valueEnd);
+            if (/<(?:v8:)?ColorDef\b|<(?:red|green|blue)>/i.test(value)) {
+                function channel(name) {
+                    var found = value.match(new RegExp('<' + name + '>\\s*(\\d+)\\s*</' + name + '>', 'i'));
+                    return found ? Math.max(0, Math.min(255, Number(found[1]))) : 0;
+                }
+                return 'rgb(' + channel('red') + ', ' + channel('green') + ', ' + channel('blue') + ')';
+            }
+        }
+        return '';
     }
 
     function isSupportedExtension(filePath) {
@@ -665,6 +780,10 @@
         var xml = String(formXml || '');
         var rootBar = (xml.match(
             /<AutoCommandBar\b(?=[^>]*(?:\bid\s*=\s*["']-1["']|\bname\s*=\s*["']ФормаКоманднаяПанель["']))(?:[^>]*?\/>|[^>]*>[\s\S]*?<\/AutoCommandBar>)/i
+        ) || xml.match(
+            /<AutoCommandBar\b[^>]*>[\s\S]*?<(?:Id>\s*-1|Name>\s*ФормаКоманднаяПанель)(?:\s*<)/i
+        ) || xml.match(
+            /<AutoCommandBar\s*\/>/i
         ) || [''])[0];
         if (rootBar && !/<Autofill>\s*false\s*<\/Autofill>/i.test(rootBar)) return true;
         var insertionPoints = xml.match(/<(?:CommandBar|ButtonGroup)\b[^>]*>[\s\S]*?<\/(?:CommandBar|ButtonGroup)>/gi) || [];
@@ -743,6 +862,100 @@
             return cache.text[key];
         }
 
+        async function projectedMdo(filePath) {
+            var source = await cachedText(filePath);
+            if (source == null || !root.ProjMetadataConverter) return null;
+            var converted = root.ProjMetadataConverter.convert(source);
+            return converted && converted.ok ? converted.xml : null;
+        }
+
+        async function projConfigurationRoot(formPath) {
+            var directories = ancestors(formPath);
+            var candidates = directories.map(function (directory) {
+                return join(directory, 'Configuration', 'Configuration.mdo');
+            });
+            var found = await parallel(candidates, function (candidate) { return batcher.exists(candidate); });
+            for (var i = 0; i < found.length; i++) if (found[i]) return directories[i];
+            return '';
+        }
+
+        async function loadProjGlobalCommands(configurationRoot, formXml, objectMeta, result) {
+            if (!/FormCommandPanelGlobalCommands/i.test(formXml) && !supportsAutomaticFormCommands(formXml)) return;
+            if (!/<MainAttribute>\s*true\s*<\/MainAttribute>/i.test(formXml) && !/<BaseForm[\s>]/i.test(formXml)) return;
+            var ownerTypes = objectCommandTypes(objectMeta);
+            if (!ownerTypes.length) return;
+            var configuration = await projectedMdo(join(configurationRoot, 'Configuration', 'Configuration.mdo'));
+            if (!configuration) return;
+            var names = [], match, nameRe = /<CommonCommand>([^<]+)<\/CommonCommand>/gi;
+            while ((match = nameRe.exec(configuration))) names.push(match[1].trim());
+            names = names.filter(Boolean).sort(directoryOrder);
+            var paths = names.map(function (name) {
+                return join(configurationRoot, 'CommonCommands', name, name + '.mdo');
+            });
+            var commandSources = await parallel(paths, function (file) { return cachedText(file); });
+            var commands = [], groupNames = {};
+            commandSources.forEach(function (source, i) {
+                if (!source) return;
+                var group = (source.match(/<group>\s*([^<]+)\s*<\/group>/i) || [])[1] || '';
+                var groupRef = group.match(/^CommandGroup\.(.+)$/i);
+                if (groupRef) groupNames[groupRef[1]] = true;
+                commands.push({ name: names[i], source: source, group: group,
+                    groupName: groupRef ? groupRef[1] : '',
+                    types: ((source.match(/<commandParameterType\b[^>]*>([\s\S]*?)<\/commandParameterType>/i) || ['', ''])[1]
+                        .match(/<types>\s*([^<]+)\s*<\/types>/gi) || [])
+                        .map(function (item) { return item.replace(/<\/?types>/gi, '').trim(); }) });
+            });
+            var groupList = Object.keys(groupNames);
+            var groupSources = await parallel(groupList, function (name) {
+                return cachedText(join(configurationRoot, 'CommandGroups', name, name + '.mdo'));
+            });
+            var groups = {};
+            groupSources.forEach(function (source, i) {
+                if (source && /<category>\s*FormCommandBar\s*<\/category>/i.test(source))
+                    groups[groupList[i]] = source;
+            });
+            var definedNames = {};
+            commands.forEach(function (command) {
+                command.types.forEach(function (type) {
+                    var defined = type.match(/^DefinedType\.(.+)$/i);
+                    if (defined) definedNames[defined[1]] = true;
+                });
+            });
+            var definedList = Object.keys(definedNames);
+            var definedSources = await parallel(definedList, function (name) {
+                return cachedText(join(configurationRoot, 'DefinedTypes', name, name + '.mdo'));
+            });
+            var definedTypes = {};
+            definedSources.forEach(function (source, i) {
+                var types = source && source.match(/<types>\s*([^<]+)\s*<\/types>/gi) || [];
+                definedTypes[definedList[i]] = types.map(function (item) {
+                    return item.replace(/<\/?types>/gi, '').trim();
+                });
+            });
+            function applies(types) {
+                return types.some(function (type) {
+                    if (ownerTypes.indexOf(type) >= 0 || /^(AnyRef|AnyObject)$/i.test(type)) return true;
+                    var defined = type.match(/^DefinedType\.(.+)$/i);
+                    return !!defined && (definedTypes[defined[1]] || []).some(function (member) {
+                        return ownerTypes.indexOf(member) >= 0 || /^(AnyRef|AnyObject)$/i.test(member);
+                    });
+                });
+            }
+            commands.forEach(function (command) {
+                var groupMatch = /^CommandGroup\./i.test(command.group);
+                var formGroup = /^FormCommandBar/i.test(command.group)
+                    || (groupMatch && Object.prototype.hasOwnProperty.call(groups, command.groupName));
+                if (!formGroup || !applies(command.types)) return;
+                var projected = root.ProjMetadataConverter.convert(command.source);
+                if (!projected || !projected.ok) return;
+                result['@global:' + command.name] = projected.xml;
+                if (command.groupName && groups[command.groupName]) {
+                    var projectedGroup = root.ProjMetadataConverter.convert(groups[command.groupName]);
+                    if (projectedGroup && projectedGroup.ok) result['@group:' + command.groupName] = projectedGroup.xml;
+                }
+            });
+        }
+
         /* Candidate lists are the few ancestor directories of the form, so
          * probing them together costs one round trip instead of a chain. */
         async function firstExisting(candidates) {
@@ -786,12 +999,32 @@
             return '';
         }
 
+        async function loadInterfaceMode(formPath, toBase) {
+            var descriptor = formDescriptorFor(formPath);
+            if (!descriptor) return 'Any';
+            var text = await cachedText(descriptor);
+            if (text == null) {
+                var configured = toBase(descriptor);
+                text = configured ? await cachedText(configured) : null;
+            }
+            var match = String(text || '').match(
+                /<UseInInterfaceCompatibilityMode>\s*([^<\s]+)\s*<\/UseInInterfaceCompatibilityMode>/i);
+            return match ? match[1] : 'Any';
+        }
+
+        /* The configuration's own InterfaceCompatibilityMode: the same 8.5 form
+         * is painted differently under TaxiEnableVersion8_5 and Version8_5. */
+        async function loadConfigInterfaceMode(formPath) {
+            var root = await configurationRoot(formPath).catch(function () { return null; });
+            if (!root) return '';
+            var text = await configurationProperties(root.directory);
+            var match = String(text || '').match(
+                /<InterfaceCompatibilityMode>\s*([^<\s]+)\s*<\/InterfaceCompatibilityMode>/i);
+            return match ? match[1] : '';
+        }
+
         async function loadRefMeta(formPath, formXml, objectMeta, toBase) {
             var result = {};
-            /* In the reference a cfg:DefinedType.X field
-             * paints the controls of its resolved member (CatalogRef -> dropdown
-             * arrow), so DefinedTypes/<X>.xml is loaded and its CatalogRef
-             * members join the catalogs read below. */
             var definedNames = referencedNames(formXml + '\n' + (objectMeta || ''), 'DefinedType')
                 .filter(function (name) { return !badName(name); });
             var definedTexts = await parallel(definedNames, async function (name) {
@@ -839,6 +1072,27 @@
                 if (ownerTexts[o] != null && ownerTexts[o].indexOf(OBJECT_META_MARKER) >= 0)
                     result[owners[o].kind + '.' + owners[o].name] = ownerTexts[o];
             }
+            var sources = dynamicListSources(formXml).filter(function (source) {
+                return !Object.prototype.hasOwnProperty.call(result, source.kind + '.' + source.name);
+            });
+            var sourceTexts = await parallel(sources, async function (source) {
+                var candidates = candidatesUpwards([formPath, toBase(formPath)],
+                    [QUERY_SOURCE_DIRECTORIES[source.kind], source.name + '.xml']);
+                var found = await firstExisting(candidates);
+                var text = found ? await cachedText(found) : null;
+                if (text != null && isAdoptedDescriptor(text)) {
+                    var configured = await firstExisting(candidates.slice(candidates.indexOf(found) + 1));
+                    var configuredText = configured ? await cachedText(configured) : null;
+                    if (configuredText != null && configuredText.indexOf(OBJECT_META_MARKER) >= 0
+                        && !isAdoptedDescriptor(configuredText))
+                        text = withOwnExtensionChildren(configuredText, text);
+                }
+                return text;
+            });
+            for (var q = 0; q < sources.length; q++) {
+                if (sourceTexts[q] != null && sourceTexts[q].indexOf(OBJECT_META_MARKER) >= 0)
+                    result[sources[q].kind + '.' + sources[q].name] = sourceTexts[q];
+            }
             return result;
         }
 
@@ -846,6 +1100,83 @@
             var candidate = toBase(formPath);
             if (!candidate || samePath(candidate, formPath)) return '';
             return (await readText(candidate)) || '';
+        }
+
+        async function resolveProj(formPath, formXml) {
+            var objectDirectory = dirname(dirname(dirname(formPath)));
+            var objectName = basename(objectDirectory);
+            var metadataPath = objectName ? join(objectDirectory, objectName + '.mdo') : '';
+            var basePath = join(dirname(formPath), 'BaseForm', 'Form.form');
+            var sources = await Promise.all([
+                metadataPath ? cachedText(metadataPath) : Promise.resolve(null),
+                cachedText(basePath), projConfigurationRoot(formPath)
+            ]);
+            var objectMeta = '';
+            var baseForm = '';
+            if (sources[0] != null && root.ProjMetadataConverter) {
+                var metadata = root.ProjMetadataConverter.convert(sources[0]);
+                if (metadata && metadata.ok) objectMeta = metadata.xml;
+            }
+            if (sources[1] != null && root.ProjFormConverter) {
+                var base = root.ProjFormConverter.convert(sources[1]);
+                if (base && base.ok) baseForm = base.xml;
+            }
+            var configurationRoot = sources[2] || '';
+            var projectedForm = formXml || '';
+            if (root.ProjFormConverter) {
+                var convertedForm = projectedForm ? root.ProjFormConverter.convert(projectedForm) : null;
+                if (!projectedForm) {
+                    var ownForm = await cachedText(formPath);
+                    convertedForm = ownForm == null ? null : root.ProjFormConverter.convert(ownForm);
+                }
+                if (convertedForm && convertedForm.ok) projectedForm = convertedForm.xml;
+            }
+            var refMeta = {}, commonCommands = {}, commonPictures = {}, styleItems = {};
+            if (configurationRoot) {
+                var catalogNames = referencedCatalogs(projectedForm + '\n' + objectMeta);
+                var catalogTexts = await parallel(catalogNames, function (name) {
+                    return projectedMdo(join(configurationRoot, 'Catalogs', name, name + '.mdo'));
+                });
+                catalogNames.forEach(function (name, i) { if (catalogTexts[i]) refMeta[name] = catalogTexts[i]; });
+                var commandNames = referencedCommonCommands(projectedForm);
+                var commandTexts = await parallel(commandNames, function (name) {
+                    return projectedMdo(join(configurationRoot, 'CommonCommands', name, name + '.mdo'));
+                });
+                commandNames.forEach(function (name, i) { if (commandTexts[i]) commonCommands[name] = commandTexts[i]; });
+                await loadProjGlobalCommands(configurationRoot, projectedForm, objectMeta, commonCommands);
+                var styleNames = referencedStyleItems(projectedForm);
+                var styleTexts = await parallel(styleNames, function (name) {
+                    return projectedMdo(join(configurationRoot, 'StyleItems', name, name + '.mdo'));
+                });
+                styleNames.forEach(function (name, i) {
+                    var value = styleTexts[i] ? styleItemValue(styleTexts[i]) : '';
+                    if (value) styleItems[name] = value;
+                });
+                var pictureNames = referencedCommonPictures(projectedForm);
+                var pictureExtensions = ['png', 'svg', 'gif', 'jpg', 'jpeg', 'bmp'];
+                var pictureData = await parallel(pictureNames.slice(0, PICTURE_COUNT_LIMIT), async function (name) {
+                    for (var e = 0; e < pictureExtensions.length; e++) {
+                        var extension = pictureExtensions[e];
+                        var resourcePath = join(configurationRoot, 'CommonPictures', name, 'Picture.' + extension);
+                        var bytes = await batcher.read(resourcePath, Math.min(maxBytes, PICTURE_BYTES_LIMIT));
+                        if (bytes) return { mime: PICTURE_MIME['.' + extension], data: bytesToBase64(bytes) };
+                    }
+                    return null;
+                });
+                pictureNames.slice(0, PICTURE_COUNT_LIMIT).forEach(function (name, i) {
+                    if (pictureData[i]) commonPictures[name] = pictureData[i];
+                });
+            }
+            var mode = (String(projectedForm).match(/<UseInInterfaceCompatibilityMode>\s*([^<\s]+)\s*</i) || [])[1] || 'Any';
+            return {
+                baseForm: baseForm,
+                objectMeta: objectMeta,
+                interfaceMode: mode,
+                refMeta: refMeta,
+                commonCommands: commonCommands,
+                commonPictures: commonPictures,
+                styleItems: styleItems
+            };
         }
 
         async function loadStyleItems(formPath, formXml) {
@@ -916,7 +1247,9 @@
 
         async function definedTypeContains(directory, name, ownerTypes) {
             var content = await cachedText(join(directory, 'DefinedTypes', name + '.xml'));
-            return !!content && ownerTypes.some(function (type) { return content.indexOf('cfg:' + type) >= 0; });
+            if (!content) return false;
+            var members = parameterTypes(content);
+            return ownerTypes.some(function (type) { return members.indexOf(type) >= 0; });
         }
 
         async function applicable(types, directory, ownerTypes) {
@@ -994,6 +1327,7 @@
                         && Object.prototype.hasOwnProperty.call(catalog.groups, blockGroupMatch[1]))) return;
                     catalog.objects.push({
                         fqn: command.fqn, group: blockGroupMatch ? blockGroupMatch[1] : '',
+                        sourceFileIndex: f, sourceOrder: blocks.indexOf(block),
                         types: parameterTypes(block),
                         content: '<MetaDataObject xmlns:v8="http://v8.1c.ru/8.1/data/core" '
                             + 'xmlns:xr="http://v8.1c.ru/8.3/xcf/readable" '
@@ -1001,6 +1335,12 @@
                     });
                 });
             }
+            /* Dump index order is alphabetical, but command groups in the
+             * designer follow their declaration order inside the metadata
+             * object (synchronization before exchange contents before tools). */
+            catalog.objects.sort(function (a, b) {
+                return a.sourceFileIndex - b.sourceFileIndex || a.sourceOrder - b.sourceOrder;
+            });
             if (stamps) catalog.deps = deps.map(function (dep, i) { return [dep, stamps[i]]; });
             return catalog;
         }
@@ -1070,8 +1410,6 @@
                 }
             }
             if (!/FormCommandPanelGlobalCommands/i.test(formXml) && !supportsAutomaticFormCommands(formXml)) return result;
-            /* Parameterized commands apply through the main attribute: a form
-             * without one gets none in the reference. */
             if (!/<MainAttribute>\s*true\s*<\/MainAttribute>/i.test(formXml) && !/<BaseForm[\s>]/i.test(formXml)) return result;
             var ownerTypes = objectCommandTypes(objectMeta);
             if (!ownerTypes.length) return result;
@@ -1079,6 +1417,16 @@
             if (!root) return result;
             var directory = root.directory;
             var catalog = await commandCatalog(root);
+            /* A form-authored CommandInterface can place its own Form.Command
+             * entries in a reusable group even when no automatically applicable
+             * object command belongs to that group. Load its presentation too. */
+            var authoredGroupRe = /<CommandGroup>\s*CommandGroup\.([^<\s]+)\s*<\/CommandGroup>/gi;
+            var authoredGroupMatch;
+            while ((authoredGroupMatch = authoredGroupRe.exec(formXml))) {
+                var authoredGroupName = authoredGroupMatch[1];
+                if (catalog.groups[authoredGroupName])
+                    result['@group:' + authoredGroupName] = catalog.groups[authoredGroupName];
+            }
 
             /* Decided in index order so the resulting command order stays the
              * published one. */
@@ -1092,6 +1440,20 @@
                 if (command.group && catalog.groups[command.group])
                     result['@group:' + command.group] = catalog.groups[command.group];
             }
+            var ciBar = (String(formXml || '').match(/<CommandInterface>[\s\S]*?<CommandBar>([\s\S]*?)<\/CommandBar>/i) || [])[1] || '';
+            var ciItems = ciBar.match(/<Item>[\s\S]*?<\/Item>/gi) || [];
+            var moved = [];
+            ciItems.forEach(function (item) {
+                var cm = item.match(/<Command>\s*CommonCommand\.([^<\s]+)\s*<\/Command>/i);
+                var gm = item.match(/<CommandGroup>\s*(FormCommandBar[^<\s]*)\s*<\/CommandGroup>/i);
+                if (!cm || !gm || /CreateBasedOn/i.test(gm[1]) || result['@global:' + cm[1]]) return;
+                if (result[cm[1]] != null) moved.push(cm[1]);
+            });
+            var movedApplicable = await parallel(moved, function (name) {
+                return applicable(parameterTypes(result[name]), directory, ownerTypes);
+            });
+            for (var mv = 0; mv < moved.length; mv++)
+                if (movedApplicable[mv]) result['@global:' + moved[mv]] = result[moved[mv]];
             var objects = await parallel(catalog.objects, function (object) {
                 return applicable(object.types, directory, ownerTypes);
             });
@@ -1099,12 +1461,12 @@
                 /* [CMD-GROUP-OBJECTS] Grouped object commands bring their group popup. */
                 if (!objects[o]) continue;
                 var object = catalog.objects[o];
-                /* The form object's own grouped commands are not generated
-                 * into its bar (an exchange plan form shows no popup for its
-                 * own command group), while a form gets «Настройки» from a
-                 * data processor. */
-                var ownerFolder = String(formPath || '').split('\\').join('/').match(/\/([^\/]+)\/Forms\//);
-                if (object.group && ownerFolder
+                /* Exchange-plan forms suppress their own grouped commands.
+                 * Catalog object forms can show their own applicable command
+                 * groups in the root bar. */
+                var normalizedFormPath = String(formPath || '').split('\\').join('/');
+                var ownerFolder = normalizedFormPath.match(/\/([^\/]+)\/Forms\//);
+                if (object.group && /\/ExchangePlans\//i.test(normalizedFormPath) && ownerFolder
                     && String(object.fqn).split('.')[1] === ownerFolder[1]) continue;
                 result['@global-fqn:' + object.fqn] = object.content;
                 if (object.group && catalog.groups[object.group])
@@ -1223,13 +1585,16 @@
 
         /* formPath must already be the resolved layout path the host allowed. */
         async function resolve(formPath, formXml) {
-            var empty = { baseForm: '', objectMeta: '', refMeta: {}, commonCommands: {}, commonPictures: {}, styleItems: {} };
-            if (extname(formPath).toLowerCase() !== '.xml') return empty;
+            var empty = { baseForm: '', objectMeta: '', interfaceMode: 'Any', refMeta: {}, commonCommands: {}, commonPictures: {}, styleItems: {} };
+            var extension = extname(formPath).toLowerCase();
+            if (extension === '.form') return resolveProj(formPath, formXml);
+            if (extension !== '.xml') return empty;
             /* Only the picture pass truly depends on the commands (their
              * descriptors reference pictures too); everything else can run
              * alongside instead of after. */
             var toBase = await baseMapping(formPath);
-            var head = await Promise.all([loadBaseForm(formPath, toBase), loadObjectMeta(formPath, formXml, toBase)]);
+            var head = await Promise.all([loadBaseForm(formPath, toBase), loadObjectMeta(formPath, formXml, toBase),
+                loadInterfaceMode(formPath, toBase), loadConfigInterfaceMode(formPath)]);
             var baseForm = head[0];
             var objectMeta = head[1];
             var formSource = formXml + '\n' + baseForm;
@@ -1245,6 +1610,8 @@
             return {
                 baseForm: baseForm,
                 objectMeta: objectMeta,
+                interfaceMode: head[2],
+                configInterfaceMode: head[3],
                 refMeta: body[1],
                 commonCommands: commonCommands,
                 commonPictures: await loadCommonPictures(formPath, pictureSources, formXml, toBase),
@@ -1271,6 +1638,12 @@
      *   cache-put\n<directory>\n<key>\n<text>
      *   base-configurations\n<extension root> -> one directory per line; a host
      *                                          without the verb only loses this lookup
+     *   module-files\n<configuration root> -> one absolute *Module.bsl path per line
+     *   search-files\n<categories>\n<scopes>\n<configuration root>
+     *                                      -> selected searchable source files;
+     *                                         categories/scopes are comma-separated
+     *   search-object-files\n<categories>\n<object directory>
+     *                                      -> searchable files below one object
      *
      * A host without the batch endpoint answers it with 404 or 405; the adapter
      * then falls back to single lookups for the rest of the page's life. */
@@ -1298,6 +1671,28 @@
             }
         };
 
+        /* Directory/list verbs: one root in, a line per path out, an empty
+         * list when the host does not implement the verb. */
+        function directoryList(verb, directory) {
+            return post([verb, directory]).then(function (response) {
+                return response ? response.text() : '';
+            }).then(function (text) {
+                return String(text || '').split('\n').filter(function (line) { return !!line; });
+            }, function () { return []; });
+        }
+
+        /* Unlike optional base/extension discovery, module search cannot
+         * honestly turn an unsupported native verb into an empty result: that
+         * looks exactly like a completed search over zero files. */
+        function requiredDirectoryList(verb, directory) {
+            return post([verb, directory]).then(function (response) {
+                if (!response) throw new Error('Запущенный BSLEdit не поддерживает поиск по модулям. Пересоберите или обновите приложение.');
+                return response.text();
+            }).then(function (text) {
+                return String(text || '').split('\n').filter(function (line) { return !!line; });
+            });
+        }
+
         function post(lines) {
             if (batchBroken) return Promise.resolve(null);
             return fetch(batchUrl, {
@@ -1306,7 +1701,8 @@
                 body: lines.join('\n')
             }).then(function (response) {
                 if (response.status === 404 && lines[0] === 'cache-get') return null;
-                if (!response.ok && lines[0] === 'base-configurations') return null;
+                if (!response.ok && (/-configurations$/.test(lines[0]) || lines[0] === 'module-files'
+                        || lines[0] === 'search-files' || lines[0] === 'search-object-files')) return null;
                 if (!response.ok) { batchBroken = true; return null; }
                 return response;
             });
@@ -1355,11 +1751,31 @@
                 });
             },
             baseConfigurations: function (extensionRoot) {
-                return post(['base-configurations', extensionRoot]).then(function (response) {
-                    return response ? response.text() : '';
-                }).then(function (text) {
-                    return String(text || '').split('\n').filter(function (line) { return !!line; });
-                }, function () { return []; });
+                return directoryList('base-configurations', extensionRoot);
+            },
+            extensionConfigurations: function (configurationRoot) {
+                return directoryList('extension-configurations', configurationRoot);
+            },
+            moduleFiles: function (configurationRoot) {
+                return requiredDirectoryList('module-files', configurationRoot);
+            },
+            searchFiles: function (configurationRoot, categories, scopes) {
+                return post(['search-files', (categories || []).join(','), (scopes || []).join(','), configurationRoot])
+                    .then(function (response) {
+                        if (!response) throw new Error('Запущенный BSLEdit не поддерживает глобальный поиск. Пересоберите или обновите приложение.');
+                        return response.text();
+                    }).then(function (text) {
+                        return String(text || '').split('\n').filter(function (line) { return !!line; });
+                    });
+            },
+            searchObjectFiles: function (objectDirectory, categories) {
+                return post(['search-object-files', (categories || []).join(','), objectDirectory])
+                    .then(function (response) {
+                        if (!response) throw new Error('Запущенный BSLEdit не поддерживает поиск по объекту. Пересоберите или обновите приложение.');
+                        return response.text();
+                    }).then(function (text) {
+                        return String(text || '').split('\n').filter(function (line) { return !!line; });
+                    });
             },
             cacheGet: function (directory, key) {
                 return post(['cache-get', directory, key]).then(function (response) {
@@ -1386,6 +1802,7 @@
         decodeText: decodeText,
         filterText: filterText,
         formLayoutFor: formLayoutFor,
+        formDescriptorFor: formDescriptorFor,
         objectMetaCandidates: objectMetaCandidates,
         baseFormCandidate: baseFormCandidate,
         referencedCommonCommands: referencedCommonCommands,
@@ -1405,7 +1822,8 @@
         styleItemValue: styleItemValue,
         isSupportedExtension: isSupportedExtension,
         supportsAutomaticFormCommands: supportsAutomaticFormCommands,
-        _test: { dirname: dirname, basename: basename, join: join, samePath: samePath }
+        _test: { dirname: dirname, basename: basename, join: join, samePath: samePath,
+            createBatcher: createBatcher, mainAttributeObjectCandidates: mainAttributeObjectCandidates }
     };
 
     root.FormContext = api;

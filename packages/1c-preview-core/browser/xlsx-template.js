@@ -317,8 +317,16 @@ var BUILTIN_CODES = { 1: '0', 2: '0.00', 3: '#,##0', 4: '#,##0.00', 14: 'dd.mm.y
 function oneCFormat(st, id) {
     var code = st.numFmts[id] != null ? st.numFmts[id] : BUILTIN_CODES[id];
     if (!code || /^general$|^@$/i.test(code)) return '';
-    code = code.split(';')[0].replace(/"[^"]*"|\[[^\]]*\]|\\.|_.|\*./g, '');
+    var section = code.split(';')[0];
+    code = section.replace(/"[^"]*"|\[[^\]]*\]|\\.|_.|\*./g, '');
     if (isDateFormat(st, id) || BUILTIN_CODES[id] && /[dy]|h:/.test(BUILTIN_CODES[id])) {
+        /* Quoted and escaped separators (dd\-mm, dd" "mmmm) are part of the
+         * shown date; literal letters and quotes would read as 1C format
+         * codes, so those are dropped. */
+        code = section.replace(/"([^"]*)"|\[[^\]]*\]|\\(.)|_.|\*./g, function (all, quoted, escaped) {
+            var literal = quoted !== undefined ? quoted : escaped !== undefined ? escaped : '';
+            return /[a-zа-яё'"]/i.test(literal) ? '' : literal;
+        });
         var hasTime = /h/i.test(code);
         var out = code.replace(/(y+|m+|d+|h+|s+)/gi, function (token, m, offset, whole) {
             var t = token.toLowerCase();
@@ -711,12 +719,14 @@ function esc(s) {
     return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
+/* A cell of a 1C spreadsheet has seven line types and no dash-dot among them,
+ * so Excel's dash-dot variants come over as the dashes of the same weight. */
 var LINE_OF = {
     thin: [1, 'Solid'], medium: [2, 'Solid'], thick: [3, 'Solid'], double: [3, 'Double'],
     hair: [1, 'Dotted'], dotted: [1, 'Dotted'],
-    dashed: [1, 'Dashed'], dashDot: [1, 'DashDotted'], dashDotDot: [1, 'DashDottedDotted'],
-    mediumDashed: [2, 'Dashed'], mediumDashDot: [2, 'DashDotted'], mediumDashDotDot: [2, 'DashDottedDotted'],
-    slantDashDot: [2, 'DashDotted']
+    dashed: [1, 'ThinDashed'], dashDot: [1, 'ThinDashed'], dashDotDot: [1, 'ThinDashed'],
+    mediumDashed: [2, 'ThickDashed'], mediumDashDot: [2, 'ThickDashed'], mediumDashDotDot: [2, 'ThickDashed'],
+    slantDashDot: [2, 'ThickDashed']
 };
 
 var H_ALIGN = { left: 'Left', center: 'Center', centerContinuous: 'Center', right: 'Right', justify: 'Justify', distributed: 'Justify', fill: 'Left' };

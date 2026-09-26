@@ -251,6 +251,28 @@ function parseFormat(el) {
     return fmt;
 }
 
+/* The other languages of a <tl> as «lang: text» lines, without the one the
+ * preview shows. Nothing draws them, but a comparison has to notice when a
+ * translation appears, changes or is lost. */
+function translationsOf(tl, shown) {
+    var out = [];
+    var skipped = false;
+    var items = tl.children || [];
+    for (var i = 0; i < items.length; i++) {
+        if (localName(items[i]) !== 'item') continue;
+        var lang = '', content = '';
+        for (var j = 0; j < items[i].children.length; j++) {
+            var p = items[i].children[j];
+            if (localName(p) === 'lang') lang = textOf(p);
+            else if (localName(p) === 'content') content = rawText(p);
+        }
+        if (!content) continue;
+        if (!skipped && content === shown) { skipped = true; continue; }
+        out.push(lang + ': ' + content);
+    }
+    return out.join('\n');
+}
+
 function parseCell(content) {
     var cell = { formatIndex: 0, text: '', parameter: '', detailParameter: '', fillType: '' };
     if (!content) return cell;
@@ -259,7 +281,7 @@ function parseCell(content) {
         var c = kids[i];
         var tag = localName(c);
         if (tag === 'f') cell.formatIndex = intOf(c, 0);
-        else if (tag === 'tl') cell.text = localizedFrom(c);
+        else if (tag === 'tl') { cell.text = localizedFrom(c); cell.translations = translationsOf(c, cell.text); }
         else if (tag === 'parameter') cell.parameter = textOf(c);
         else if (tag === 'detailParameter') cell.detailParameter = textOf(c);
         else if (tag === 'note') cell.note = localizedFrom(c);
@@ -474,6 +496,77 @@ function parse(xml) {
     };
 }
 
+/* A sheet is edited from the top down, and the row after the last one has to
+ * be reachable: 1C and Excel simply go on below the document. The editing host
+ * asks for a few rows past the end, which are drawn like any other, can be
+ * selected and written into, and turn into real rows of the document as soon
+ * as something is put in them. They are not part of the document's height:
+ * `trailingRows` says how many of the last rows are only there to be filled. */
+function withTrailingRows(model, count) {
+    if (!model || !(count > 0)) return model;
+    var last = model.rows[model.height - 1] || {};
+    var rows = model.rows.slice();
+    for (var i = 0; i < count; i++) {
+        rows.push({ columnsID: last.columnsID || '', formatIndex: 0, empty: true, cells: [] });
+    }
+    var next = {};
+    for (var key in model) {
+        if (Object.prototype.hasOwnProperty.call(model, key)) next[key] = model[key];
+    }
+    next.rows = rows;
+    next.height = model.height + count;
+    next.trailingRows = count;
+    return next;
+}
+
+/* The same to the right: a sheet ends at its last column, and without a few
+ * spare ones there is no way to write past it. They are as wide as a column
+ * of the sheet with no format of its own — exactly what an appended column
+ * turns out to be — and belong to no column set until something is written
+ * into them. */
+function withTrailingColumns(model, count) {
+    if (!model || !(count > 0)) return model;
+    var sheetFmt = formatByIndex(model.formats, model.defaultFormatIndex);
+    var plainFmt = formatByIndex(model.formats, 0);
+    var sets = [];
+    var byId = {};
+    for (var i = 0; i < model.columnSets.length; i++) {
+        var set = model.columnSets[i];
+        var widths = (set.widths || []).slice();
+        var setFmt = formatByIndex(model.formats, set.setFormatIndex || 0);
+        for (var c = 0; c < count; c++) widths.push(columnWidthPx(plainFmt, setFmt, sheetFmt));
+        var copy = {};
+        for (var key in set) {
+            if (Object.prototype.hasOwnProperty.call(set, key)) copy[key] = set[key];
+        }
+        copy.size = (set.size || 0) + count;
+        copy.widths = widths;
+        sets.push(copy);
+        byId[copy.id || ''] = copy;
+    }
+    if (!sets.length) return model;
+    var next = {};
+    for (var k in model) {
+        if (Object.prototype.hasOwnProperty.call(model, k)) next[k] = model[k];
+    }
+    next.columnSets = sets;
+    next.columnSetById = byId;
+    next.trailingColumns = count;
+    return next;
+}
+
+/* The first row that is past the end of the document, or the height when
+ * every row is a real one. */
+function documentRows(model) {
+    return model ? model.height - (model.trailingRows || 0) : 0;
+}
+
+/* The first column past the end of the document, columns counted the way
+ * sheetWidth() counts them. */
+function documentColumns(model) {
+    return model ? sheetWidth(model) - (model.trailingColumns || 0) : 0;
+}
+
 function columnSetOf(model, columnsID) {
     var set = model.columnSetById[columnsID || ''] || model.columnSetById[''] || { size: 1, widths: [widthToPx(DEFAULT_WIDTH_U)] };
     return set.auto ? distributeAutoWidths(set, model._availableWidthPx) : set;
@@ -491,7 +584,10 @@ function displayText(cell, fmt) {
     if (!cell) return '';
     var fill = (fmt && fmt.fillType) || cell.fillType || '';
     if (fill === 'Parameter' || (!fill && cell.parameter && !cell.text)) {
-        return cell.parameter ? ('<' + cell.parameter + '>') : '';
+        /* A parameter cell with no name yet is drawn «<>», the way the
+         * Designer shows one: the cell is already a parameter, it is only
+         * waiting for its name. */
+        return '<' + (cell.parameter || '') + '>';
     }
     if (fill === 'Template' && cell.text) {
         return String(cell.text).replace(/\[([^\]\r\n]+)\]/g, '<$1>');
@@ -664,10 +760,6 @@ function colSpanWidth(set, col, colspan) {
     return w;
 }
 
-/* Auto placement lets a value run over its neighbours, but only while they are
- * empty: 1C stops the text at the first filled cell instead of drawing it
- * underneath. The direction follows the alignment, as in the reference
- * renderer; a centred value grows symmetrically so it stays over its own cell. */
 function spillBox(model, row, set, spans, ly, col, colspan, align) {
     var cellW = colSpanWidth(set, col, colspan);
     function free(c) {
@@ -706,13 +798,116 @@ function sideBorder(model, fmt, side) {
     return borderCss(lineOf(model, idx), fmt.bordersColor);
 }
 
+/* The web colours, the set the platform keeps under its own «Web» group: the
+ * W3C names every browser knows. A template stores one of them as
+ * «web:Name», which keeps the name rather than freezing today's value. */
+var WEB_COLOURS = [
+    ['AliceBlue', '#F0F8FF'], ['AntiqueWhite', '#FAEBD7'], ['Aqua', '#00FFFF'],
+    ['Aquamarine', '#7FFFD4'], ['Azure', '#F0FFFF'], ['Beige', '#F5F5DC'],
+    ['Bisque', '#FFE4C4'], ['Black', '#000000'], ['BlanchedAlmond', '#FFEBCD'],
+    ['Blue', '#0000FF'], ['BlueViolet', '#8A2BE2'], ['Brown', '#A52A2A'],
+    ['BurlyWood', '#DEB887'], ['CadetBlue', '#5F9EA0'], ['Chartreuse', '#7FFF00'],
+    ['Chocolate', '#D2691E'], ['Coral', '#FF7F50'], ['CornflowerBlue', '#6495ED'],
+    ['Cornsilk', '#FFF8DC'], ['Crimson', '#DC143C'], ['Cyan', '#00FFFF'],
+    ['DarkBlue', '#00008B'], ['DarkCyan', '#008B8B'], ['DarkGoldenRod', '#B8860B'],
+    ['DarkGray', '#A9A9A9'], ['DarkGreen', '#006400'], ['DarkKhaki', '#BDB76B'],
+    ['DarkMagenta', '#8B008B'], ['DarkOliveGreen', '#556B2F'], ['DarkOrange', '#FF8C00'],
+    ['DarkOrchid', '#9932CC'], ['DarkRed', '#8B0000'], ['DarkSalmon', '#E9967A'],
+    ['DarkSeaGreen', '#8FBC8F'], ['DarkSlateBlue', '#483D8B'], ['DarkSlateGray', '#2F4F4F'],
+    ['DarkTurquoise', '#00CED1'], ['DarkViolet', '#9400D3'], ['DeepPink', '#FF1493'],
+    ['DeepSkyBlue', '#00BFFF'], ['DimGray', '#696969'], ['DodgerBlue', '#1E90FF'],
+    ['FireBrick', '#B22222'], ['FloralWhite', '#FFFAF0'], ['ForestGreen', '#228B22'],
+    ['Fuchsia', '#FF00FF'], ['Gainsboro', '#DCDCDC'], ['GhostWhite', '#F8F8FF'],
+    ['Gold', '#FFD700'], ['GoldenRod', '#DAA520'], ['Gray', '#808080'],
+    ['Green', '#008000'], ['GreenYellow', '#ADFF2F'], ['HoneyDew', '#F0FFF0'],
+    ['HotPink', '#FF69B4'], ['IndianRed', '#CD5C5C'], ['Indigo', '#4B0082'],
+    ['Ivory', '#FFFFF0'], ['Khaki', '#F0E68C'], ['Lavender', '#E6E6FA'],
+    ['LavenderBlush', '#FFF0F5'], ['LawnGreen', '#7CFC00'], ['LemonChiffon', '#FFFACD'],
+    ['LightBlue', '#ADD8E6'], ['LightCoral', '#F08080'], ['LightCyan', '#E0FFFF'],
+    ['LightGoldenRodYellow', '#FAFAD2'], ['LightGray', '#D3D3D3'], ['LightGreen', '#90EE90'],
+    ['LightPink', '#FFB6C1'], ['LightSalmon', '#FFA07A'], ['LightSeaGreen', '#20B2AA'],
+    ['LightSkyBlue', '#87CEFA'], ['LightSlateGray', '#778899'], ['LightSteelBlue', '#B0C4DE'],
+    ['LightYellow', '#FFFFE0'], ['Lime', '#00FF00'], ['LimeGreen', '#32CD32'],
+    ['Linen', '#FAF0E6'], ['Magenta', '#FF00FF'], ['Maroon', '#800000'],
+    ['MediumAquaMarine', '#66CDAA'], ['MediumBlue', '#0000CD'], ['MediumOrchid', '#BA55D3'],
+    ['MediumPurple', '#9370DB'], ['MediumSeaGreen', '#3CB371'], ['MediumSlateBlue', '#7B68EE'],
+    ['MediumSpringGreen', '#00FA9A'], ['MediumTurquoise', '#48D1CC'], ['MediumVioletRed', '#C71585'],
+    ['MidnightBlue', '#191970'], ['MintCream', '#F5FFFA'], ['MistyRose', '#FFE4E1'],
+    ['Moccasin', '#FFE4B5'], ['NavajoWhite', '#FFDEAD'], ['Navy', '#000080'],
+    ['OldLace', '#FDF5E6'], ['Olive', '#808000'], ['OliveDrab', '#6B8E23'],
+    ['Orange', '#FFA500'], ['OrangeRed', '#FF4500'], ['Orchid', '#DA70D6'],
+    ['PaleGoldenRod', '#EEE8AA'], ['PaleGreen', '#98FB98'], ['PaleTurquoise', '#AFEEEE'],
+    ['PaleVioletRed', '#DB7093'], ['PapayaWhip', '#FFEFD5'], ['PeachPuff', '#FFDAB9'],
+    ['Peru', '#CD853F'], ['Pink', '#FFC0CB'], ['Plum', '#DDA0DD'],
+    ['PowderBlue', '#B0E0E6'], ['Purple', '#800080'], ['Red', '#FF0000'],
+    ['RosyBrown', '#BC8F8F'], ['RoyalBlue', '#4169E1'], ['SaddleBrown', '#8B4513'],
+    ['Salmon', '#FA8072'], ['SandyBrown', '#F4A460'], ['SeaGreen', '#2E8B57'],
+    ['SeaShell', '#FFF5EE'], ['Sienna', '#A0522D'], ['Silver', '#C0C0C0'],
+    ['SkyBlue', '#87CEEB'], ['SlateBlue', '#6A5ACD'], ['SlateGray', '#708090'],
+    ['Snow', '#FFFAFA'], ['SpringGreen', '#00FF7F'], ['SteelBlue', '#4682B4'],
+    ['Tan', '#D2B48C'], ['Teal', '#008080'], ['Thistle', '#D8BFD8'],
+    ['Tomato', '#FF6347'], ['Turquoise', '#40E0D0'], ['Violet', '#EE82EE'],
+    ['Wheat', '#F5DEB3'], ['White', '#FFFFFF'], ['WhiteSmoke', '#F5F5F5'],
+    ['Yellow', '#FFFF00'], ['YellowGreen', '#9ACD32']
+];
+
+/* The Windows system colours a template may name, with the values the classic
+ * desktop scheme gives them. A viewer cannot ask this machine for the user's
+ * scheme, so it draws the documented defaults — close enough to show what the
+ * cell means, and the name itself is what the file keeps. */
+var WIN_COLOURS = [
+    ['WindowBackground', '#FFFFFF'], ['WindowText', '#000000'],
+    ['WindowFrame', '#646464'], ['ButtonFace', '#F0F0F0'],
+    ['ButtonText', '#000000'], ['ButtonShadow', '#A0A0A0'],
+    ['ButtonHighlight', '#FFFFFF'], ['Highlight', '#0078D7'],
+    ['HighlightText', '#FFFFFF'], ['GrayText', '#6D6D6D'],
+    ['InfoBackground', '#FFFFE1'], ['InfoText', '#000000'],
+    ['Menu', '#F0F0F0'], ['MenuText', '#000000'],
+    ['Scrollbar', '#C8C8C8'], ['ActiveCaption', '#99B4D1'],
+    ['InactiveCaption', '#BFCDDB'], ['CaptionText', '#000000'],
+    ['AppWorkspace', '#ABABAB'], ['Background', '#000000'],
+    ['ActiveBorder', '#B4B4B4'], ['InactiveBorder', '#F4F7FC']
+];
+
+/* The style colours this viewer knows a value for. The platform has many more
+ * and keeps their values to itself, so an unknown style colour is drawn as
+ * nothing set — the file keeps its name either way. */
+var STYLE_COLOURS = [
+    ['FormBackColor', '#FFFFFF'], ['FieldBackColor', '#FFFFFF'],
+    ['ButtonBackColor', '#F0F0F0'], ['FieldTextColor', '#000000'],
+    ['FormTextColor', '#000000'], ['ButtonTextColor', '#000000'],
+    ['BorderColor', '#7F9DB9'], ['FieldBorderColor', '#7F9DB9']
+];
+
+function colourTable(list) {
+    var map = {};
+    for (var i = 0; i < list.length; i++) map[list[i][0].toLowerCase()] = list[i][1];
+    return map;
+}
+
+var WEB_BY_NAME = colourTable(WEB_COLOURS);
+var WIN_BY_NAME = colourTable(WIN_COLOURS);
+var STYLE_BY_NAME = colourTable(STYLE_COLOURS);
+
+/* A colour as a template may write it: an absolute «#RRGGBB», or a name from
+ * one of the platform's groups — «web:DodgerBlue», «win:WindowBackground»,
+ * «style:FormBackColor». Returns the CSS colour to paint with, or an empty
+ * string when nothing is set and when the name is one whose value the
+ * platform does not share. */
 function styleColor(v) {
     if (!v) return '';
-    if (v.charAt(0) === '#') return v;
-    var s = v.toLowerCase();
-    if (s.indexOf('formbackcolor') >= 0 || s.indexOf('fieldbackcolor') >= 0) return '#fff';
-    if (s.indexOf('buttonbackcolor') >= 0) return '#f0f0f0';
-    return '';
+    var raw = String(v).trim();
+    if (!raw) return '';
+    if (raw.charAt(0) === '#') return raw;
+    var at = raw.indexOf(':');
+    var group = at > 0 ? raw.slice(0, at).toLowerCase() : '';
+    var name = (at > 0 ? raw.slice(at + 1) : raw).toLowerCase();
+    if (group === 'web') return WEB_BY_NAME[name] || '';
+    if (group === 'win' || group === 'windows') return WIN_BY_NAME[name] || '';
+    if (group === 'style') return STYLE_BY_NAME[name] || '';
+    if (group === 'auto') return '';
+    /* No group: the older files, and the platform's own bare names. */
+    return STYLE_BY_NAME[name] || WIN_BY_NAME[name] || WEB_BY_NAME[name] || '';
 }
 
 function alignCss(v, axis, fallback) {
@@ -1028,9 +1223,6 @@ function outline(model, xml) {
     return out;
 }
 
-/* 8x8 fill patterns 1..17 of the spreadsheet format, as in the reference
- * renderer: bit x of row y is a pixel of the pattern colour. Pattern 0 is a
- * solid fill and 255 means no pattern at all. */
 var PATTERN_TILES = [
     [0xAA, 0xFF, 0x55, 0xFF, 0xAA, 0xFF, 0x55, 0xFF],
     [0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55, 0xAA, 0x55],
@@ -1221,11 +1413,142 @@ function applyCellStyle(td, model, cell, fmt, hPx, auto, place, borders) {
     }
 }
 
+/* One row of a group's grid as its own <tr>. Split out of renderGroupTable
+ * so the incremental path can rebuild a row without redrawing the sheet. */
+function buildRow(model, group, set, spans, rowHeights, ctx, starts, y) {
+    var c;
+    var ly = y - group.start;
+    var row = model.rows[y];
+    var rh = rowHeights[y];
+    var tr = el('tr');
+    tr.style.height = rh + 'px';
+    tr.setAttribute('data-row', String(y));
+    var area = areaForRow(model, y);
+    if (area) tr.setAttribute('data-area', area.name);
+    if (starts[y]) tr.className = 'tp-area-start';
+    /* Past the end of the document: drawn paler, so it is clear the sheet
+     * itself ends above and these rows are there to be filled. */
+    if (y >= documentRows(model)) tr.className += (tr.className ? ' ' : '') + 'tp-beyond';
+    for (c = 0; c < set.size; c++) {
+        if (spans.covered[ly][c]) continue;
+        var sp = spans.origin[ly][c];
+        var td = el('td');
+        td.setAttribute('data-row', String(y));
+        td.setAttribute('data-col', String(c));
+        td.setAttribute('data-id', 'r' + y + 'c' + c);
+        /* Правее макета — то же, что ниже него: место, куда можно писать. */
+        if (c >= documentColumns(model)) td.className = 'tp-beyond';
+        var spanRows = sp && sp.rowspan > 1 ? sp.rowspan : 1;
+        var spanCols = sp && sp.colspan > 1 ? sp.colspan : 1;
+        var cellH = 0;
+        var autoHeight = false;
+        var ownRow = rowHeight(model, row, y);
+        var i;
+        for (i = 0; i < spanRows; i++) {
+            cellH += rowHeights[y + i] || rh;
+            autoHeight = autoHeight || rowHeight(model, model.rows[y + i], y + i).auto;
+        }
+        if (sp) {
+            if (sp.rowspan > 1) td.rowSpan = sp.rowspan;
+            if (sp.colspan > 1) td.colSpan = sp.colspan;
+        }
+        lockWidth(td, colSpanWidth(set, c, spanCols));
+        var cell = cellAt(row, c);
+        var fmt = effectiveFormat(model, row, cell, c);
+        var place = placementOf(fmt);
+        var text = displayText(cell, fmt);
+        var cellPx = spanRows === 1 ? rh : cellH;
+        var borders = collapseBorders(model, group, set, y, c, spanRows, spanCols,
+            spanBorders(model, y, c, spanRows, spanCols));
+        applyCellStyle(td, model, cell, fmt, cellPx, autoHeight, place, borders);
+        if (spanRows !== 1) {
+            td.style.height = '';
+            td.style.maxHeight = '';
+        }
+        if (text) td.className = (td.className ? td.className + ' ' : '') + 'tp-has-text';
+        var inner = el('div', 'tp-cell tp-place-' + place);
+        /* The cell's own top and bottom lines sit inside the row height:
+         * a full-height inner box pushed every framed row down by its
+         * border, and drawings placed by the computed row tops drifted. */
+        var edges = (parseInt(borders.top, 10) || 0) + (parseInt(borders.bottom, 10) || 0);
+        var innerPx = Math.max(0, cellPx - edges);
+        if (autoHeight) inner.style.minHeight = innerPx + 'px';
+        else inner.style.height = innerPx + 'px';
+        if (spanRows === 1 && ownRow.max != null) {
+            inner.style.maxHeight = Math.max(0, ownRow.max - edges) + 'px';
+            td.style.overflow = 'hidden';
+        }
+        var halign = alignCss(fmt && fmt.horizontalAlignment, 'h');
+        var pad = textPadding(fmt, halign);
+        inner.style.boxSizing = 'border-box';
+        inner.style.paddingLeft = pad.left + 'px';
+        inner.style.paddingRight = pad.right + 'px';
+        if (pad.top) inner.style.paddingTop = pad.top + 'px';
+        if (pad.bottom) inner.style.paddingBottom = pad.bottom + 'px';
+        /* The inner box fills the cell, so `vertical-align` on the td can
+         * never move the text: the alignment has to live here. */
+        var va = alignCss(fmt && fmt.verticalAlignment, 'v', defaultVAlign(model));
+        inner.style.display = 'flex';
+        inner.style.flexDirection = 'column';
+        inner.style.justifyContent =
+            va === 'bottom' ? 'flex-end' : va === 'middle' ? 'center' : 'flex-start';
+        if (place === 'auto') {
+            inner.style.overflow = 'visible';
+            inner.style.whiteSpace = 'nowrap';
+        } else {
+            inner.style.overflow = 'hidden';
+        }
+        if (text && spanCols === 1 && spanRows === 1 && isTrue(fmt && fmt.bySelectedColumns)) {
+            var across = acrossBox(model, row, set, spans, ly, c);
+            lockWidth(inner, across.width);
+            inner.style.overflow = 'hidden';
+        } else if (text && place === 'auto' && spanCols === 1 && spanRows === 1) {
+            var box = spillBox(model, row, set, spans, ly, c, spanCols, halign);
+            lockWidth(inner, box.width);
+            if (box.left) inner.style.marginLeft = box.left + 'px';
+            inner.style.overflow = 'hidden';
+        }
+        if (text) {
+            var shown = place === 'block'
+                ? blockFit(text, colSpanWidth(set, c, spanCols) - pad.left - pad.right, fontOf(model, fmt).height)
+                : text;
+            var node = inner;
+            if (isParamCell(cell, fmt) || (fmt && fmt.fillType === 'Template')) {
+                node = el('span', 'tp-param', shown);
+                inner.appendChild(node);
+            } else {
+                inner.textContent = shown;
+            }
+            if (applyOrientation(inner, fmt)) inner.style.display = 'block';
+        }
+        td.appendChild(inner);
+        td.addEventListener('click', (function (rowIdx, colIdx, cellRef) {
+            return function (ev) {
+                ev.stopPropagation();
+                /* A spreadsheet may use a different column set in every row.
+                 * The Designer's ruler follows the focused cell immediately;
+                 * scrolling is only the fallback before a cell has focus. */
+                activateColumnRow(ctx.container, rowIdx);
+                if (ctx.onSelect) ctx.onSelect({
+                    name: (cellRef && (cellRef.parameter || cellRef.text)) || ('R' + (rowIdx + 1) + 'C' + (colIdx + 1)),
+                    row: rowIdx,
+                    col: colIdx,
+                    id: 'r' + rowIdx + 'c' + colIdx,
+                    area: area ? area.name : ''
+                });
+            };
+        })(y, c, cell));
+        tr.appendChild(td);
+    }
+    return tr;
+}
+
 function renderGroupTable(model, group, ctx, rowHeights) {
     var set = columnSetOf(model, group.columnsID);
     var spans = buildSpans(model, group.start, group.end, group.columnsID);
     var table = el('table', 'tp-grid');
     table.style.tableLayout = 'fixed';
+    if (table.setAttribute) table.setAttribute('data-columns-id', group.columnsID || '');
     var colgroup = el('colgroup');
     var c;
     for (c = 0; c < set.size; c++) {
@@ -1240,121 +1563,7 @@ function renderGroupTable(model, group, ctx, rowHeights) {
     var tbody = el('tbody');
     var starts = rowAreaStarts(model);
     for (var y = group.start; y < group.end; y++) {
-        var ly = y - group.start;
-        var row = model.rows[y];
-        var rh = rowHeights[y];
-        var tr = el('tr');
-        tr.style.height = rh + 'px';
-        tr.setAttribute('data-row', String(y));
-        var area = areaForRow(model, y);
-        if (area) tr.setAttribute('data-area', area.name);
-        if (starts[y]) tr.className = 'tp-area-start';
-        for (c = 0; c < set.size; c++) {
-            if (spans.covered[ly][c]) continue;
-            var sp = spans.origin[ly][c];
-            var td = el('td');
-            td.setAttribute('data-row', String(y));
-            td.setAttribute('data-col', String(c));
-            td.setAttribute('data-id', 'r' + y + 'c' + c);
-            var spanRows = sp && sp.rowspan > 1 ? sp.rowspan : 1;
-            var spanCols = sp && sp.colspan > 1 ? sp.colspan : 1;
-            var cellH = 0;
-            var autoHeight = false;
-            var ownRow = rowHeight(model, row, y);
-            var i;
-            for (i = 0; i < spanRows; i++) {
-                cellH += rowHeights[y + i] || rh;
-                autoHeight = autoHeight || rowHeight(model, model.rows[y + i], y + i).auto;
-            }
-            if (sp) {
-                if (sp.rowspan > 1) td.rowSpan = sp.rowspan;
-                if (sp.colspan > 1) td.colSpan = sp.colspan;
-            }
-            lockWidth(td, colSpanWidth(set, c, spanCols));
-            var cell = cellAt(row, c);
-            var fmt = effectiveFormat(model, row, cell, c);
-            var place = placementOf(fmt);
-            var text = displayText(cell, fmt);
-            var cellPx = spanRows === 1 ? rh : cellH;
-            var borders = collapseBorders(model, group, set, y, c, spanRows, spanCols,
-                spanBorders(model, y, c, spanRows, spanCols));
-            applyCellStyle(td, model, cell, fmt, cellPx, autoHeight, place, borders);
-            if (spanRows !== 1) {
-                td.style.height = '';
-                td.style.maxHeight = '';
-            }
-            if (text) td.className = (td.className ? td.className + ' ' : '') + 'tp-has-text';
-            var inner = el('div', 'tp-cell tp-place-' + place);
-            /* The cell's own top and bottom lines sit inside the row height:
-             * a full-height inner box pushed every framed row down by its
-             * border, and drawings placed by the computed row tops drifted. */
-            var edges = (parseInt(borders.top, 10) || 0) + (parseInt(borders.bottom, 10) || 0);
-            var innerPx = Math.max(0, cellPx - edges);
-            if (autoHeight) inner.style.minHeight = innerPx + 'px';
-            else inner.style.height = innerPx + 'px';
-            if (spanRows === 1 && ownRow.max != null) {
-                inner.style.maxHeight = Math.max(0, ownRow.max - edges) + 'px';
-                td.style.overflow = 'hidden';
-            }
-            var halign = alignCss(fmt && fmt.horizontalAlignment, 'h');
-            var pad = textPadding(fmt, halign);
-            inner.style.boxSizing = 'border-box';
-            inner.style.paddingLeft = pad.left + 'px';
-            inner.style.paddingRight = pad.right + 'px';
-            if (pad.top) inner.style.paddingTop = pad.top + 'px';
-            if (pad.bottom) inner.style.paddingBottom = pad.bottom + 'px';
-            /* The inner box fills the cell, so `vertical-align` on the td can
-             * never move the text: the alignment has to live here. */
-            var va = alignCss(fmt && fmt.verticalAlignment, 'v', defaultVAlign(model));
-            inner.style.display = 'flex';
-            inner.style.flexDirection = 'column';
-            inner.style.justifyContent =
-                va === 'bottom' ? 'flex-end' : va === 'middle' ? 'center' : 'flex-start';
-            if (place === 'auto') {
-                inner.style.overflow = 'visible';
-                inner.style.whiteSpace = 'nowrap';
-            } else {
-                inner.style.overflow = 'hidden';
-            }
-            if (text && spanCols === 1 && spanRows === 1 && isTrue(fmt && fmt.bySelectedColumns)) {
-                var across = acrossBox(model, row, set, spans, ly, c);
-                lockWidth(inner, across.width);
-                inner.style.overflow = 'hidden';
-            } else if (text && place === 'auto' && spanCols === 1 && spanRows === 1) {
-                var box = spillBox(model, row, set, spans, ly, c, spanCols, halign);
-                lockWidth(inner, box.width);
-                if (box.left) inner.style.marginLeft = box.left + 'px';
-                inner.style.overflow = 'hidden';
-            }
-            if (text) {
-                var shown = place === 'block'
-                    ? blockFit(text, colSpanWidth(set, c, spanCols) - pad.left - pad.right, fontOf(model, fmt).height)
-                    : text;
-                var node = inner;
-                if (isParamCell(cell, fmt) || (fmt && fmt.fillType === 'Template')) {
-                    node = el('span', 'tp-param', shown);
-                    inner.appendChild(node);
-                } else {
-                    inner.textContent = shown;
-                }
-                if (applyOrientation(inner, fmt)) inner.style.display = 'block';
-            }
-            td.appendChild(inner);
-            td.addEventListener('click', (function (rowIdx, colIdx, cellRef) {
-                return function (ev) {
-                    ev.stopPropagation();
-                    if (ctx.onSelect) ctx.onSelect({
-                        name: (cellRef && (cellRef.parameter || cellRef.text)) || ('R' + (rowIdx + 1) + 'C' + (colIdx + 1)),
-                        row: rowIdx,
-                        col: colIdx,
-                        id: 'r' + rowIdx + 'c' + colIdx,
-                        area: area ? area.name : ''
-                    });
-                };
-            })(y, c, cell));
-            tr.appendChild(td);
-        }
-        tbody.appendChild(tr);
+        tbody.appendChild(buildRow(model, group, set, spans, rowHeights, ctx, starts, y));
     }
     table.appendChild(tbody);
     var groupEl = el('div', 'tp-group');
@@ -1395,9 +1604,6 @@ function renderDrawings(model, wrap, rowTops, rowHeights) {
     drawings = drawings.slice().sort(function (a, b) { return (a.zOrder || 0) - (b.zOrder || 0); });
     for (var i = 0; i < drawings.length; i++) {
         var d = drawings[i];
-        /* Charts, OLE objects and the like carry no geometry we can honour;
-         * drawing an empty frame in their place is worse than leaving the
-         * sheet alone, so they are skipped, as in the reference renderer. */
         if (d.drawingType === 'Other') continue;
         var row = model.rows[d.beginRow] || model.rows[0];
         var set = columnSetOf(model, row && row.columnsID);
@@ -1409,10 +1615,6 @@ function renderDrawings(model, wrap, rowTops, rowHeights) {
         var y1 = (rowTops[d.endRow] || 0) + heightToPx(d.endRowOffset);
         var w = x1 - x0;
         var h = y1 - y0;
-        /* Degenerate geometry: 1C does not always write cell anchors for a
-         * caption or a rectangle, and a zero-sized box would be an invisible
-         * dot. The reference renderer falls back to the natural size of the
-         * content, so the object at least reads. */
         if (w < 8 || h < 8) {
             var lines = String(d.text || '').split(/\r?\n/);
             var widest = 0;
@@ -1552,10 +1754,14 @@ function viewColumnSet(model, columnsID) {
     return best || columnSetOf(model, '');
 }
 
-function fillColHead(bar, set) {
+function fillColHead(bar, set, model) {
     bar.innerHTML = '';
     var table = el('table', 'tp-grid tp-colhead-table');
     table.style.tableLayout = 'fixed';
+    /* Which column set these widths belong to: a sheet has several, and both
+     * the editing layer's live resize and the write that follows it have to
+     * act on the one the ruler is showing. */
+    if (table.setAttribute) table.setAttribute('data-columns-id', set.id || '');
     var colgroup = el('colgroup');
     var tr = el('tr', 'tp-colhead');
     var c;
@@ -1564,7 +1770,8 @@ function fillColHead(bar, set) {
         lockWidth(col, set.widths[c]);
         if (col.setAttribute) col.setAttribute('width', String(Math.round(set.widths[c])));
         colgroup.appendChild(col);
-        var th = el('th', '', String(c + 1));
+        var th = el('th', (model && c >= documentColumns(model)) ? 'tp-beyond' : '', String(c + 1));
+        th.setAttribute('data-col', String(c));
         lockWidth(th, set.widths[c]);
         tr.appendChild(th);
     }
@@ -1697,8 +1904,9 @@ function syncRowAreaLines(container, rowTops, rowHeights, last) {
 function renderRowHead(model, rowHeights) {
     var col = el('div', 'tp-rowhead');
     col.style.position = 'relative';
+    var real = documentRows(model);
     for (var i = 0; i < model.height; i++) {
-        var lab = el('div', 'tp-row-num', String(i + 1));
+        var lab = el('div', 'tp-row-num' + (i >= real ? ' tp-beyond' : ''), String(i + 1));
         lab.style.position = 'absolute';
         lab.style.left = '0';
         lab.style.right = '0';
@@ -1777,8 +1985,26 @@ function outlineIcon(it) {
     return { cls: 'icon-tpl-row', ch: '\u2014' };
 }
 
+/* Drops the named-area highlight. The sheet has two selections drawn on it:
+ * the named area the outline points at, and the cell range the editing layer
+ * owns. Only one of them can be the current selection, so whichever is set
+ * last clears the other. */
+function clearHighlight(container) {
+    if (!container || !container.querySelectorAll) return;
+    var prev = container.querySelectorAll('.tp-selected');
+    for (var i = 0; i < prev.length; i++) prev[i].classList.remove('tp-selected');
+    var ov = container.querySelector('.tp-hi');
+    if (ov) ov.hidden = true;
+}
+
 function highlight(container, id) {
     if (!container || !id) return null;
+    var model = container._tpModel;
+    var area = model ? areaRange(model, id) : null;
+    /* Rebuild the whole top chrome before looking for the label. Previously
+     * only the numbered header was refilled, so a vertical area selected in
+     * the right pane still had no label or red boundaries on the canvas. */
+    if (area && isColumnArea(area)) activateColumnSet(container, area.columnsID);
     var prev = container.querySelectorAll('.tp-selected');
     for (var i = 0; i < prev.length; i++) prev[i].classList.remove('tp-selected');
     var safe = String(id).replace(/"/g, '');
@@ -1796,12 +2022,6 @@ function highlight(container, id) {
         hit = cell;
     }
     syncAreaHighlight(container, id);
-    var model = container._tpModel;
-    var bar = container.querySelector('.tp-colhead-bar');
-    var area = model ? areaRange(model, id) : null;
-    if (bar && model && area && area.columnsID != null) {
-        fillColHead(bar, viewColumnSet(model, area.columnsID));
-    }
     var sc = container.querySelector('.tp-scroll');
     var ov = container.querySelector('.tp-hi');
     var target = (ov && !ov.hidden) ? ov : hit;
@@ -1822,7 +2042,7 @@ function buildColumnChrome(model, columnsID) {
     var set = viewColumnSet(model, columnsID);
     var colAreas = renderColAreaRail(model, set);
     var colHead = el('div', 'tp-colhead-bar');
-    fillColHead(colHead, set);
+    fillColHead(colHead, set, model);
     var chromeH = COLHEAD_H + (colAreas ? (columnAreaLevels(columnAreaItems(model, set.id)).maxLevel + 1) * COL_AREA_ROW_H : 0);
     return { colAreas: colAreas, colHead: colHead, chromeH: chromeH };
 }
@@ -1845,17 +2065,12 @@ function rowAtScrollTop(rowTops, rowHeights, height, scrollTop) {
 
 /* Re-picks the ruler for whichever row-group now sits at the top of the
  * viewport, and only touches the DOM when that group actually changed. */
-function updateColumnChrome(container) {
+function installColumnChrome(container, columnsID) {
     var model = container._tpModel;
-    var groups = container._tpGroups;
-    var rowTops = container._tpRowTops;
-    var rowHeights = container._tpRowHeights;
-    var sc = container.querySelector('.tp-scroll');
     var colChrome = container.querySelector('.tp-col-chrome');
     var corner = container.querySelector('.tp-corner');
-    if (!model || !groups || !rowTops || !sc || !colChrome || !corner) return;
-    var row = rowAtScrollTop(rowTops, rowHeights, model.height, sc.scrollTop);
-    var columnsID = groupForRowIndex(groups, row).columnsID || '';
+    if (!model || !colChrome || !corner) return;
+    columnsID = columnsID || '';
     if (columnsID === container._tpChromeColumnsID) return;
     container._tpChromeColumnsID = columnsID;
     var chrome = buildColumnChrome(model, columnsID);
@@ -1867,6 +2082,157 @@ function updateColumnChrome(container) {
     if (container._tpOnAreaClick && chrome.colAreas) {
         chrome.colAreas.addEventListener('click', container._tpOnAreaClick);
     }
+}
+
+/* Pins the ruler to the row that owns the keyboard/mouse focus. This is kept
+ * separately from the current scroll position: a horizontal scroll also
+ * emits `scroll`, but must not send the ruler back to the top visible row. */
+function activateColumnRow(container, row) {
+    var model = container && container._tpModel;
+    var groups = container && container._tpGroups;
+    if (!model || !groups || !isFinite(row)) return;
+    row = Math.max(0, Math.min(model.height - 1, Number(row)));
+    container._tpActiveColumnRow = row;
+    container._tpActiveColumnsIDSet = false;
+    installColumnChrome(container, groupForRowIndex(groups, row).columnsID || '');
+}
+
+/* A Columns named area carries its own column set and can be selected from
+ * the outline even while no row of that set is visible. Keep that set active
+ * until an actual cell/row takes focus. */
+function activateColumnSet(container, columnsID) {
+    if (!container || !container._tpModel) return;
+    container._tpActiveColumnsIDSet = true;
+    container._tpActiveColumnsID = columnsID || '';
+    installColumnChrome(container, container._tpActiveColumnsID);
+}
+
+function updateColumnChrome(container) {
+    var model = container._tpModel;
+    var groups = container._tpGroups;
+    var rowTops = container._tpRowTops;
+    var rowHeights = container._tpRowHeights;
+    var sc = container.querySelector('.tp-scroll');
+    if (!model || !groups || !rowTops || !sc) return;
+    if (container._tpActiveColumnsIDSet) {
+        installColumnChrome(container, container._tpActiveColumnsID || '');
+        return;
+    }
+    var row = container._tpActiveColumnRow != null && isFinite(container._tpActiveColumnRow)
+        ? container._tpActiveColumnRow
+        : rowAtScrollTop(rowTops, rowHeights, model.height, sc.scrollTop);
+    installColumnChrome(container, groupForRowIndex(groups, row).columnsID || '');
+}
+
+/* Row heights and the tops they add up to. Both paths measure the sheet the
+ * same way, and the incremental one compares the result with what the drawn
+ * sheet was built from. */
+function rowMetrics(model) {
+    var rowHeights = [];
+    var rowTops = [];
+    var acc = 0;
+    for (var y = 0; y < model.height; y++) {
+        rowTops[y] = acc;
+        var rh = rowHeight(model, model.rows[y], y);
+        rowHeights[y] = rh.px;
+        acc += rh.px;
+    }
+    return { rowHeights: rowHeights, rowTops: rowTops, total: acc };
+}
+
+/* Everything outside a cell's own paint that the sheet's layout is built on:
+ * row heights, column widths and sets, the row groups, merges, named areas and
+ * drawings. A cell edit that leaves this untouched can be repainted in place;
+ * anything else has to be drawn again from scratch. The key is deliberately
+ * cheap to build and compared as a whole, so a change the editing layer failed
+ * to call structural still falls back to a full render instead of a wrong
+ * sheet. */
+function layoutKey(model, groups, rowHeights) {
+    var parts = [model.height, rowHeights.join(','), model.templateMode ? 1 : 0,
+        (model.pictures || []).length];
+    for (var i = 0; i < groups.length; i++) {
+        var set = columnSetOf(model, groups[i].columnsID);
+        parts.push(groups[i].start + ':' + groups[i].end + ':' + (groups[i].columnsID || '')
+            + ':' + set.size + ':' + (set.widths || []).join(','));
+    }
+    var sets = model.columnSets || [];
+    for (i = 0; i < sets.length; i++) parts.push('s' + (sets[i].id || '') + ':' + sets[i].size);
+    parts.push(JSON.stringify(model.merges || []));
+    parts.push(JSON.stringify(model.unmerges || []));
+    parts.push(JSON.stringify(model.namedItems || []));
+    parts.push(JSON.stringify(model.drawings || []));
+    return parts.join('\u0001');
+}
+
+/* Rows the repaint has to cover for `rect` to come out right. A cell's paint
+ * reads its neighbours: borders collapse against the row above and below, and
+ * text with automatic placement spills sideways, so whole rows are redrawn and
+ * one row on each side comes along. A row covered by a merge that starts above
+ * the range pulls that origin row in too, because the merged cell is drawn by
+ * the row that owns it. */
+function repaintRows(model, group, spans, rect) {
+    var start = Math.max(group.start, rect.r0 - 1);
+    var end = Math.min(group.end - 1, rect.r1 + 1);
+    if (end < start) return null;
+    for (;;) {
+        var ly = start - group.start;
+        var covered = false;
+        for (var c = 0; c < spans.covered[ly].length; c++) {
+            if (spans.covered[ly][c]) { covered = true; break; }
+        }
+        if (!covered || start === group.start) break;
+        start--;
+    }
+    return { start: start, end: end };
+}
+
+/* Redraws the rows `dirty` touches and leaves the rest of the sheet — its
+ * scroll position, the selection painted on it and the focus inside it —
+ * exactly as it was. Returns false when the change is not one this path can
+ * make, and the caller then calls render(). */
+function update(model, container, dirty) {
+    if (!model || !container || !dirty || dirty.structural) return false;
+    var prev = container._tpModel;
+    if (!prev || !container._tpLayoutKey) return false;
+    if (!(dirty.r1 >= dirty.r0) || !(dirty.c1 >= dirty.c0)) return false;
+    if (model.height !== prev.height) return false;
+    model._availableWidthPx = prev._availableWidthPx;
+    var groups = groupsOf(model);
+    var metrics = rowMetrics(model);
+    if (layoutKey(model, groups, metrics.rowHeights) !== container._tpLayoutKey) return false;
+
+    var starts = rowAreaStarts(model);
+    var ctx = { onSelect: container._tpOnSelect, container: container };
+    var jobs = [];
+    var g, y;
+    /* Nothing is replaced until every row the repaint needs has been found:
+     * a half-updated sheet would be worse than a full redraw. */
+    for (g = 0; g < groups.length; g++) {
+        var group = groups[g];
+        if (dirty.r1 < group.start || dirty.r0 >= group.end) continue;
+        var set = columnSetOf(model, group.columnsID);
+        var spans = buildSpans(model, group.start, group.end, group.columnsID);
+        var band = repaintRows(model, group, spans, dirty);
+        if (!band) continue;
+        for (y = band.start; y <= band.end; y++) {
+            var tr = container.querySelector('tr[data-row="' + y + '"]');
+            if (!tr || !tr.parentNode) return false;
+            jobs.push({ tr: tr, group: group, set: set, spans: spans, row: y });
+        }
+    }
+    if (!jobs.length) return false;
+    for (var i = 0; i < jobs.length; i++) {
+        var job = jobs[i];
+        var next = buildRow(model, job.group, job.set, job.spans, metrics.rowHeights,
+            ctx, starts, job.row);
+        job.tr.parentNode.replaceChild(next, job.tr);
+    }
+    container._tpModel = model;
+    container._tpRowTops = metrics.rowTops;
+    container._tpRowHeights = metrics.rowHeights;
+    container._tpGroups = groups;
+    syncChrome(container);
+    return true;
 }
 
 function render(model, container, options) {
@@ -1884,16 +2250,11 @@ function render(model, container, options) {
      * area rail on the left take roughly this much of it. */
     model._availableWidthPx = options.width || Math.max(0, (container.clientWidth || 0) - 80);
     var groups = groupsOf(model);
-    var rowHeights = [];
-    var rowTops = [];
-    var acc = 0;
+    var metrics = rowMetrics(model);
+    var rowHeights = metrics.rowHeights;
+    var rowTops = metrics.rowTops;
+    var acc = metrics.total;
     var y;
-    for (y = 0; y < model.height; y++) {
-        rowTops[y] = acc;
-        var rh = rowHeight(model, model.rows[y], y);
-        rowHeights[y] = rh.px;
-        acc += rh.px;
-    }
 
     var left = el('div', 'tp-left');
     var corner = el('div', 'tp-corner');
@@ -1914,7 +2275,7 @@ function render(model, container, options) {
 
     var right = el('div', 'tp-right');
     var gridWrap = el('div', 'tp-grid-wrap');
-    var ctx = { onSelect: options.onSelect };
+    var ctx = { onSelect: options.onSelect, container: container };
     for (var g = 0; g < groups.length; g++) {
         gridWrap.appendChild(renderGroupTable(model, groups[g], ctx, rowHeights));
     }
@@ -1936,7 +2297,13 @@ function render(model, container, options) {
     container._tpRowTops = rowTops;
     container._tpRowHeights = rowHeights;
     container._tpGroups = groups;
+    container._tpActiveColumnRow = null;
+    container._tpActiveColumnsIDSet = false;
+    container._tpActiveColumnsID = '';
     container._tpChromeColumnsID = groupForRowIndex(groups, 0).columnsID || '';
+    /* What the drawn sheet was laid out from, so an incremental repaint can
+     * tell whether the new document still lays out the same way. */
+    container._tpLayoutKey = layoutKey(model, groups, rowHeights);
     syncChrome(container);
     /* render() may run before the container is laid out, and wrapped text or
      * late fonts change row heights afterwards: measure again once the grid
@@ -1962,16 +2329,99 @@ function render(model, container, options) {
     scroll.addEventListener('scroll', function () { updateColumnChrome(container); });
 }
 
+/* What a cell holds and how it ends up looking, for the editing layer: the
+ * cell's own node, the format it inherits from the sheet, the column and the
+ * row, and the text the grid shows. Rows and columns are 0-based here. */
+function cellInfo(model, rowIndex, colIndex) {
+    if (!model || !model.rows) return null;
+    var row = model.rows[rowIndex];
+    if (!row) return null;
+    var cell = cellAt(row, colIndex);
+    var format = effectiveFormat(model, row, cell, colIndex) || {};
+    return {
+        row: rowIndex,
+        col: colIndex,
+        cell: cell,
+        format: format,
+        font: fontOf(model, format),
+        /* The four sides already resolved through the document's line table,
+         * so a caller that shows or edits a border does not have to know how
+         * the format points at it. A side with no line is null. */
+        borders: {
+            left: lineOf(model, format.leftBorder != null && format.leftBorder !== '' ? format.leftBorder : format.border),
+            top: lineOf(model, format.topBorder != null && format.topBorder !== '' ? format.topBorder : format.border),
+            right: lineOf(model, format.rightBorder != null && format.rightBorder !== '' ? format.rightBorder : format.border),
+            bottom: lineOf(model, format.bottomBorder != null && format.bottomBorder !== '' ? format.bottomBorder : format.border)
+        },
+        fillType: (cell && cell.fillType) || format.fillType || 'Text',
+        parameter: (cell && cell.parameter) || '',
+        detail: (cell && cell.detailParameter) || '',
+        text: displayText(cell, format)
+    };
+}
+
+/* The size a row and a column carry in their own formats, in the units the
+ * markup engine takes: a column width in 1C width units and a row height in
+ * points, with null for "not set" — an automatic height or a default width.
+ * The cell's merged format is no use here: width belongs to the column and
+ * height to the row, so neither is inherited down to the cell. */
+function cellSize(model, rowIndex, colIndex) {
+    var row = model && model.rows ? model.rows[rowIndex] : null;
+    var columnFmt = row ? columnFormatOf(model, row, colIndex) : null;
+    var rowFmt = row ? formatByIndex(model.formats, row.formatIndex) : null;
+    var width = columnFmt && columnFmt.width != null && columnFmt.width !== ''
+        ? Number(columnFmt.width) : null;
+    var quarters = rowFmt && rowFmt.height != null && rowFmt.height !== ''
+        ? Number(rowFmt.height) : null;
+    return {
+        width: isFinite(width) && width > 0 ? width : null,
+        /* The format keeps quarter-points; a negative value is a ceiling on an
+         * otherwise automatic row, which counts as no fixed height. */
+        height: quarters != null && isFinite(quarters) && quarters > 0 ? quarters / 4 : null,
+        hidden: !!((columnFmt && columnFmt.hidden === 'true') || (rowFmt && rowFmt.hidden === 'true'))
+    };
+}
+
+/* Column count of the widest column set, which is how far a selection may
+ * reach to the right. */
+function sheetWidth(model) {
+    var sets = (model && model.columnSets) || [];
+    var width = 0;
+    for (var i = 0; i < sets.length; i++) width = Math.max(width, sets[i].size || 0);
+    return width || (columnSetOf(model, '').size || 1);
+}
+
 root.TemplatePreview = {
     detect: detect,
     /* Re-measure rows and move row numbers, areas and drawings onto them. */
     sync: function (container) { if (container && container._tpModel) syncChrome(container); },
     parse: parse,
     render: render,
+    update: update,
     outline: outline,
     outlineIcon: outlineIcon,
     highlight: highlight,
+    clearHighlight: clearHighlight,
+    /* The colour tables and the resolver, so the editing layer shows a named
+     * colour exactly as the sheet paints it. */
+    resolveColor: styleColor,
+    /* The unit conversions the grid itself uses, for a host that wants to show
+     * a size change before it is written. */
+    withTrailingRows: withTrailingRows,
+    documentRows: documentRows,
+    withTrailingColumns: withTrailingColumns,
+    documentColumns: documentColumns,
+    widthToPx: widthToPx,
+    heightToPx: heightToPx,
+    webColours: WEB_COLOURS,
+    winColours: WIN_COLOURS,
+    styleColours: STYLE_COLOURS,
     itemKey: itemKey,
+    cellInfo: cellInfo,
+    cellSize: cellSize,
+    sheetWidth: sheetWidth,
+    activateColumnRow: activateColumnRow,
+    activateColumnSet: activateColumnSet,
     _test: {
         unitToPx: widthToPx,
         widthToPx: widthToPx,
@@ -2020,7 +2470,10 @@ root.TemplatePreview = {
         localizedFrom: localizedFrom,
         centerInScroll: centerInScroll,
         outlineIcon: outlineIcon,
-        pictureDataUrl: pictureDataUrl
+        pictureDataUrl: pictureDataUrl,
+        layoutKey: layoutKey,
+        rowMetrics: rowMetrics,
+        repaintRows: repaintRows
     }
 };
 

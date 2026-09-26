@@ -7,6 +7,7 @@
 #include <functional>
 
 #include "bslcommon.h"
+#include "gitquery.h"
 
 struct ICoreWebView2;
 struct ICoreWebView2Controller;
@@ -41,9 +42,18 @@ struct BslLoadRequest {
     int          fontSize;
     bool         readOnly;
     bool         openFormModule;   // a form opened from its Module.bsl starts on the module tab
+    int          initialLine;      // global-search result to reveal after loading
+    std::wstring initialSearch;    // also seeds Monaco find-next (F3)
+    bool         initialRegexp;
+    bool         initialMatchCase;
+    /* Base URL of the 1C form viewer MCP preview that launched this window
+     * (--preview-session): the form view keeps its annotations there, where
+     * the agent reads them. Empty for every other open. */
+    std::wstring previewSession;
 
     BslLoadRequest() : language("plaintext"), dark(false), fontSize(14), readOnly(true),
-                       openFormModule(false) {}
+                       openFormModule(false), initialLine(0), initialRegexp(false),
+                       initialMatchCase(false) {}
 };
 
 class CWebView2Host {
@@ -97,6 +107,20 @@ public:
     // of waiting for an ack that will never come.
     bool RequestClose();
 
+    // Shows the unpacking panel of an external data processor or report
+    // (.epf/.erf) instead of a text file; mFilePath must name that file.
+    void LoadEpf(bool dark, int fontSize, bool readOnly);
+    void LoadPack(bool dark, int fontSize, bool readOnly);
+    // Shows the assembly panel of the dump mFilePath belongs to (BSLEdit --pack).
+    void OpenPackPanel(bool dark, int fontSize, bool readOnly);
+    // Completion and progress of an unpacking, delivered on the UI thread.
+    static void OnEpfEvent(LPARAM event);
+    // The answer to a git query, delivered on the UI thread.
+    static void OnGitEvent(LPARAM event);
+    // A file of the open document changed behind the editor's back, delivered
+    // on the UI thread.
+    static void OnWatchEvent(LPARAM event);
+
     HWND         mParentWin;
     std::wstring mFilePath;
     TextEncoding mEncoding;
@@ -105,6 +129,23 @@ public:
     // forms, templates and modules, and the way back), so the owner can show
     // the current file in its window title.
     std::function<void(const std::wstring&)> mOnFileOpened;
+    // True while the page holds changes that are not on disk yet. The callback
+    // runs on the UI thread whenever that changes, so the window can mark the
+    // file the way 1C does: a star after its name.
+    bool         mDirty;
+    // The same answer split by file, because the two files of a form are held
+    // and protected one by one: an unsaved module must not stop an agent from
+    // writing the layout, and the open marker of the one is not the other's.
+    bool         mDirtyFile;
+    bool         mDirtyModule;
+    std::function<void(bool)> mOnDirtyChanged;
+    // The settings window of the standalone editor. Set only there: the page
+    // shows its settings button when the load message says the host has one.
+    std::function<void()> mOnOpenSettings;
+    // How templates and modules open: L"edit" or L"view"; empty keeps the
+    // page's own default. Set by BSLEdit from its settings.
+    std::wstring mOpenTemplates;
+    std::wstring mOpenModules;
     // Ext/Form/Module.bsl of a Form.xml, edited and saved alongside the layout.
     std::wstring mFormModulePath;
     TextEncoding mFormModuleEncoding;
@@ -119,11 +160,31 @@ private:
     void OnWebMessage(const std::wstring& msg);
     void OnWebResourceRequested(ICoreWebView2WebResourceRequestedEventArgs* args);
     void OnPageReady();
-    void ExportPdf();
     void CaptureScreenshot();
     void PostJson(const std::wstring& json);
     void ConfigureSettings();
     void Reparent(HWND parent, bool visible);
+    void OnEpfMessage(const std::wstring& msg);
+    void OnPackMessage(const std::wstring& msg);
+    void EnterPackPanel();
+    bool StartPackWindow();
+    void PostPackInfo(const std::wstring& source);
+    void PostEpfInfo(const std::wstring& file, const std::wstring& target,
+                     int kind, const std::wstring& cf, const std::wstring& platform);
+    void CancelEpf();
+    void OnGitMessage(const std::wstring& msg);
+    /* Watching the open files for a write made behind the editor's back: an
+     * agent editing the form the user is looking at. Publish after every load
+     * and every save, so the watcher compares against what is on screen; stop
+     * before the host lets go of its document. */
+    void PublishWatch();
+    void StopWatch();
+    void OnExternalChange(bool module, const TextFile& file);
+    // The file a git query is about: the form module when the page names it,
+    // the opened file otherwise. Which of the two the page asked about is
+    // never a path coming from the page.
+    const std::wstring& GitPathFor(bool module) const;
+    git::FileInfo& GitInfoFor(bool module);
 
     friend class EnvCompletedHandler;
     friend class CtrlCompletedHandler;
@@ -132,7 +193,6 @@ private:
     friend class NavigationStartingHandler;
     friend class NewWindowHandler;
     friend class ProcessFailedHandler;
-    friend class PdfCompletedHandler;
     friend class ScreenshotCompletedHandler;
 
     long                      mRefCount;
@@ -144,6 +204,7 @@ private:
     bool                      mFailed;
     bool                      mPageReady;
     bool                      mHasPending;
+    bool                      mFocusEditorOnPaint;
     bool                      mDark;
     // The display mode of the last load, reused when the page opens a related
     // file (a form of the object window) in place.
@@ -157,6 +218,29 @@ private:
     std::wstring              mPendingJson;
     std::vector<std::wstring> mAllowedRoots;
     std::vector<std::wstring> mContextRoots;
+    // The .epf/.erf whose unpacking panel this host shows (or came from), so
+    // the way back from the unpacked object leads to it.
+    std::wstring              mEpfPath;
+    std::wstring              mPackPath;       // the dump the assembly panel works on
+    std::wstring              mPackObject;     // its object to load, relative to the dump
+    std::wstring              mPackObjectPath; // and the file to come back to
+    struct EpfRun*            mEpfRun;   // the unpacking in progress, if any
+    /* Where the opened file and its form module sit in git, as the last
+     * "gitInfo" found them. Kept so that showing a revision does not have to
+     * locate the repository again, and so that the revision the page names is
+     * only ever paired with a path this host resolved itself. */
+    git::FileInfo             mGitFileInfo;
+    git::FileInfo             mGitModuleInfo;
+    /* Which document the git answers in flight are about. Load() bumps it, so
+     * a worker started for the previous file cannot write that file's root and
+     * relative path back over the state of the one now open. */
+    unsigned                  mGitGen;
+    /* The worker that watches the open files, and what it compares against.
+     * Defined in the implementation: only the watcher touches its innards. */
+    struct HostWatch*         mWatch;
+    /* Which publish a watcher's answer belongs to. Lives on the host so the
+     * numbering survives a watcher being stopped and another one started. */
+    unsigned                  mWatchGen;
 };
 
 #endif // WEBVIEW2HOST_H

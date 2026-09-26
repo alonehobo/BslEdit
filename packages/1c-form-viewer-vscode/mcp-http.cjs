@@ -223,8 +223,13 @@ function startHttpMcpServer({
     res.end(body === undefined ? undefined : JSON.stringify(body));
   };
 
-  const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://127.0.0.1');
+  const handle = async (req, res) => {
+    let url;
+    try {
+      url = new URL(req.url, 'http://127.0.0.1');
+    } catch {
+      return sendJson(res, 400, errorResponse(null, -32000, 'Bad request target.'));
+    }
     if (url.pathname !== '/mcp') return sendJson(res, 404, errorResponse(null, -32000, 'Use /mcp.'));
     if (!LOOPBACK_HOSTS.has(hostnameOf(req.headers.host || ''))) {
       return sendJson(res, 403, errorResponse(null, -32000, 'Host is not loopback.'));
@@ -279,6 +284,16 @@ function startHttpMcpServer({
       return res.end();
     }
     return sendJson(res, 200, Array.isArray(payload) ? responses : responses[0], headers);
+  };
+
+  /* The handler is async: a throw must become a response, not an unhandled
+   * rejection that takes the extension host down. */
+  const server = http.createServer((req, res) => {
+    handle(req, res).catch((error) => {
+      log(`HTTP MCP: ${error?.message || error}`);
+      if (!res.headersSent) sendJson(res, 500, errorResponse(null, -32603, 'Internal error.'));
+      else res.destroy();
+    });
   });
 
   return new Promise((resolve, reject) => {

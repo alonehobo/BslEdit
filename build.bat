@@ -1,4 +1,13 @@
 @echo off
+rem Started by double-click the window would vanish with the error; run the
+rem build in a child and keep the window open when it fails.
+setlocal
+if not "%TC_BSL_BUILD_INNER%"=="1" (
+    set TC_BSL_BUILD_INNER=1
+    cmd /c ""%~f0" %*"
+    if errorlevel 1 (echo.& echo Build failed, see the messages above.& pause& exit /b 1)
+    exit /b 0
+)
 setlocal enabledelayedexpansion
 
 rem Build from wherever the repository actually lives.
@@ -10,9 +19,9 @@ if errorlevel 1 exit /b 1
 
 if not defined WV2SDK set "WV2SDK=%SRC%\webview2sdk\build\native"
 set INCLUDE=%MSVC%\include;%MSVC%\atlmfc\include;%WINSDK%\Include\%SDKVER%\ucrt;%WINSDK%\Include\%SDKVER%\um;%WINSDK%\Include\%SDKVER%\shared;%WINSDK%\Include\%SDKVER%\winrt;%WV2SDK%\include
-set LIBS=ole32.lib oleaut32.lib uuid.lib shlwapi.lib shell32.lib comdlg32.lib user32.lib kernel32.lib advapi32.lib gdi32.lib
+set LIBS=ole32.lib oleaut32.lib uuid.lib shlwapi.lib shell32.lib comdlg32.lib user32.lib kernel32.lib advapi32.lib gdi32.lib crypt32.lib
 set CFLAGS=/nologo /O2 /MT /std:c++17 /EHsc /W3 /wd4584 /utf-8 /D_CRT_SECURE_NO_WARNINGS /DNDEBUG /DWIN32 /D_WINDOWS
-set PLUGIN_SRC="%SRC%\main.cpp" "%SRC%\bslcommon.cpp" "%SRC%\browserhost.cpp" "%SRC%\bslhighlight.cpp" "%SRC%\webview2host.cpp"
+set PLUGIN_SRC="%SRC%\main.cpp" "%SRC%\bslcommon.cpp" "%SRC%\browserhost.cpp" "%SRC%\bslhighlight.cpp" "%SRC%\webview2host.cpp" "%SRC%\epfunpack.cpp" "%SRC%\gitquery.cpp"
 
 if not exist "%WV2SDK%\include\WebView2.h" (
     echo WebView2 SDK missing, fetching...
@@ -46,12 +55,32 @@ if not exist "%SRC%\web\vs\loader.js" (
     )
 )
 
-for %%D in (obj32 obj64 objexe) do if not exist "%SRC%\%%D" mkdir "%SRC%\%%D"
+for %%D in (obj32 obj64 objexe objgen) do if not exist "%SRC%\%%D" mkdir "%SRC%\%%D"
+
+rem The whole interface is linked into each binary, so a release is the .wlx
+rem and the .exe alone. Both still prefer a web\ directory beside them, which
+rem is what keeps editing web\ in this working copy free of a rebuild.
+echo Packing web\ into objgen\web-assets.bin...
+call node "%SRC%\tools\pack-assets.mjs" "%SRC%\web" "%SRC%\objgen\web-assets.bin"
+if errorlevel 1 (
+    echo FAILED: could not pack web\
+    exit /b 1
+)
 
 cd /d "%SRC%"
-"%WINSDK%\bin\%SDKVER%\x64\rc.exe" /nologo /fo "%SRC%\objexe\app.res" "%SRC%\app.rc"
+rem One .res for all three binaries: a resource file is machine neutral, so
+rem the 32-bit plugin links the same one as the 64-bit editor.
+"%WINSDK%\bin\%SDKVER%\x64\rc.exe" /nologo /fo "%SRC%\objgen\app.res" "%SRC%\app.rc"
 if errorlevel 1 (
-    echo FAILED: app icon resource
+    echo FAILED: icon and interface resources
+    exit /b 1
+)
+
+rem A running BSLEdit or a plugin loaded by Total Commander locks the binaries
+rem and the link fails; free them first.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%SRC%\tools\release-build-locks.ps1"
+if errorlevel 1 (
+    echo FAILED: could not free BSLEdit.exe / BSLView.wlx
     exit /b 1
 )
 
@@ -65,7 +94,7 @@ set LIB=%MSVC%\lib\x86;%MSVC%\atlmfc\lib\x86;%WINSDK%\Lib\%SDKVER%\ucrt\x86;%WIN
 cd /d "%SRC%\obj32"
 cl.exe %CFLAGS% /D_USRDLL %PLUGIN_SRC% ^
   /Fe:"%SRC%\BSLView.wlx" ^
-  /link /DLL /DEF:"%SRC%\exports.def" /IMPLIB:"%SRC%\obj32\BSLView.lib" %LIBS% "%WV2SDK%\x86\WebView2LoaderStatic.lib"
+  /link /DLL /DEF:"%SRC%\exports.def" /IMPLIB:"%SRC%\obj32\BSLView.lib" "%SRC%\objgen\app.res" %LIBS% "%WV2SDK%\x86\WebView2LoaderStatic.lib"
 if errorlevel 1 (set FAILED=1& echo FAILED: 32-bit build) else (echo SUCCESS: BSLView.wlx)
 
 echo.
@@ -77,7 +106,7 @@ set LIB=%MSVC%\lib\x64;%MSVC%\atlmfc\lib\x64;%WINSDK%\Lib\%SDKVER%\ucrt\x64;%WIN
 cd /d "%SRC%\obj64"
 cl.exe %CFLAGS% /D_USRDLL %PLUGIN_SRC% ^
   /Fe:"%SRC%\BSLView.wlx64" ^
-  /link /DLL /DEF:"%SRC%\exports.def" /IMPLIB:"%SRC%\obj64\BSLView.lib" %LIBS% "%WV2SDK%\x64\WebView2LoaderStatic.lib"
+  /link /DLL /DEF:"%SRC%\exports.def" /IMPLIB:"%SRC%\obj64\BSLView.lib" "%SRC%\objgen\app.res" %LIBS% "%WV2SDK%\x64\WebView2LoaderStatic.lib"
 if errorlevel 1 (set FAILED=1& echo FAILED: 64-bit build) else (echo SUCCESS: BSLView.wlx64)
 
 echo.
@@ -85,9 +114,9 @@ echo ========================================
 echo Building 64-bit BSLEdit.exe
 echo ========================================
 cd /d "%SRC%\objexe"
-cl.exe %CFLAGS% "%SRC%\bsledit.cpp" "%SRC%\bslcommon.cpp" "%SRC%\webview2host.cpp" ^
+cl.exe %CFLAGS% "%SRC%\bsledit.cpp" "%SRC%\bslcommon.cpp" "%SRC%\webview2host.cpp" "%SRC%\epfunpack.cpp" "%SRC%\gitquery.cpp" ^
   /Fe:"%SRC%\BSLEdit.exe" ^
-  /link "%SRC%\objexe\app.res" %LIBS% "%WV2SDK%\x64\WebView2LoaderStatic.lib" /SUBSYSTEM:WINDOWS
+  /link "%SRC%\objgen\app.res" %LIBS% "%WV2SDK%\x64\WebView2LoaderStatic.lib" /SUBSYSTEM:WINDOWS
 if errorlevel 1 (set FAILED=1& echo FAILED: BSLEdit.exe build) else (echo SUCCESS: BSLEdit.exe)
 
 cd /d "%SRC%"

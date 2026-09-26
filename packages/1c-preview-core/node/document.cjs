@@ -207,7 +207,7 @@ function styleItemValue(xml) {
 }
 
 /* The extensions any host is willing to open. */
-const SUPPORTED_EXTENSIONS = ['.xml', '.mxl'];
+const SUPPORTED_EXTENSIONS = ['.xml', '.form', '.mxl', '.mxlx'];
 
 function isSupportedExtension(filePath) {
   return SUPPORTED_EXTENSIONS.includes(path.extname(filePath).toLowerCase());

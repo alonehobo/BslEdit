@@ -68,6 +68,7 @@
       const result = PreviewProviders.parse(entry, payload.content, {
         baseForm: payload.baseForm || '',
         objectMeta: payload.objectMeta,
+        interfaceMode: payload.interfaceMode || 'Any',
         commonCommands: payload.commonCommands || {},
         commonPictures: payload.commonPictures || {},
         styleItems: payload.styleItems || {},

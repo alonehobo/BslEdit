@@ -21,6 +21,7 @@ static ATOM g_wndClass = 0;
 static std::wstring g_iniPath;
 static std::wstring g_webRoot;
 static bool g_webRootUsable = false;
+static bool g_webRootResolved = false;
 
 // --- Settings --------------------------------------------------------------
 
@@ -33,6 +34,7 @@ struct Settings {
     std::wstring bslExts;
     std::wstring queryExts;
     std::wstring textExts;
+    std::wstring epfExts;     // external data processors and reports: the unpacking panel
     bool         loaded;
 };
 
@@ -60,7 +62,8 @@ static void LoadSettings(bool force)
 
     g_settings.bslExts   = IniStr(L"Extensions", L"BSLExtensions", L"bsl;os");
     g_settings.queryExts = IniStr(L"Extensions", L"QueryExtensions", L"sdbl;query");
-    g_settings.textExts  = IniStr(L"Extensions", L"TextExtensions", L"md;markdown;json;xml;ps1;psm1;psd1;html;htm;mxl;sarif");
+    g_settings.textExts  = IniStr(L"Extensions", L"TextExtensions", L"md;markdown;mdc;json;xml;form;ps1;psm1;psd1;html;htm;mxl;sarif");
+    g_settings.epfExts   = IniStr(L"Extensions", L"EpfExtensions", L"epf;erf;cf;cfe;dt");
     g_settings.loaded = true;
 }
 
@@ -113,7 +116,8 @@ static bool IsSupported(const wchar_t* filePath)
 {
     return HasExtension(filePath, g_settings.bslExts)
         || HasExtension(filePath, g_settings.queryExts)
-        || HasExtension(filePath, g_settings.textExts);
+        || HasExtension(filePath, g_settings.textExts)
+        || HasExtension(filePath, g_settings.epfExts);
 }
 
 static bool ResolveDarkMode(int showFlags)
@@ -258,12 +262,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPara
 
 static void InitPaths()
 {
-    std::wstring dir = ModuleDirectory(g_hInst);
-    g_iniPath = dir + L"BSLView.ini";
-    g_webRoot = dir + L"web";
+    g_iniPath = ModuleDirectory(g_hInst) + L"BSLView.ini";
+}
 
-    std::wstring viewer = g_webRoot + L"\\viewer.html";
-    g_webRootUsable = (GetFileAttributesW(viewer.c_str()) != INVALID_FILE_ATTRIBUTES);
+// The interface is linked into the plugin and the first run of a build
+// unpacks it into a per-user cache, which is far too much work for DllMain
+// and its loader lock. Total Commander asks for the detect string and for a
+// window well after that, so the first of those calls pays for it instead.
+static void EnsureWebRoot()
+{
+    if (g_webRootResolved) return;
+    g_webRootResolved = true;
+    g_webRoot = ResolveWebRoot(g_hInst);
+    g_webRootUsable = !g_webRoot.empty();
 }
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
@@ -304,29 +315,44 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
 static std::wstring ResolveListFile(const wchar_t* fileToLoadIn, bool webView, bool* openFormModule)
 {
     *openFormModule = false;
-    std::wstring layout = FindFormLayoutForMeta(fileToLoadIn);
+    std::wstring configuration = FindConfigurationForDumpInfo(fileToLoadIn);
+    std::wstring source = configuration.empty() ? std::wstring(fileToLoadIn) : configuration;
+    std::wstring layout = FindFormLayoutForMeta(source.c_str());
     if (!layout.empty()) return layout;
     if (webView) {
-        layout = FindFormLayoutForModule(fileToLoadIn);
+        layout = FindFormLayoutForModule(source.c_str());
         if (!layout.empty()) {
             *openFormModule = true;
             return layout;
         }
     }
-    return fileToLoadIn;
+    return source;
+}
+
+// The caption Total Commander writes for a Lister window, plus the star of a
+// document with changes that are not on disk yet — the mark 1C uses.
+static std::wstring ListerTitleFor(const std::wstring& path, bool dirty)
+{
+    return L"Lister - [" + path + (dirty ? L" *" : L"") + L"]";
 }
 
 static HWND DoListLoad(HWND parentWin, const wchar_t* fileToLoadIn, int showFlags)
 {
     LoadSettings(false);
     if (!IsSupported(fileToLoadIn)) return NULL;
+    EnsureWebRoot();
 
     bool wantMonaco = g_settings.useMonaco && g_webRootUsable && CWebView2Host::IsRuntimeAvailable();
+    // The unpacking panel of an .epf/.erf exists in the WebView2 viewer only.
+    bool epfFile = HasExtension(fileToLoadIn, g_settings.epfExts);
+    if (epfFile && !wantMonaco) return NULL;
     bool openFormModule = false;
-    std::wstring resolved = ResolveListFile(fileToLoadIn, wantMonaco, &openFormModule);
+    std::wstring resolved = epfFile ? std::wstring(fileToLoadIn)
+        : ResolveListFile(fileToLoadIn, wantMonaco, &openFormModule);
     const wchar_t* fileToLoad = resolved.c_str();
 
-    TextFile file = ReadTextFile(fileToLoad, g_settings.maxBytes);
+    TextFile file = epfFile ? TextFile() : ReadTextFile(fileToLoad, g_settings.maxBytes);
+    if (epfFile) file.ok = true;
     if (!file.ok) return NULL;   // unreadable or over the size limit
 
     RECT rcParent;
@@ -354,8 +380,15 @@ static HWND DoListLoad(HWND parentWin, const wchar_t* fileToLoadIn, int showFlag
         st->wv->mOnFileOpened = [hwnd, parentWin](const std::wstring& path) {
             WindowState* state = (WindowState*)GetPropW(hwnd, PROP_STATE);
             if (state) state->filePath = path;
-            std::wstring title = L"Lister - [" + path + L"]";
-            SetWindowTextW(parentWin, title.c_str());
+            bool dirty = state && state->wv ? state->wv->mDirty : false;
+            SetWindowTextW(parentWin, ListerTitleFor(path, dirty).c_str());
+        };
+        /* Unsaved changes carry a star after the file name, the way 1C marks a
+         * document that differs from what is on disk. */
+        st->wv->mOnDirtyChanged = [hwnd, parentWin](bool dirty) {
+            WindowState* state = (WindowState*)GetPropW(hwnd, PROP_STATE);
+            if (!state) return;
+            SetWindowTextW(parentWin, ListerTitleFor(state->filePath, dirty).c_str());
         };
         st->wv->mEncoding = st->encoding;
         st->wv->mFileRevision = file.revision;
@@ -367,7 +400,8 @@ static HWND DoListLoad(HWND parentWin, const wchar_t* fileToLoadIn, int showFlag
         req.fontSize = g_settings.fontSize;
         req.readOnly = true;
         req.openFormModule = openFormModule;
-        st->wv->Load(req);
+        if (epfFile) st->wv->LoadEpf(req.dark, req.fontSize, req.readOnly);
+        else st->wv->Load(req);
 
         // The browser attaches asynchronously; the window is already valid, so
         // Total Commander gets it back without waiting for Chromium to start.
@@ -385,11 +419,15 @@ static int LoadNextNow(HWND pluginWin, const wchar_t* fileToLoadIn, int showFlag
     WindowState* st = (WindowState*)GetPropW(pluginWin, PROP_STATE);
     if (!st) return LISTPLUGIN_ERROR;
 
+    bool epfFile = HasExtension(fileToLoadIn, g_settings.epfExts);
+    if (epfFile && !st->wv) return LISTPLUGIN_ERROR;
     bool openFormModule = false;
-    std::wstring resolved = ResolveListFile(fileToLoadIn, st->wv != NULL, &openFormModule);
+    std::wstring resolved = epfFile ? std::wstring(fileToLoadIn)
+        : ResolveListFile(fileToLoadIn, st->wv != NULL, &openFormModule);
     const wchar_t* fileToLoad = resolved.c_str();
 
-    TextFile file = ReadTextFile(fileToLoad, g_settings.maxBytes);
+    TextFile file = epfFile ? TextFile() : ReadTextFile(fileToLoad, g_settings.maxBytes);
+    if (epfFile) file.ok = true;
     if (!file.ok) return LISTPLUGIN_ERROR;
 
     st->filePath = fileToLoad;
@@ -412,7 +450,8 @@ static int LoadNextNow(HWND pluginWin, const wchar_t* fileToLoadIn, int showFlag
         req.fontSize = g_settings.fontSize;
         req.readOnly = true;
         req.openFormModule = openFormModule;
-        st->wv->Load(req);
+        if (epfFile) st->wv->LoadEpf(req.dark, req.fontSize, req.readOnly);
+        else st->wv->Load(req);
         return LISTPLUGIN_OK;
     }
 
@@ -447,6 +486,7 @@ void __stdcall ListSetDefaultParams(ListDefaultParamStruct* dps)
     (void)dps;
     InitPaths();
     LoadSettings(true);
+    EnsureWebRoot();
     // Total Commander calls this once at startup. Start the WebView2
     // environment early; the first F3 creates the controller on the real
     // Lister HWND (creating it on the off-screen park first caused black).
@@ -459,7 +499,8 @@ void __stdcall ListGetDetectString(char* DetectString, int maxlen)
 {
     LoadSettings(false);
 
-    std::wstring all = g_settings.bslExts + L";" + g_settings.queryExts + L";" + g_settings.textExts;
+    std::wstring all = g_settings.bslExts + L";" + g_settings.queryExts + L";" + g_settings.textExts
+        + L";" + g_settings.epfExts;
     std::string detect;
     size_t pos = 0;
     while (pos <= all.size()) {

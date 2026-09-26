@@ -6,13 +6,15 @@ type JsonObject = Record<string, unknown>;
 
 interface ViewerApi {
   ready: boolean;
-  load(input: { path: string; content: string; baseForm: string; objectMeta: string; refMeta?: Record<string, string>; commonCommands?: Record<string, string>; commonPictures?: LoadedDocument['commonPictures']; styleItems?: Record<string, string> }): BrowserPreviewState;
+  load(input: { path: string; content: string; baseForm: string; objectMeta: string; interfaceMode?: string; refMeta?: Record<string, string>; commonCommands?: Record<string, string>; commonPictures?: LoadedDocument['commonPictures']; styleItems?: Record<string, string>; basePath?: string; baseRevision?: string; baseContent?: string; baseDescription?: string }): BrowserPreviewState;
   state(): BrowserPreviewState;
   inspect(options: { query?: string; visibleOnly?: boolean }): JsonObject[];
   selectElement(id: string): JsonObject;
   switchTab(pageId: string, pagesId?: string): BrowserPreviewState;
   scroll(options: JsonObject): JsonObject;
+  reflow(): BrowserPreviewState;
   elementSelector(id: string): string;
+  capture(scope: CaptureScope, elementId: string): Promise<{ data: string; mimeType: string }>;
 }
 
 declare global {
@@ -24,36 +26,89 @@ declare global {
 export type CaptureScope = 'viewport' | 'document' | 'element';
 export interface CaptureViewport { width: number; height: number }
 
+/* The Windows host renders in the system Edge; other platforms fall back to
+ * playwright's own Chromium download (`npx playwright-core install
+ * chromium-headless-shell`). ONE_C_FORM_VIEWER_CHROMIUM points at a custom
+ * browser executable on any platform. */
+function browserLaunchOptions(): { channel?: string; executablePath?: string } {
+  if (process.env.ONE_C_FORM_VIEWER_CHROMIUM) {
+    return { executablePath: process.env.ONE_C_FORM_VIEWER_CHROMIUM };
+  }
+  if (process.platform === 'win32') return { channel: 'msedge' };
+  return {};
+}
+
+async function launchBrowser(headless: boolean): Promise<Browser> {
+  try {
+    return await chromium.launch({
+      ...browserLaunchOptions(),
+      headless,
+      /* Playwright hides scrollbars in headless mode, while WebView2 hosts
+       * and headed Edge paint them. Keep captures faithful to the host. */
+      ignoreDefaultArgs: ['--hide-scrollbars'],
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(process.platform === 'win32'
+      ? `Microsoft Edge could not be started. Install Edge or set ONE_C_FORM_VIEWER_CHROMIUM to another Chromium browser. ${detail}`
+      : `Chromium could not be started. Install it with "npx playwright-core install chromium-headless-shell" or set ONE_C_FORM_VIEWER_CHROMIUM. ${detail}`);
+  }
+}
+
+/* One browser process for several sessions, each in its own context — the
+ * MCP server keeps a preview per open file, and a browser per preview cost
+ * a whole Chromium each. Launched on first use and again after it died. */
+export class SharedBrowser {
+  private launching: Promise<Browser> | null = null;
+
+  constructor(private readonly headless: boolean) {}
+
+  async acquire(): Promise<Browser> {
+    if (this.launching) {
+      const current = await this.launching.catch(() => null);
+      if (current?.isConnected()) return current;
+    }
+    const launching = launchBrowser(this.headless);
+    this.launching = launching;
+    launching.catch(() => {
+      if (this.launching === launching) this.launching = null;
+    });
+    return launching;
+  }
+
+  async close(): Promise<void> {
+    const launching = this.launching;
+    this.launching = null;
+    const browser = launching ? await launching.catch(() => null) : null;
+    if (browser) await browser.close().catch(() => undefined);
+  }
+}
+
 export class BrowserSession {
   private browser: Browser | null = null;
   private context: BrowserContext | null = null;
   private page: Page | null = null;
   private readonly assets: StaticAssetServer;
 
-  constructor(private readonly options: ViewerOptions) {
+  constructor(private readonly options: ViewerOptions, private readonly shared?: SharedBrowser) {
     this.assets = new StaticAssetServer(options.assetsDir);
   }
 
   private async ensurePage(): Promise<Page> {
     if (this.page && !this.page.isClosed()) return this.page;
-    const url = await this.assets.start();
+    await this.assets.start();
     let browser: Browser;
     try {
-      browser = await chromium.launch({
-        channel: 'msedge',
-        headless: this.options.headless,
-        /* Playwright hides scrollbars in headless mode, while WebView2 hosts
-         * and headed Edge paint them. Keep captures faithful to the host. */
-        ignoreDefaultArgs: ['--hide-scrollbars'],
-      });
+      browser = this.shared ? await this.shared.acquire() : await launchBrowser(this.options.headless);
     } catch (error) {
       await this.assets.close();
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Microsoft Edge could not be started. Install Edge or use a Windows host with Edge available. ${detail}`);
+      throw error;
     }
     /* Everything past a successful launch has to clean up after itself. Leaving
      * a launched browser behind on a failed newContext/goto left an orphan Edge
-     * process running and the next call simply launched another one. */
+     * process running and the next call simply launched another one. A shared
+     * browser stays up for the other sessions; only this context goes. */
+    let context: BrowserContext | null = null;
     try {
       /* Compare identity before clearing: a late 'disconnected' from a replaced
        * browser must not wipe the handles of its successor. */
@@ -63,16 +118,22 @@ export class BrowserSession {
         this.context = null;
         this.page = null;
       });
-      const context = await browser.newContext({ viewport: this.options.viewport });
+      context = await browser.newContext({ viewport: this.options.viewport });
       const page = await context.newPage();
-      await page.goto(url, { waitUntil: 'load' });
+      /* internalPreview (the MCP server) runs the page the way the native
+       * server's hidden renderer does — internal + bare, captures framed on
+       * the form host with no viewer chrome. The default stays the plain page
+       * the e2e suite and the other hosts drive. */
+      const startUrl = this.assets.url();
+      await page.goto(this.options.internalPreview ? `${this.assets.internalUrl()}&bare=1` : startUrl, { waitUntil: 'load' });
       await page.waitForFunction(() => window.AgentViewer?.ready === true);
       this.browser = browser;
       this.context = context;
       this.page = page;
       return page;
     } catch (error) {
-      await browser.close().catch(() => undefined);
+      if (this.shared) await context?.close().catch(() => undefined);
+      else await browser.close().catch(() => undefined);
       await this.assets.close();
       throw error;
     }
@@ -97,10 +158,18 @@ export class BrowserSession {
       content: document.content,
       baseForm: document.baseForm,
       objectMeta: document.objectMeta,
+      interfaceMode: document.interfaceMode || 'Any',
+      configInterfaceMode: document.configInterfaceMode || '',
       refMeta: document.refMeta || {},
       commonCommands: document.commonCommands || {},
       commonPictures: document.commonPictures || {},
       styleItems: document.styleItems || {},
+      ...(document.basePath ? {
+        basePath: document.basePath,
+        baseRevision: document.baseRevision || '',
+        baseContent: document.baseContent || '',
+        baseDescription: document.baseDescription || '',
+      } : {}),
     });
     await page.waitForTimeout(25);
     return state;
@@ -108,6 +177,14 @@ export class BrowserSession {
 
   async state(): Promise<BrowserPreviewState> {
     return this.requirePage().evaluate(() => window.AgentViewer.state());
+  }
+
+  /** Apply a new host viewport and synchronously finish the renderer layout
+   * that belongs to it before returning. */
+  async resize(viewport: CaptureViewport): Promise<BrowserPreviewState> {
+    const page = this.requirePage();
+    await page.setViewportSize(viewport);
+    return page.evaluate(() => window.AgentViewer.reflow());
   }
 
   async inspect(query?: string, visibleOnly = false): Promise<JsonObject[]> {
@@ -142,6 +219,18 @@ export class BrowserSession {
   }
 
   private async capturePng(page: Page, scope: CaptureScope, elementId?: string): Promise<Buffer> {
+    /* internalPreview: captures go through the page itself
+     * (AgentViewer.capture). Its SVG foreignObject rasterisation is what the
+     * native server returns — framed on the form host, no viewer chrome, and a
+     * document capture re-lays scrollable areas at their full size. */
+    if (this.options.internalPreview) {
+      if (scope === 'element' && !elementId) throw new Error('element_id is required when scope is element.');
+      const result = await page.evaluate(
+        ({ scope: captureScope, id }) => window.AgentViewer.capture(captureScope, id),
+        { scope, id: elementId || '' },
+      );
+      return Buffer.from(result.data, 'base64');
+    }
     if (scope !== 'element') return page.screenshot({ type: 'png', fullPage: scope === 'document' });
     if (!elementId) throw new Error('element_id is required when scope is element.');
     const selector = await page.evaluate((id) => window.AgentViewer.elementSelector(id), elementId);
@@ -163,24 +252,26 @@ export class BrowserSession {
      * re-laid out every later inspect, scroll and capture in the session
      * against a window nobody asked for. */
     const previous = viewport ? page.viewportSize() : null;
-    if (viewport) await page.setViewportSize(viewport);
+    if (viewport) await this.resize(viewport);
     try {
       const image = await this.capturePng(page, scope, elementId);
       const state = await page.evaluate(() => window.AgentViewer.state());
       return { image, state };
     } finally {
-      if (previous) await page.setViewportSize(previous);
+      if (previous) await this.resize(previous);
     }
   }
 
   async close(): Promise<void> {
     const browser = this.browser;
+    const context = this.context;
     this.page = null;
     this.context = null;
     this.browser = null;
     this.assets.clearDocument();
     try {
-      if (browser) await browser.close();
+      if (this.shared) await context?.close();
+      else if (browser) await browser.close();
     } finally {
       /* The asset server holds a listening port. A browser that refuses to go
        * away must not leave it bound for the rest of the process. */

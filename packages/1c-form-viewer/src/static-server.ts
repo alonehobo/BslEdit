@@ -14,7 +14,7 @@ const MIME: Record<string, string> = {
   '.png': 'image/png',
 };
 
-type PreviewDocument = Pick<LoadedDocument, 'resolvedPath' | 'content' | 'baseForm' | 'objectMeta' | 'refMeta' | 'commonCommands' | 'commonPictures' | 'styleItems'>;
+type PreviewDocument = Pick<LoadedDocument, 'resolvedPath' | 'content' | 'baseForm' | 'objectMeta' | 'interfaceMode' | 'refMeta' | 'commonCommands' | 'commonPictures' | 'styleItems' | 'basePath' | 'baseRevision' | 'baseContent' | 'baseDescription'>;
 
 export class StaticAssetServer {
   private server: Server | null = null;
@@ -89,10 +89,17 @@ export class StaticAssetServer {
             content: this.current.content,
             baseForm: this.current.baseForm,
             objectMeta: this.current.objectMeta,
+            interfaceMode: this.current.interfaceMode,
             refMeta: this.current.refMeta || {},
             commonCommands: this.current.commonCommands || {},
             commonPictures: this.current.commonPictures || {},
             styleItems: this.current.styleItems || {},
+            ...(this.current.basePath ? {
+              basePath: this.current.basePath,
+              baseRevision: this.current.baseRevision || '',
+              baseContent: this.current.baseContent || '',
+              baseDescription: this.current.baseDescription || '',
+            } : {}),
           }));
           return;
         }
@@ -108,7 +115,7 @@ export class StaticAssetServer {
         response.writeHead(200, {
           'Content-Type': MIME[path.extname(candidate).toLowerCase()] || 'application/octet-stream',
           'Cache-Control': 'no-store',
-          'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'",
+          'Content-Security-Policy': "default-src 'self'; img-src 'self' data:; font-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; object-src 'none'; base-uri 'none'",
           'X-Content-Type-Options': 'nosniff',
         });
         response.end(body);

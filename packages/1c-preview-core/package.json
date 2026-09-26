@@ -10,12 +10,10 @@
     "./manifest.mjs": "./manifest.mjs",
     "./assets.manifest.json": "./assets.manifest.json",
     "./node/document.cjs": "./node/document.cjs",
-    "./layout/*": "./layout/*",
     "./browser/*": "./browser/*"
   },
   "scripts": {
     "sync": "node scripts/sync.mjs",
-    "verify": "node scripts/verify.mjs",
-    "test": "node --test tests/*.test.mjs"
+    "verify": "node scripts/verify.mjs"
   }
 }

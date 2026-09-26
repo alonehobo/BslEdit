@@ -1,7 +1,8 @@
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import '1c-preview-core/browser/form-context.js';
+// Resolve the shared browser script from this checkout, including in isolated worktrees.
+import '../../1c-preview-core/browser/form-context.js';
 import type { LoadedDocument } from './types.js';
 
 /* The 1C-specific rules — encodings, form descriptors, object metadata, common
@@ -19,6 +20,7 @@ interface FormContextIo {
   cacheGet?(directory: string, key: string): Promise<string | null>;
   cachePut?(directory: string, key: string, text: string): Promise<void>;
   baseConfigurations?(extensionRoot: string): Promise<string[]>;
+  extensionConfigurations?(configurationRoot: string): Promise<string[]>;
 }
 
 interface FormContextApi {
@@ -27,7 +29,7 @@ interface FormContextApi {
   formLayoutFor(filePath: string): string;
   createResolver(io: FormContextIo, options: { maxBytes: number; cache: object }): {
     resolve(formPath: string, formXml: string): Promise<Pick<LoadedDocument,
-      'baseForm' | 'objectMeta' | 'refMeta' | 'commonCommands' | 'commonPictures' | 'styleItems'>>;
+      'baseForm' | 'objectMeta' | 'interfaceMode' | 'configInterfaceMode' | 'refMeta' | 'commonCommands' | 'commonPictures' | 'styleItems'>>;
   };
 }
 
@@ -86,14 +88,15 @@ async function isExtensionConfiguration(directory: string): Promise<boolean | nu
   }
 }
 
-/* io.baseConfigurations of form-context.js, the twin of
- * context_batch::FindBaseConfigurations in native/context-batch.h: from the
- * extension root's parent upwards (three levels, never a volume root) each
- * level's subdirectories are searched two deep for a Configuration.xml that is
- * not an extension; a configuration directory is not entered. The nearest
- * level with a find answers. */
-export async function findBaseConfigurations(extensionRoot: string): Promise<string[]> {
-  const root = path.resolve(extensionRoot);
+/* io.baseConfigurations and io.extensionConfigurations of form-context.js,
+ * the twin of context_batch::FindConfigurations in native/context-batch.h:
+ * from the root's parent upwards (three levels, never a volume root) each
+ * level's subdirectories are searched two deep for a Configuration.xml of the
+ * wanted kind — a plain configuration for an extension, an extension for a
+ * configuration; a configuration directory is not entered. The nearest level
+ * with a find answers. */
+export async function findConfigurations(fromRoot: string, wantExtension: boolean): Promise<string[]> {
+  const root = path.resolve(fromRoot);
   const found: string[] = [];
   let budget = 4096;
   async function scan(directory: string, depth: number): Promise<void> {
@@ -108,7 +111,7 @@ export async function findBaseConfigurations(extensionRoot: string): Promise<str
       if (normalizeForComparison(child) === normalizeForComparison(root)) continue;
       const extension = await isExtensionConfiguration(child);
       if (extension !== null) {
-        if (!extension) found.push(child);
+        if (extension === wantExtension) found.push(child);
         continue;
       }
       if (depth < 2) await scan(child, depth + 1);
@@ -122,6 +125,14 @@ export async function findBaseConfigurations(extensionRoot: string): Promise<str
     await scan(level, 1);
   }
   return found;
+}
+
+export function findBaseConfigurations(extensionRoot: string): Promise<string[]> {
+  return findConfigurations(extensionRoot, false);
+}
+
+export function findExtensionConfigurations(configurationRoot: string): Promise<string[]> {
+  return findConfigurations(configurationRoot, true);
 }
 
 function normalizeForComparison(value: string): string {
@@ -251,6 +262,11 @@ export class FileLoader {
       baseConfigurations: async (extensionRoot) => {
         if (!path.isAbsolute(extensionRoot) || !this.directoryAllowed(extensionRoot)) return [];
         return (await findBaseConfigurations(extensionRoot)).filter((directory) => this.directoryAllowed(directory));
+      },
+      extensionConfigurations: async (configurationRoot) => {
+        if (!path.isAbsolute(configurationRoot) || !this.directoryAllowed(configurationRoot)) return [];
+        return (await findExtensionConfigurations(configurationRoot))
+          .filter((directory) => this.directoryAllowed(directory));
       },
       cacheGet: async (directory, key) => {
         const store = this.cacheFile(directory, key);

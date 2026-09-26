@@ -56,19 +56,11 @@ var TYPE_TABLE_STRING_HEADER_CHARS = 20;
 var TYPE_DATE_PRESENTATION_CHARS = 10;
 var TYPE_TIME_PRESENTATION_CHARS = 8;
 var TYPE_DATETIME_PRESENTATION_CHARS = 22;
-/* The reference char-unit ruler micro-form resolves Width 5/10/20/40 to
- * 60/110/210/410 px. The browser keeps its established 8px rendering grid,
- * but responsive decisions must see the reference's 10px authored normal-width grid. */
 var REF_AUTHORED_CHAR_PX = 10;
 var ROW_PX = 18;
-/* The reference Taxi layout uses different spacing scales on the two axes.
- * These are layout units at the baseline browser profile; font-dependent
- * element sizes are still measured from the DOM instead of copied verbatim.
- * The vertical Half/OneAndHalf steps are the large-font 4.5/13.5 of the reference
- * layout contract rounded up, not accumulated: the reference paints every Half gap as
- * a full 5px band. This is visible on #F0F0F0 column groups holding white
- * cards, where the gap itself is the grey separator between them - carrying
- * 4.5 through instead leaves the second and third band a pixel short. */
+var CLEAN85_AUTOSIZE_PICTURE_ROW_PX = 43;
+var CLEAN85_AUTHORED_BAND_GAP_PX = 16;
+var CLEAN85_GROUP_COL_PX = 11;
 var TAXI_LAYOUT_METRICS = {
     horizontalSpacing: { none: 0, half: 5, single: 10, oneandhalf: 15, double: 20 },
     verticalSpacing: { none: 0, half: 5, single: 9, oneandhalf: 14, double: 18 },
@@ -114,18 +106,11 @@ var TAXI_LAYOUT_METRICS = {
     windowChrome: { width: 21, height: 44 },
     compressedElementMinimumWidth: 10,
     compressedFieldMinimumWidth: 71,
-    /* The char-unit ruler keeps an input editor at roughly 70 px when the reference
-     * evaluates the later responsive fallbacks. This decision width must not
-     * leak into the browser's ordinary dimension allocator. */
     responsiveCompressedElementMinimumWidth: 70,
     /* TitleOnTop compresses a long automatic caption to about 97 px at
      * the last left-title width before promoting it. */
     compressedTitleMaximumWidth: 100
 };
-/* The reference layout units are not CSS pixels. The current 12px browser Taxi profile
- * maps one horizontal unit to 0.8px and one vertical unit to 4/3px; this
- * preserves the Single gap while retaining the reference's axis-aware
- * semantic scale (including None and OneAndHalf). */
 var TAXI_BROWSER_METRICS = {
     horizontalSpacing: { none: 0, half: 4, single: 8, oneandhalf: 12, double: 16 },
     verticalSpacing: { none: 0, half: 5, single: 9, oneandhalf: 14, double: 18 },
@@ -147,7 +132,6 @@ var HORIZONTAL_STRATEGY_VALUES = {
  * Height to 16 px rows at the 12 px Taxi baseline. */
 var GROUP_COL_PX = 10;
 var GROUP_ROW_PX = 16;
-var TABLE_COL_PX = 9;
 var RARE_TAGS = {
     TrackBarField: 1, ProgressBarField: 1, TextDocumentField: 1,
     SpreadSheetDocumentField: 1, HTMLDocumentField: 1, ChartField: 1,
@@ -186,9 +170,6 @@ function detect(xml) {
 }
 
 function localizedFrom(el) {
-    /* Localized captions are normally one line, but an explicit newline in
-     * v8:content is an authored layout boundary (the reference keeps it in field and
-     * decoration titles). Normalize indentation without flattening lines. */
     return XU.localizedFrom(el, function (node) {
         return XU.rawText(node).replace(/[ \t]+/g, ' ')
             .replace(/ *\n */g, '\n').trim();
@@ -546,6 +527,8 @@ function applyStructuredRuntime(item) {
         if (values.RowFilter) runtime.rowFilter = normalizeStructuredRowFilter(values.RowFilter);
     }
     if (item.tag === 'InputField') {
+        if (values.ChoiceButtonPicture)
+            runtime.choiceButtonPicture = normalizeStructuredPicture(values.ChoiceButtonPicture);
         if (values.ChoiceParameterLinks)
             runtime.choiceParameterLinks = normalizeChoiceParameterLinks(values.ChoiceParameterLinks);
         if (values.ChoiceParameters)
@@ -677,6 +660,20 @@ var EVENT_TITLES = {
     URLGetProcessing: 'ОбработкаПолученияНавигационнойСсылки',
     URLListGetProcessing: 'ОбработкаПолученияСпискаНавигационныхСсылок'
 };
+
+/* Object and manager module events, for event subscriptions and the object window. */
+(function (extra) {
+    for (var key in extra) if (!Object.prototype.hasOwnProperty.call(EVENT_TITLES, key)) EVENT_TITLES[key] = extra[key];
+})({
+    OnWrite: 'ПриЗаписи', BeforeDelete: 'ПередУдалением', Filling: 'ОбработкаЗаполнения', OnCopy: 'ПриКопировании',
+    FormGetProcessing: 'ОбработкаПолученияФормы', OnSetNewNumber: 'ПриУстановкеНовогоНомера',
+    OnSetNewCode: 'ПриУстановкеНовогоКода', Posting: 'ОбработкаПроведения', UndoPosting: 'ОбработкаУдаленияПроведения',
+    ChoiceDataGetProcessing: 'ОбработкаПолученияДанныхВыбора', PresentationGetProcessing: 'ОбработкаПолученияПредставления',
+    PresentationFieldsGetProcessing: 'ОбработкаПолученияПолейПредставления', OnReceiveDataFromMaster: 'ПриПолученииДанныхОтГлавного',
+    OnReceiveDataFromSlave: 'ПриПолученииДанныхОтПодчиненного', OnSendDataToMaster: 'ПриОтправкеДанныхГлавному',
+    OnSendDataToSlave: 'ПриОтправкеДанныхПодчиненному', OnComposeResult: 'ПриКомпоновкеРезультата',
+    BeforeStart: 'ПередСтартом', OnStart: 'ПриСтарте', BeforeInteractiveActivate: 'ПередИнтерактивнойАктивизацией'
+});
 
 function eventTitle(name) {
     var raw = String(name || '');
@@ -823,10 +820,6 @@ function parseChoiceList(el) {
                     var nested = localizedFrom(vp);
                     if (nested) pres = nested;
                 }
-                /* Some project-format exports leave both Presentation nodes empty and
-                 * serialize an enum DesignTimeRef as the only stable label.
-                 * The reference paints that serialized value name verbatim in the form
-                 * designer; humanizing it changes both text and row geometry. */
                 if (!pres) {
                     var value = firstChild(ch, 'Value');
                     var ref = value && textOf(value);
@@ -1004,9 +997,19 @@ function parseNamedList(section, itemTag) {
         var settings = null;
         if (settingsEl) {
             var mainTableEl = firstChild(settingsEl, 'MainTable');
+            var fieldTitles = {};
+            var fieldEls = namedChildren(settingsEl, 'Field');
+            for (var fe = 0; fe < fieldEls.length; fe++) {
+                var fieldPath = textOf(firstChild(fieldEls[fe], 'dataPath'));
+                var fieldTitle = localizedFrom(firstChild(fieldEls[fe], 'title'));
+                if (fieldPath && fieldTitle) fieldTitles[fieldPath] = fieldTitle;
+            }
             settings = {
                 type: settingsEl.getAttribute('xsi:type') || settingsEl.getAttribute('type') || '',
                 mainTable: mainTableEl ? textOf(mainTableEl) : '',
+                manualQuery: textOf(firstChild(settingsEl, 'ManualQuery')) === 'true',
+                queryText: textOf(firstChild(settingsEl, 'QueryText')),
+                fieldTitles: fieldTitles,
                 structuredValue: parseStructuredXmlValue(settingsEl)
             };
         }
@@ -1052,7 +1055,62 @@ function resetViewState() {
     activePageIdByPagesKey = Object.create(null);
 }
 
-function parse(xml, objectMetaXml, styleItems, baseFormXml, commonCommandXml, commonPictures, refMetaXml) {
+function attachFormVersion(items, version) {
+    for (var i = 0; i < (items || []).length; i++) {
+        var item = items[i];
+        if (!item) continue;
+        Object.defineProperty(item, '_fpFormVersion', {
+            value: String(version || ''), configurable: true, writable: true
+        });
+        attachFormVersion(item.childItems, version);
+    }
+}
+
+function formVersionAtLeast(item, required) {
+    var actual = String(item && item._fpFormVersion || '').split('.').map(Number);
+    var expected = String(required || '').split('.').map(Number);
+    if (!actual.length || !isFinite(actual[0])) return false;
+    for (var i = 0; i < Math.max(actual.length, expected.length); i++) {
+        var left = actual[i] || 0;
+        var right = expected[i] || 0;
+        if (left !== right) return left > right;
+    }
+    return true;
+}
+
+function isPlatform85Model(model) {
+    return !!(model && formVersionAtLeast({ _fpFormVersion: model.version }, '2.21'));
+}
+
+function tableVisualFlags(item) {
+    var properties = item && item.properties || {};
+    var noHorizontalScroll = String(properties.HorizontalScrollBar || '').toLowerCase() === 'dontuse';
+    var noVerticalScroll = String(properties.VerticalScrollBar || '').toLowerCase() === 'dontuse';
+    var borderColor = String(properties.BorderColor || '').replace(/\s+/g, '').toLowerCase();
+    var bothBwaLinesDisabled = isFalse(properties.VerticalLinesBWA)
+        && isFalse(properties.HorizontalLinesBWA);
+    var scrollbarsDisabled = noHorizontalScroll && noVerticalScroll;
+    var platform85Borderless = formVersionAtLeast(item, '2.21')
+        && isFalse(properties.Header) && isFalse(properties.HorizontalLinesBWA)
+        && (bothBwaLinesDisabled || scrollbarsDisabled)
+        && /^(?:#fff(?:fff)?|#f9f9f9)$/i.test(borderColor);
+    var borderlessBwa = isFalse(properties.Header)
+        && ((bothBwaLinesDisabled && scrollbarsDisabled) || platform85Borderless);
+    var alternatingRows = effectiveBooleanProperty(item,
+        ['UseAlternationRowColor', 'ЧередованиеЦветовСтрок'], ['UseAlternationRowColorBWA']);
+    return {
+        noVerticalLines: isFalse(prop(item, ['VerticalLines', 'ВертикальныеЛинии']))
+            || borderlessBwa,
+        noHorizontalLines: isFalse(prop(item, ['HorizontalLines', 'ГоризонтальныеЛинии']))
+            || borderlessBwa,
+        alternatingRows: isTrue(alternatingRows),
+        borderlessBwa: borderlessBwa,
+        noHorizontalScroll: borderlessBwa && noHorizontalScroll,
+        noVerticalScroll: borderlessBwa && noVerticalScroll
+    };
+}
+
+function parse(xml, objectMetaXml, styleItems, baseFormXml, commonCommandXml, commonPictures, refMetaXml, interfaceMode) {
     if (!xml || typeof xml !== 'string') return { error: 'Пустой XML' };
     var doc;
     try {
@@ -1109,6 +1167,7 @@ function parse(xml, objectMetaXml, styleItems, baseFormXml, commonCommandXml, co
         commandGroups: parseCommandGroups(commonCommandXml),
         version: form.getAttribute('version') || '',
         adoptedForm: !!baseForm,
+        interfaceMode: String(interfaceMode || 'Any'),
         objectMeta: parseObjectMeta(objectMetaXml),
         refMeta: parseRefMetas(refMetaXml),
         styleItems: styleItems || {}
@@ -1137,6 +1196,12 @@ function parse(xml, objectMetaXml, styleItems, baseFormXml, commonCommandXml, co
     markUnpaintedStdPictureHyperlinks(model);
     applyTypeDefaultsToModel(model);
     foldObjectCopyIntoMore(model);
+    foldHelpWithoutContentIntoMore(model);
+    /* Inherited/adopted items and generated command children are complete only
+     * after all model transforms. Mark the final tree so format-specific paint
+     * decisions cannot silently fall back to the legacy contract. */
+    attachFormVersion(model.childItemsRoot, model.version);
+    attachFormVersion(model.autoCommandBar ? [model.autoCommandBar] : [], model.version);
     return { model: model };
 }
 
@@ -1145,6 +1210,7 @@ function parse(xml, objectMetaXml, styleItems, baseFormXml, commonCommandXml, co
  * a key -> XML map. Keep malformed/absent optional metadata non-fatal. */
 function parseCommonCommands(xmlByName) {
     var out = {};
+    var globalDiscoveryOrder = 0;
     for (var key in xmlByName || {}) {
         if (!Object.prototype.hasOwnProperty.call(xmlByName, key)) continue;
         var xml = xmlByName[key];
@@ -1174,7 +1240,10 @@ function parseCommonCommands(xmlByName) {
             if (tooltip) parsed.ToolTip = tooltip;
             if (/^@global:/i.test(key)) parsed.GlobalApplicable = 'true';
             if (objectFqn) {
-                if (/^@global-fqn:/i.test(key)) parsed.GlobalApplicable = 'true';
+                if (/^@global-fqn:/i.test(key)) {
+                    parsed.GlobalApplicable = 'true';
+                    parsed.GlobalDiscoveryOrder = ++globalDiscoveryOrder;
+                }
                 parsed.CommandFqn = objectFqn;
             }
             if (out[name] && isTrue(prop(out[name], ['GlobalApplicable'])))
@@ -1279,10 +1348,6 @@ function formAttributes(model) {
     return mergeNamedItems(model.attributes, model.baseAttributes);
 }
 
-/* An object form's own Copy (Form.StandardCommand.Copy) with an automatic
- * location lives in «Еще», like Reread: the reference does not show
- * «Скопировать» on the bar. A list form forwards Copy to its dynamic list
- * and keeps it on the row, so only object forms qualify. */
 function foldObjectCopyIntoMore(model) {
     var main = mainAttribute(model);
     if (!main || !/Object(\.|$)|Объект(\.|$)/.test(String(prop(main, ['Type']) || ''))) return;
@@ -1292,6 +1357,68 @@ function foldObjectCopyIntoMore(model) {
         if (prop(item, ['LocationInCommandBar', 'ПоложениеВКоманднойПанели'])) return;
         item.properties.LocationInCommandBar = 'InAdditionalSubmenu';
     });
+}
+
+/* «?» is an important (bar) command only when there is help to show: the
+ * form's or its object's help page. An authored Help button with an automatic
+ * location on a form without help lives only in «Еще» (a report form with a
+ * Help button in its body bar shows no «?»). An explicit InCommandBar
+ * location keeps it on the bar. Forms without an owner descriptor (common
+ * forms) are left as authored: their help is not known here. */
+function foldHelpWithoutContentIntoMore(model) {
+    var objectMeta = model && model.objectMeta;
+    var bar = model && model.autoCommandBar;
+    var hasAuthoredMore = !!(isInterface85Mode(model && model.interfaceMode)
+        && bar && isFalse(prop(bar, ['Autofill']))
+        && (bar.childItems || []).some(function (item) { return item && item.tag === 'Popup'; }));
+    if (!hasAuthoredMore && (!objectMeta || objectMeta.hasHelp)) return;
+    walkFormItems({
+        childItems: model.childItemsRoot,
+        autoCommandBar: model.autoCommandBar
+    }, function (item) {
+        if (!item || item.tag !== 'Button') return;
+        if (!/^Form\.StandardCommand\.Help$/i.test(String(prop(item, ['CommandName']) || ''))) return;
+        if (prop(item, ['LocationInCommandBar', 'ПоложениеВКоманднойПанели'])) return;
+        if (!item.properties) item.properties = {};
+        item.properties.LocationInCommandBar = 'InAdditionalSubmenu';
+    });
+}
+
+/* Standard commands of the form's main attribute that are not important:
+ * with an automatic location they are drawn only in «Еще». */
+var UNIMPORTANT_MAIN_COMMANDS = [
+    { type: /^(?:Catalog|Document|ChartOfAccounts|ChartOfCalculationTypes|ChartOfCharacteristicTypes|ExchangePlan|BusinessProcess|Task)Object\./i,
+        commands: ['Reread', 'Copy', 'SetDeletionMark', 'Delete', 'ShowInList'] },
+    { type: /^InformationRegisterRecordManager\./i, commands: ['Copy', 'Reread', 'Delete'] },
+    { type: /^ReportObject\./i, commands: ['NewWindow', 'StandardSettings', 'SaveVariant', 'SaveReportSettings', 'ChangeSettingsStructure'] }
+];
+
+function rootBarImplicitMore(model) {
+    if (!model) return true;
+    var main = mainAttribute(model);
+    var type = String(prop(main, ['Type']) || '').replace(/^cfg:/i, '');
+    /* List forms forward the dynamic list's commands; keep the permanent
+     * button there. */
+    if (/DynamicList|ДинамическийСписок/i.test(type)) return true;
+    var bar = model.autoCommandBar;
+    var generated = !bar || !isFalse(prop(bar, ['Autofill']));
+    if (!generated) {
+        walkFormItems({ childItems: (bar && bar.childItems) || [] }, function (item) {
+            if (!generated && item && (item.tag === 'ButtonGroup' || item.tag === 'CommandBar')
+                && /^Form$/i.test(String(prop(item, ['CommandSource']) || '').trim())) generated = true;
+        });
+    }
+    if (!generated) return false;
+    if (!isFalse(prop(model, ['Customizable'])) && !commandExcluded(model, 'CustomizeForm')) return true;
+    if (/^UseList$/i.test(String(prop(model, ['SaveDataInSettings']) || ''))) return true;
+    var objectMeta = model.objectMeta;
+    if (objectMeta && !objectMeta.hasHelp && !commandExcluded(model, 'Help')) return true;
+    for (var i = 0; i < UNIMPORTANT_MAIN_COMMANDS.length; i++) {
+        if (!UNIMPORTANT_MAIN_COMMANDS[i].type.test(type)) continue;
+        if (UNIMPORTANT_MAIN_COMMANDS[i].commands.some(function (name) { return !commandExcluded(model, name); }))
+            return true;
+    }
+    return false;
 }
 
 function mergeNamedItems(primary, fallback) {
@@ -1341,12 +1468,152 @@ function commandBarLocation(item) {
     return 'auto';
 }
 
+/* Synthetic persistence actions belong to the clean 8.5 bottom strip. */
+function interface85StandardCommitAction(item) {
+    if (!item || item.tag !== 'Button') return false;
+    if (item.name === '_stdUndoPosting') return true;
+    if (!/^Form\.StandardCommand\.(?:WriteAndClose|Write|PostAndClose|Post)$/i.test(
+        String(prop(item, ['CommandName']) || ''))) return false;
+    return !prop(item, ['LocationInCommandBar', 'ПоложениеКоманднойПанели']);
+}
+
+function interface85FinishCommand(item, commands) {
+    if (!item || item.tag !== 'Button') return false;
+    var command = commandForItem(item, commandIndex(commands));
+    return !!(command && /^finish$/i.test(String(prop(command, ['ActionPurpose']) || '')));
+}
+
+function cloneInterface85CommandGroup(item, children, band) {
+    var clone = Object.assign({}, item);
+    clone.childItems = children;
+    clone._fp85CommandBand = band;
+    return clone;
+}
+
+function interface85CommandItemBands(item, commands) {
+    if (!item || isFalse(prop(item, ['Visible', 'visible']))) return { top: [], bottom: [] };
+    if (/^_common\d+_/.test(String(item.name || ''))) return { top: [], bottom: [] };
+    if (interface85StandardCommitAction(item)) return { top: [], bottom: [item] };
+    if (interface85FinishCommand(item, commands)) return { top: [], bottom: [item] };
+    /* A popup is one authored navigation surface. Finish commands nested in
+     * its menu do not escape to the footer; only direct buttons and ordinary
+     * ButtonGroups participate in the root-strip split. */
+    if (item.tag !== 'ButtonGroup') return { top: [item], bottom: [] };
+    var top = [];
+    var bottom = [];
+    var children = item.childItems || [];
+    for (var i = 0; i < children.length; i++) {
+        var bands = interface85CommandItemBands(children[i], commands);
+        top = top.concat(bands.top);
+        bottom = bottom.concat(bands.bottom);
+    }
+    return {
+        top: top.length ? [cloneInterface85CommandGroup(item, top, 'top')] : [],
+        bottom: bottom.length ? [cloneInterface85CommandGroup(item, bottom, 'bottom')] : []
+    };
+}
+
+function interface85NormalizeStripDefaults(items) {
+    var foundDefault = false;
+    function visit(item) {
+        if (!item) return item;
+        if (item.tag === 'Button' && isTrue(prop(item, ['DefaultButton']))) {
+            if (!foundDefault) {
+                foundDefault = true;
+                return item;
+            }
+            var normalized = Object.assign({}, item);
+            normalized.properties = Object.assign({}, item.properties || {}, { DefaultButton: false });
+            return normalized;
+        }
+        if (item.tag !== 'ButtonGroup' || !item.childItems || !item.childItems.length) return item;
+        var group = Object.assign({}, item);
+        group.childItems = item.childItems.map(visit);
+        return group;
+    }
+    return (items || []).map(visit);
+}
+
+/* Version 8.5 uses ActionPurpose=Finish as a semantic strip boundary. A
+ * single authored AutoCommandBar may therefore paint ordinary navigation at
+ * the top and finish actions at the bottom. */
+function interface85RootCommandBands(model) {
+    var result = { top: [], bottom: [] };
+    if (!model || !isInterface85Mode(model.interfaceMode)) return result;
+    var bar = formCommandBar(model);
+    var children = (bar && bar.childItems || []).filter(function (item) {
+        if (item && item.tag === 'SearchStringAddition') return false;
+        return !/^Form\.StandardCommand\.Help$/i.test(String(prop(item, ['CommandName']) || ''));
+    });
+    var addedFormCommands = interface85AddedFormCommandItems(model);
+    if (addedFormCommands.length) children = addedFormCommands.concat(children);
+    for (var i = 0; i < children.length; i++) {
+        var bands = interface85CommandItemBands(children[i], model.commands || []);
+        result.top = result.top.concat(bands.top);
+        result.bottom = result.bottom.concat(bands.bottom);
+    }
+    /* A finish-only dialog surface paints its primary action. Secondary
+     * finish commands are runtime-state actions and stay absent until the
+     * application exposes them. Mixed navigation/action bars keep every
+     * authored Finish command in their footer. */
+    if (!result.top.length && result.bottom.some(function (item) {
+        return isTrue(prop(item, ['DefaultButton']))
+            || /^main$/i.test(String(prop(item, ['ButtonImportance', 'ВажностьКнопки']) || ''));
+    })) {
+        result.bottom = result.bottom.filter(function (item) {
+            return isTrue(prop(item, ['DefaultButton']))
+                || /^main$/i.test(String(prop(item, ['ButtonImportance', 'ВажностьКнопки']) || ''));
+        });
+    }
+    result.top = interface85NormalizeStripDefaults(result.top);
+    result.bottom = interface85NormalizeStripDefaults(result.bottom);
+    return result;
+}
+
+function cloneInterface85RootBar(bar, children, band) {
+    var clone = Object.assign({}, bar);
+    clone.childItems = children;
+    clone._fp85CommandBand = band;
+    return clone;
+}
+
+function interface85RootCommandBarPlacement(model) {
+    var authored = commandBarLocation(model);
+    if (authored !== 'auto') return authored;
+    if (!model || !isInterface85Mode(model.interfaceMode)) return authored;
+    var bands = interface85RootCommandBands(model);
+    if (bands.bottom.length && !bands.top.length) return 'bottom';
+    return authored;
+}
+
+/* ShowCommandBar is orthogonal to CommandBarLocation in the 8.5 form model.
+ * Only an authored false is a hard veto; Auto/missing preserve the established
+ * location and main-list merge rules. */
+function commandBarAllowed(item) {
+    return !isFalse(prop(item, ['ShowCommandBar', 'ПоказыватьКоманднуюПанель']));
+}
+
 function displayItems(model) {
     if (!model) return [];
     var items = model.childItemsRoot || [];
-    var loc = commandBarLocation(model);
-    if (loc === 'none') return items;
+    var authoredLocation = commandBarLocation(model);
+    var loc = interface85RootCommandBarPlacement(model);
+    if (loc === 'none' || !commandBarAllowed(model)) return items;
     var bar = formCommandBar(model);
+    if (bar && authoredLocation === 'auto' && isInterface85Mode(model.interfaceMode)) {
+        var bands = interface85RootCommandBands(model);
+        var result = items.slice();
+        if (bands.top.length) result.unshift(cloneInterface85RootBar(bar, bands.top, 'top'));
+        else if (bands.bottom.length) {
+            var emptyTop = cloneInterface85RootBar(bar, [], 'top');
+            emptyTop._fp85EmptyTop = true;
+            result.unshift(emptyTop);
+        } else if (model.autoCommandBar && !isFalse(prop(bar, ['Autofill']))) {
+            result.unshift(cloneInterface85RootBar(bar, [], 'top'));
+        }
+        if (bands.bottom.length) result.push(cloneInterface85RootBar(bar, bands.bottom, 'bottom'));
+        return result;
+    }
     if (bar && !isEmptyCommandBar(bar))
         return loc === 'bottom' ? items.concat([bar]) : [bar].concat(items);
     return items;
@@ -1364,10 +1631,6 @@ function isEmptyCommandBar(bar) {
     return isFalse(prop(bar, ['Autofill']));
 }
 
-/* A Table bound to the form's main dynamic list with CommandBarLocation=Auto
- * draws no bar of its own in the reference: its commands belong to the form bar.
- * Only the filter chips stay above the grid, whether that bar is authored or
- * empty. */
 function tableBarMergedIntoForm(table, model) {
     if (!table || !model || commandBarLocation(table) !== 'auto') return false;
     var main = mainAttribute(model);
@@ -1376,7 +1639,7 @@ function tableBarMergedIntoForm(table, model) {
 }
 
 function tableCommandBarVisible(table, model) {
-    if (!table || commandBarLocation(table) === 'none') return false;
+    if (!table || commandBarLocation(table) === 'none' || !commandBarAllowed(table)) return false;
     if (tableBarMergedIntoForm(table, model)) return false;
     return !table.autoCommandBar || !isEmptyCommandBar(table.autoCommandBar);
 }
@@ -1410,6 +1673,92 @@ function prop(item, aliases) {
         if (v != null && String(v).trim() !== '') return String(v).trim();
     }
     return '';
+}
+
+var FORM_RENDER_PROFILES = {
+    taxi83: { id: 'taxi83', rootClass: 'fp-profile-taxi83' },
+    ui85: { id: 'ui85', rootClass: 'fp-profile-ui85' }
+};
+
+function normalizedRenderProfile(raw) {
+    var value = String(raw || '').toLowerCase().replace(/[\s_.-]+/g, '');
+    if (/^(?:ui)?85(?:1)?$/.test(value) || value.indexOf('interface85') >= 0) return 'ui85';
+    if (/taxi|83/.test(value)) return 'taxi83';
+    return '';
+}
+
+function modelHasUi85Evidence(model) {
+    var keys = {
+        showascard: 1, appearanceincard: 1, widthincard: 1, cardrepresentationtype: 1,
+        buttonimportance: 1, textsize: 1, scalevariant: 1, cellmark: 1,
+        cellhyperlinkrepresentation: 1, cellhyperlinkdisplayvariant: 1,
+        collapsedrepresentationitem: 1, tumblerrepresentation: 1, appearancemode: 1
+    };
+    function visit(item) {
+        if (!item) return false;
+        var properties = item.properties || {};
+        for (var key in properties)
+            if (Object.prototype.hasOwnProperty.call(properties, key) && keys[normKey(key)]) return true;
+        var kids = item.childItems || [];
+        for (var i = 0; i < kids.length; i++) if (visit(kids[i])) return true;
+        if (item.autoCommandBar && visit(item.autoCommandBar)) return true;
+        return false;
+    }
+    if (visit(model)) return true;
+    var roots = model && (model.childItemsRoot || model.childItems) || [];
+    for (var i = 0; i < roots.length; i++) if (visit(roots[i])) return true;
+    var commands = model && model.commands || [];
+    for (var j = 0; j < commands.length; j++) if (visit(commands[j])) return true;
+    return false;
+}
+
+function resolveFormRenderProfile(model, options) {
+    options = options || {};
+    var explicit = normalizedRenderProfile(options.renderProfile || options.visualProfile || options.interfaceMode);
+    if (explicit) return FORM_RENDER_PROFILES[explicit];
+    var authored = normalizedRenderProfile(prop(model, ['InterfaceType', 'InterfaceMode', 'Интерфейс']));
+    if (authored) return FORM_RENDER_PROFILES[authored];
+    return FORM_RENDER_PROFILES[modelHasUi85Evidence(model) ? 'ui85' : 'taxi83'];
+}
+
+function textSizeClass(item) {
+    var value = normKey(prop(item, ['TextSize', 'РазмерТекста']));
+    if (/enlarged|увелич/.test(value)) return 'fp-text-size-enlarged';
+    if (/reduced|уменьш/.test(value)) return 'fp-text-size-reduced';
+    return '';
+}
+
+function isEmptyInsertionGroup(item) {
+    var kids = item && item.childItems;
+    if (!kids || !kids.length) return true;
+    return kids.every(function (child) {
+        var t = child && child.tag;
+        var rep = normKey(prop(child, ['Representation', 'Отображение']));
+        return (t === 'UsualGroup' || t === 'Group' || t === 'CollapsibleGroup')
+            && (!rep || rep === 'none' || rep === 'нет') && isEmptyInsertionGroup(child);
+    });
+}
+
+function showAsCard(item) { return isTrue(prop(item, ['ShowAsCard', 'ПоказыватьКакКарточку'])); }
+
+function autoWidthInTableMode(item) {
+    var value = normKey(prop(item, ['AutoWidthInTable', 'АвтоШиринаВТаблице']));
+    if (/bydataandtitle|поданнымизаголовку/.test(value)) return 'data-and-title';
+    if (/bydata|поданным/.test(value)) return 'data';
+    return value === 'none' || value.indexOf('нет') >= 0 ? 'none' : 'legacy';
+}
+
+function effectiveBooleanProperty(item, primary, fallback) {
+    var value = prop(item, primary);
+    return value == null || value === '' ? prop(item, fallback) : value;
+}
+
+function cellHyperlinkMode(item) {
+    if (!item || !isTrue(prop(item, ['CellHyperlink', 'ГиперссылкаЯчейки']))) return 'none';
+    var representation = normKey(prop(item, ['CellHyperlinkRepresentation']));
+    if (/dontshow|непоказывать/.test(representation)) return 'none';
+    var variant = normKey(prop(item, ['CellHyperlinkDisplayVariant']));
+    return /always|всегда/.test(variant) ? 'always' : 'auto';
 }
 
 function isFalse(v) {
@@ -1454,10 +1803,17 @@ var STD_COMMANDS = {
     Choose: 'Выбрать', Cancel: 'Отмена', Refresh: 'Обновить', OK: 'OK',
     FindByCurrentValue: 'Найти по текущему значению', CancelSearch: 'Отменить поиск',
     ChangeHistory: 'История изменений', SetDateInterval: 'Установить период',
-    OpenList: 'Открыть список', Generate: 'Сформировать', Print: 'Печать'
+    OpenList: 'Открыть список', Generate: 'Сформировать', Print: 'Печать',
+    EndEdit: 'Завершить редактирование', CancelEdit: 'Отмена'
 };
 var PIC_ICON = {
-    Write: 'save', WriteAndClose: 'save', Post: 'file-check', PostAndClose: 'file-check',
+    Write: 'save', WriteAndClose: 'save', Post: 'file-check', PostAndClose: 'file-check', Stop: 'circle-x',
+    SendMessage: 'send', ExecuteTask: 'clipboard-check',
+    InputFieldOpen: 'open-85', Close: 'x', GoForward: 'arrow-right', GoBack: 'arrow-left',
+    ListViewModeList: 'layout-list', CheckAll: 'checkbox', UncheckAll: 'square',
+    ExpandAll: 'square-plus', CollapseAll: 'square-minus',
+    CustomizeList: 'settings', CheckSyntax: 'checkbox', Catalog: 'folder',
+    DataProcessor: 'forms', Form: 'forms',
     UndoPosting: 'arrow-back-up',
     DataHistory: 'data-history', History: 'history',
     Print: 'printer', Help: 'help', Find: 'search', Search: 'search',
@@ -1677,6 +2033,7 @@ var STD_PICTURE_RU = {
     Label: 'Метка', Symbol: 'Символ', ChangeHistory: 'ИсторияИзменений', MessageHistory: 'ИсторияСообщений',
     QuickAccess: 'БыстрыйДоступ', Underline: 'Подчеркивание', PasswordShow: 'ПоказатьПароль'
 };
+XU.terms.register({ pictures: STD_PICTURE_RU });
 
 var STD_PICTURE_SVG = /^(ВнешнийПользовательСистемыВзаимодействия|ГрупповоеОбсуждение|Диалог(Вопрос|Восклицание|Информация|Стоп)|Избранное|ИзменитьМасштаб|Информация|ИсторияИзменений|ИсторияСообщений|Календарь|Калькулятор|КомандаМенюФункций|Метка|Настройка|НачатьВидеоконференцию|НовоеОбсуждение|Оповещать|Оповещения|Папка|Параметры|ПерейтиПо(Внешней)?НавигационнойСсылке|Повернуть(По|Против)ЧасовойСтрелк[еи]|ПоискДанных|ПоказатьПароль|ПолучитьНавигационнуюСсылку|Пользователь(Интеграции)?СистемыВзаимодействия|Прикрепить|СкрытьПароль|Сообщение|СохранитьКак|Справка|ЦветГраницы|ОтправитьСообщение)$/;
 
@@ -1688,6 +2045,29 @@ function stdPictureUrl(ref) {
     var ru = Object.prototype.hasOwnProperty.call(STD_PICTURE_RU, m[1]) ? STD_PICTURE_RU[m[1]] : m[1];
     if (!/^[А-Яа-яЁё0-9]+$/.test(ru)) return '';
     return 'std-pictures/' + stdPictureFileBase(ru) + (STD_PICTURE_SVG.test(ru) ? '.svg' : '.png');
+}
+
+/* Platform 8.5 artwork generated locally by tools/platform-85-assets-gen.mjs
+ * (git-ignored, 1C content). Absent in public builds: callers fall back. */
+function platform85Assets() {
+    var g = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : null);
+    return g && g.FP_PLATFORM_85 ? g.FP_PLATFORM_85 : null;
+}
+
+function svgDataUrl(svg) {
+    return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+}
+
+/* The clean 8.5 client paints library pictures with its own SVG set, not the
+ * Taxi bitmaps of std-pictures/. */
+function platform85StdPictureUrl(ref, ctx) {
+    var assets = platform85Assets();
+    if (!assets || !assets.stdPictures || !isInterface85Context(ctx)) return '';
+    var m = String(ref || '').trim().match(/^(?:StdPicture|БиблиотекаКартинок)\.([A-Za-zА-Яа-яЁё0-9_]+)$/);
+    if (!m) return '';
+    var ru = Object.prototype.hasOwnProperty.call(STD_PICTURE_RU, m[1]) ? STD_PICTURE_RU[m[1]] : m[1];
+    var svg = Object.prototype.hasOwnProperty.call(assets.stdPictures, ru) ? assets.stdPictures[ru] : '';
+    return svg ? svgDataUrl(svg) : '';
 }
 
 var STD_PICTURE_TRANSLIT = {
@@ -1742,9 +2122,6 @@ function ingestStandardAttributes(el, prefix, captions, fillChecking) {
         var syn = localizedFrom(firstChild(c, 'Synonym'));
         if (!syn && PATH_CAPTIONS[n]) syn = PATH_CAPTIONS[n];
         if (syn) captions[key] = syn;
-        /* Standard attributes carry their own xr:FillChecking: a BusinessProcess
-         * Date=ShowError, or catalog Владелец/Родитель/Наименование, are
-         * red-dotted in the reference. */
         var fill = fillChecking ? textOf(firstChild(c, 'FillChecking')) : '';
         if (fill) fillChecking[key] = fill;
     }
@@ -1792,6 +2169,84 @@ function ingestChildObjects(el, prefix, captions, stringLen, types, fillChecking
     }
 }
 
+var STD_FIELD = {
+    Ref: ['Ref', 'Ссылка', 'Ссылка'], DataVersion: ['DataVersion', 'ВерсияДанных', 'Версия данных'],
+    DeletionMark: ['DeletionMark', 'ПометкаУдаления', 'Пометка удаления'], Number: ['Number', 'Номер', 'Номер'],
+    Date: ['Date', 'Дата', 'Дата'], Posted: ['Posted', 'Проведен', 'Проведен'], Code: ['Code', 'Код', 'Код'],
+    Description: ['Description', 'Наименование', 'Наименование'], Owner: ['Owner', 'Владелец', 'Владелец'],
+    Parent: ['Parent', 'Родитель', 'Родитель'], IsFolder: ['IsFolder', 'ЭтоГруппа', 'Это группа'],
+    Predefined: ['Predefined', 'Предопределенный', 'Предопределенный'],
+    PredefinedDataName: ['PredefinedDataName', 'ИмяПредопределенныхДанных', 'Имя предопределенных данных'],
+    Completed: ['Completed', 'Завершен', 'Завершен'], HeadTask: ['HeadTask', 'ВедущаяЗадача', 'Ведущая задача'],
+    Started: ['Started', 'Стартован', 'Стартован'], BusinessProcess: ['BusinessProcess', 'БизнесПроцесс', 'Бизнес-процесс'],
+    RoutePoint: ['RoutePoint', 'ТочкаМаршрута', 'Точка маршрута'], Executed: ['Executed', 'Выполнена', 'Выполнена'],
+    Period: ['Period', 'Период', 'Период'], Recorder: ['Recorder', 'Регистратор', 'Регистратор'],
+    LineNumber: ['LineNumber', 'НомерСтроки', 'Номер строки'], Active: ['Active', 'Активность', 'Активность'],
+    RecordType: ['RecordType', 'ВидДвижения', 'Вид движения'], ValueType: ['ValueType', 'ТипЗначения', 'Тип значения'],
+    ThisNode: ['ThisNode', 'ЭтотУзел', 'Этот узел'],
+    SentNo: ['SentNo', 'НомерОтправленного', 'Номер отправленного сообщения'],
+    ReceivedNo: ['ReceivedNo', 'НомерПринятого', 'Номер принятого сообщения'],
+    ExchangeDate: ['ExchangeDate', 'ДатаОбмена', 'Дата актуальности'], Order: ['Order', 'Порядок', 'Порядок'],
+    OffBalance: ['OffBalance', 'Забалансовый', 'Забалансовый'],
+    JournalType: ['Type', 'Тип', 'Тип документа'], AccountType: ['Type', 'Вид', 'Вид'],
+    Account: ['Account', 'Счет', 'Счет'], AccountDr: ['AccountDr', 'СчетДт', 'СчетДт'],
+    AccountCr: ['AccountCr', 'СчетКт', 'СчетКт']
+};
+var STD_FIELDS_BY_KIND = {
+    Catalog: ['Ref', 'DataVersion', 'DeletionMark', 'Owner', 'Parent', 'IsFolder', 'Code', 'Description',
+        'Predefined', 'PredefinedDataName'],
+    Document: ['Ref', 'DataVersion', 'DeletionMark', 'Number', 'Date', 'Posted'],
+    DocumentJournal: ['Ref', 'Date', 'DeletionMark', 'Number', 'Posted', 'JournalType'],
+    BusinessProcess: ['Ref', 'DataVersion', 'DeletionMark', 'Number', 'Date', 'Completed', 'HeadTask', 'Started'],
+    Task: ['Ref', 'DataVersion', 'DeletionMark', 'Number', 'Date', 'BusinessProcess', 'RoutePoint',
+        'Description', 'Executed'],
+    InformationRegister: ['Period', 'Recorder', 'LineNumber', 'Active'],
+    AccumulationRegister: ['Period', 'Recorder', 'LineNumber', 'Active', 'RecordType'],
+    AccountingRegister: ['Period', 'Recorder', 'LineNumber', 'Active', 'Account', 'AccountDr', 'AccountCr'],
+    CalculationRegister: ['Recorder', 'LineNumber', 'Active'],
+    ExchangePlan: ['Ref', 'DataVersion', 'ThisNode', 'DeletionMark', 'Code', 'Description', 'SentNo',
+        'ReceivedNo', 'ExchangeDate'],
+    Enum: ['Ref', 'Order'],
+    ChartOfAccounts: ['Ref', 'DataVersion', 'DeletionMark', 'Parent', 'Code', 'Description', 'Order',
+        'AccountType', 'OffBalance', 'Predefined', 'PredefinedDataName'],
+    ChartOfCharacteristicTypes: ['Ref', 'DataVersion', 'DeletionMark', 'Parent', 'IsFolder', 'Code',
+        'Description', 'ValueType', 'Predefined', 'PredefinedDataName'],
+    ChartOfCalculationTypes: ['Ref', 'DataVersion', 'DeletionMark', 'Code', 'Description', 'Predefined',
+        'PredefinedDataName']
+};
+
+/* The captions of an object's standard fields, keyed by the English and the
+ * Russian name (a DataPath uses either). A StandardAttribute synonym wins;
+ * it is already in captions under the English name. An accounting register
+ * with correspondence splits a non-balance dimension or resource X into XДт
+ * and XКт, presented «<X> Дебет» / «<X> Кредит». */
+function standardFieldCaptions(kindTag, props, childObjects, captions) {
+    var out = {};
+    var fields = STD_FIELDS_BY_KIND[kindTag] || [];
+    for (var i = 0; i < fields.length; i++) {
+        var std = STD_FIELD[fields[i]];
+        if (!std) continue;
+        out[std[0]] = out[std[1]] = captions[std[0]] || captions[std[1]] || std[2];
+    }
+    if (kindTag !== 'AccountingRegister' || !props
+        || textOf(firstChild(props, 'Correspondence')) !== 'true' || !childObjects) return out;
+    for (var c = 0; c < childObjects.children.length; c++) {
+        var child = childObjects.children[c];
+        var tag = localName(child);
+        if (tag !== 'Dimension' && tag !== 'Resource') continue;
+        var p = metaProps(child);
+        if (textOf(firstChild(p, 'Balance')) === 'true') continue;
+        var name = textOf(firstChild(p, 'Name'));
+        if (!name) continue;
+        var syn = localizedFrom(firstChild(p, 'Synonym'));
+        var sides = [['Дт', 'Dr', 'Дебет'], ['Кт', 'Cr', 'Кредит']];
+        for (var s = 0; s < sides.length; s++) {
+            out[name + sides[s][0]] = out[name + sides[s][1]] = (syn || name + sides[s][0]) + ' ' + sides[s][2];
+        }
+    }
+    return out;
+}
+
 function parseObjectMeta(xml) {
     if (!xml || typeof xml !== 'string' || xml.indexOf('MetaDataObject') < 0) return null;
     var doc;
@@ -1820,6 +2275,8 @@ function parseObjectMeta(xml) {
     var hierarchical = false;
     var hierarchyType = '';
     var autonumbering = '';
+    var useStandardCommands = false;
+    var numberLength = 0;
     if (props) {
         autonumbering = textOf(firstChild(props, 'Autonumbering'));
         name = textOf(firstChild(props, 'Name'));
@@ -1831,6 +2288,7 @@ function parseObjectMeta(xml) {
         descriptionLength = parseInt(textOf(firstChild(props, 'DescriptionLength')), 10) || 0;
         codeLength = parseInt(textOf(firstChild(props, 'CodeLength')), 10) || 0;
         codeType = textOf(firstChild(props, 'CodeType'));
+        useStandardCommands = /^true$/i.test(textOf(firstChild(props, 'UseStandardCommands')));
         if (descriptionLength > 0) {
             stringLen.Description = descriptionLength;
             stringLen['Наименование'] = descriptionLength;
@@ -1847,6 +2305,9 @@ function parseObjectMeta(xml) {
                 numberQ.Code = numberQ['Код'] = { digits: codeLength, fractionDigits: 0, allowedSign: 'Nonnegative' };
             }
         }
+        numberLength = parseInt(textOf(firstChild(props, 'NumberLength')), 10) || 0;
+        var numberType = textOf(firstChild(props, 'NumberType'));
+        if (!(numberLength > 0 && (!numberType || /^string|строка$/i.test(numberType)))) numberLength = 0;
         ingestStandardAttributes(firstChild(props, 'StandardAttributes'), '', captions, fillChecking);
         /* Owner is typed by the catalog's Owners list (a CatalogRef owner gets
          * list and open buttons). */
@@ -1860,6 +2321,7 @@ function parseObjectMeta(xml) {
     }
     ingestChildObjects(firstChild(obj, 'ChildObjects'), '', captions, stringLen, types, fillChecking, numberQ, dateFraction, multiLine);
     var kindTag = localName(obj);
+    var stdCaptions = standardFieldCaptions(kindTag, props, firstChild(obj, 'ChildObjects'), captions);
     var kind = '';
     if (/Catalog/i.test(kindTag)) kind = 'catalog';
     else if (/Document/i.test(kindTag)) kind = 'document';
@@ -1885,6 +2347,11 @@ function parseObjectMeta(xml) {
     return {
         definedType: definedType,
         hasFolders: hasFolders,
+        hierarchical: hierarchical,
+        kindTag: kindTag,
+        /* Kept apart from captions: a bare «Период» or «Тип» must not caption
+         * every path ending with that segment, only the object's own field. */
+        stdCaptions: stdCaptions,
         name: name,
         synonym: synonym,
         listPresentation: listPresentation,
@@ -1896,13 +2363,17 @@ function parseObjectMeta(xml) {
         dateFraction: dateFraction,
         multiLine: multiLine,
         kind: kind,
+        /* The descriptor's own tag: Report, InformationRegister, ... */
+        metaClass: kindTag,
         objectBelonging: objectBelonging,
         /* 'false' keeps Code/Number editable. */
         autonumbering: autonumbering,
+        useStandardCommands: useStandardCommands,
         /* Set by form-context.js when <object>/Ext/Help.xml exists. */
         hasHelp: xml.indexOf('<!--fp-object-help-->') >= 0,
         descriptionLength: descriptionLength,
         codeLength: codeLength,
+        numberLength: numberLength,
         codeType: codeType
     };
 }
@@ -1968,12 +2439,71 @@ function parseCommandInterface(form) {
         out.push({
             command: textOf(firstChild(el, 'Command')),
             group: textOf(firstChild(el, 'CommandGroup')),
+            type: textOf(firstChild(el, 'Type')),
             index: textOf(firstChild(el, 'Index')),
             defaultVisible: textOf(firstChild(el, 'DefaultVisible')),
             visible: scalarOf(firstChild(el, 'Visible'))
         });
     }
     return out;
+}
+
+function interface85AddedFormCommandItems(model) {
+    if (!model || !isInterface85Mode(model.interfaceMode)) return [];
+    var entries = model.commandInterface || [];
+    var commands = commandIndex(model.commands);
+    var out = [];
+    for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i];
+        var fqn = String(entry && entry.command || '');
+        if (!entry || !/^added$/i.test(String(entry.type || ''))
+            || !/^Form\.Command\./i.test(fqn) || isFalse(entry.visible)) continue;
+        var command = commands[lastSeg(fqn)];
+        if (!command || isFalse(prop(command, ['Visible', 'visible']))) continue;
+        var added = syntheticBtn('_interface85_' + i,
+            rawTitle(command) || humanizeIdent(lastSeg(fqn)),
+            pictureRef(command), representationOf(command) || 'Auto', {
+                CommandName: fqn,
+                ToolTip: prop(command, ['ToolTip'])
+            });
+        added.interface85AddedCommand = true;
+        out.push(added);
+    }
+    return out;
+}
+
+/* Form.Command entries in CommandInterface can create reusable command-group
+ * popups on Taxi forms. Their DefaultVisible=false flag controls the initial
+ * command itself, but does not remove the group from the designer's bar. */
+function authoredFormCommandGroupPopups(model) {
+    if (!model || isInterface85Mode(model.interfaceMode)) return [];
+    var entries = model.commandInterface || [];
+    var commands = commandIndex(model.commands);
+    var groups = model.commandGroups || {};
+    var grouped = {};
+    var order = [];
+    for (var i = 0; i < entries.length; i++) {
+        var entry = entries[i];
+        var fqn = String(entry && entry.command || '');
+        var groupMatch = String(entry && entry.group || '').match(/^CommandGroup\.(.+)$/i);
+        if (!entry || !/^added$/i.test(String(entry.type || ''))
+            || !/^Form\.Command\./i.test(fqn) || !groupMatch || isFalse(entry.visible)) continue;
+        var groupName = groupMatch[1];
+        var groupMeta = groups[groupName];
+        var command = commands[lastSeg(fqn)];
+        if (!groupMeta || !command || isFalse(prop(command, ['Visible', 'visible']))) continue;
+        if (!grouped[groupName]) { grouped[groupName] = []; order.push(groupName); }
+        grouped[groupName].push(syntheticBtn('_authored_group_' + i,
+            rawTitle(command) || humanizeIdent(lastSeg(fqn)), pictureRef(command),
+            representationOf(command) || 'Auto', { CommandName: fqn }));
+    }
+    return order.map(function (name) {
+        var group = groups[name];
+        return { tag: 'Popup', name: '_authored_group_' + name, id: '',
+            properties: { Title: rawTitle(group) || humanizeIdent(name),
+                Picture: pictureRef(group), Representation: 'PictureAndText' },
+            childItems: grouped[name] };
+    });
 }
 
 function commonCommandButtons(model) {
@@ -1988,10 +2518,10 @@ function commonCommandButtons(model) {
         var name = match[1];
         var meta = metadata[name];
         if (!meta) continue;
-        /* CommandInterface describes a possible placement, not proof that the
-         * command accepts the form's main parameter. The loader marks only
-         * commands that pass the metadata applicability check. Rendering a
-         * merely referenced command adds buttons which the reference suppresses. */
+        /* The global expansion owns a command the form moved into a
+         * FormCommandBar group; it is placed there by that group. */
+        if (/^FormCommandBar/i.test(String(entries[i].group || ''))
+            && String(entries[i].group) !== String(prop(meta, ['Group']) || '')) continue;
         if (!isTrue(prop(meta, ['GlobalApplicable']))) continue;
         var group = String(prop(meta, ['Group']) || '');
         /* Navigation-panel common commands and CreateBasedOn commands have a
@@ -2012,10 +2542,6 @@ function commonCommandButtons(model) {
     return out;
 }
 
-/* The reference does not use discovery/XML order for automatically applicable form
- * commands. It first partitions them by the standard command-bar category,
- * then compares the localized presentation inside that category. Keep this
- * deterministic even in runtimes whose localeCompare implementation differs. */
 function generatedFormCommandGroupRank(groupRef) {
     var group = String(groupRef || '').toLowerCase();
     if (group === 'formcommandbar') return 0;
@@ -2049,9 +2575,6 @@ function generatedFormCommandContributionRank(commandName, model, commandMeta) {
         if (at > 0 && /cfg:[a-z]+$/.test(parameterType.slice(0, at))
             && !/[0-9a-zа-яё_]/.test(after)) return 0;
     }
-    /* The reference keeps a parameterized command with an explicit reference to the
-     * current object in the ordinary alphabetic segment. Indirect applicability
-     * through a DefinedType is a later contribution segment. */
     return 1;
 }
 
@@ -2081,6 +2604,13 @@ function globalCommonCommandItems(model) {
         if (!isFalse(entries[e].defaultVisible) && !isFalse(entries[e].visible)) continue;
         excluded[String(entries[e].command || '').toLowerCase()] = true;
     }
+    /* A form's CommandInterface may reassign a common command's category
+     * (a navigation-panel command placed in FormCommandBarImportant). */
+    var interfaceGroups = {};
+    for (var ig = 0; ig < entries.length; ig++) {
+        if (/^FormCommandBar/i.test(String(entries[ig].group || '')))
+            interfaceGroups[String(entries[ig].command || '').toLowerCase()] = String(entries[ig].group);
+    }
     var grouped = {};
     var createBasedOn = [];
     var loose = [];
@@ -2090,7 +2620,7 @@ function globalCommonCommandItems(model) {
         var meta = metadata[name];
         if (!isTrue(prop(meta, ['GlobalApplicable']))) continue;
         var fqn = String(prop(meta, ['CommandFqn']) || ('CommonCommand.' + name));
-        var groupRef = String(prop(meta, ['Group']) || '');
+        var groupRef = interfaceGroups[fqn.toLowerCase()] || String(prop(meta, ['Group']) || '');
         /* The designer keeps a command-bar command the form's CommandInterface
          * marks invisible; only create-based-on entries leave the bar. */
         if (excluded[fqn.toLowerCase()] && /CreateBasedOn/i.test(groupRef)) continue;
@@ -2098,7 +2628,8 @@ function globalCommonCommandItems(model) {
             pictureRef(meta), representationOf(meta) || 'Auto', {
                 CommandName: fqn,
                 CommonCommandGroup: groupRef,
-                GeneratedContributionRank: generatedFormCommandContributionRank(fqn, model, meta)
+                GeneratedContributionRank: generatedFormCommandContributionRank(fqn, model, meta),
+                GeneratedSourceOrder: prop(meta, ['GlobalDiscoveryOrder'])
             });
         var match = groupRef.match(/^CommandGroup\.(.+)$/i);
         if (match) (grouped[match[1]] || (grouped[match[1]] = [])).push(button);
@@ -2108,8 +2639,18 @@ function globalCommonCommandItems(model) {
     for (var groupName in grouped) {
         if (!Object.prototype.hasOwnProperty.call(grouped, groupName)) continue;
         var groupMeta = groups[groupName];
+        var ownCatalogPrefix = model && model.objectMeta && model.objectMeta.kind === 'catalog'
+            ? 'Catalog.' + model.objectMeta.name + '.Command.' : '';
+        var ownOrder = Infinity;
+        if (ownCatalogPrefix && grouped[groupName].every(function (child) {
+            return String(prop(child, ['CommandName']) || '').indexOf(ownCatalogPrefix) === 0;
+        })) {
+            for (var oi = 0; oi < grouped[groupName].length; oi++)
+                ownOrder = Math.min(ownOrder, Number(prop(grouped[groupName][oi], ['GeneratedSourceOrder'])) || Infinity);
+        }
         groupPopups.push({
             tag: 'Popup', name: '_global_group_' + groupName, id: '',
+            _fpOwnCatalogGroupOrder: ownOrder,
             properties: {
                 Title: (groupMeta && rawTitle(groupMeta)) || humanizeIdent(groupName),
                 Picture: groupMeta ? pictureRef(groupMeta) : '',
@@ -2120,9 +2661,9 @@ function globalCommonCommandItems(model) {
             childItems: grouped[groupName]
         });
     }
-    /* [CMD-GROUP-OBJECTS] the reference orders reusable group popups by caption
-     * («Настройки» before «Органайзер»). */
     groupPopups.sort(function (a, b) {
+        if (isFinite(a._fpOwnCatalogGroupOrder) && isFinite(b._fpOwnCatalogGroupOrder))
+            return a._fpOwnCatalogGroupOrder - b._fpOwnCatalogGroupOrder;
         var ka = russianCommandSortKey(a.properties.Title), kb = russianCommandSortKey(b.properties.Title);
         return ka < kb ? -1 : ka > kb ? 1 : 0;
     });
@@ -2133,9 +2674,23 @@ function globalCommonCommandItems(model) {
             properties: { Title: 'Создать на основании', Representation: 'Text' },
             childItems: createBasedOn
         });
+    } else if (model && model.objectMeta && model.objectMeta.useStandardCommands
+        && formObjectKind(model) && isInterface85Mode(model.interfaceMode)) {
+        var hasCreateBasedOnPopup = false;
+        walkFormItems(model.autoCommandBar, function (item) {
+            if (isCreateBasedOnPopup(item)) hasCreateBasedOnPopup = true;
+        });
+        if (!hasCreateBasedOnPopup) {
+            /* Object forms keep the standard CreateBasedOn slot even when the
+             * export has no expanded command-interface entries for its menu.
+             * The empty preview menu still occupies the native toolbar segment. */
+            loose.push({
+                tag: 'Popup', name: '_global_create_based_on', id: '',
+                properties: { Title: 'Создать на основании', Representation: 'Text' },
+                childItems: []
+            });
+        }
     }
-    /* Reusable CommandGroup popups are a later platform segment. In the reference they
-     * follow CreateBasedOn instead of competing with leaf commands by title. */
     return loose.concat(groupPopups);
 }
 
@@ -2253,8 +2808,6 @@ function attachFormattedDocumentCommands(model) {
             group('_fmtColor', [std('BackColor', 'Цвет фона'), std('TextColor', 'Цвет текста')]),
             std('InsertPicture', 'Вставить картинку', 'StdPicture.InsertPicture')
         ];
-        /* The rest of the formatting set lives in «Еще», which the reference always
-         * shows at the bar's right edge. */
         [['Strikeout', 'Зачеркнутый'], ['AlignLeft', 'По левому краю'], ['AlignCenter', 'По центру'],
             ['AlignRight', 'По правому краю'], ['AlignJustify', 'По ширине']].forEach(function (extra) {
             var button = std(extra[0], extra[1]);
@@ -2315,7 +2868,8 @@ function attachFormSourcedListCommands(model) {
 
 function fillCommonCommands(model) {
     var generated = normalizeGeneratedFormCommands(
-        commonCommandButtons(model).concat(globalCommonCommandItems(model)));
+        authoredFormCommandGroupPopups(model).concat(commonCommandButtons(model),
+            globalCommonCommandItems(model)));
     if (!generated.length) return;
     var bar = model && model.autoCommandBar;
     if (!bar) {
@@ -2386,7 +2940,14 @@ function fillCommonCommands(model) {
      * it stays in «Еще» (InAdditionalSubmenu). */
     if (insertion) {
         var authored = {};
-        walkFormItems(insertion, function (item) {
+        var insertionBar = null;
+        walkFormItems({ childItems: model.childItemsRoot || [] }, function (item) {
+            if (insertionBar || !item || item.tag !== 'CommandBar' || item === insertion) return;
+            var holds = false;
+            walkFormItems(item, function (inner) { if (inner === insertion) holds = true; });
+            if (holds) insertionBar = item;
+        });
+        walkFormItems(insertionBar || insertion, function (item) {
             var command = String(prop(item, ['CommandName', 'Command']) || '').toLowerCase();
             if (command) authored[command] = true;
         });
@@ -2394,16 +2955,13 @@ function fillCommonCommands(model) {
             return !authored[String(prop(item, ['CommandName']) || '').toLowerCase()];
         });
     }
-    /* A form-sourced ButtonGroup in a root bar with Autofill=false stands for
-     * the whole platform segment: the reference also puts the object's standard Write
-     * there and the «Создать на основании» popup before reusable group popups
-     * (e.g. a task form: Записать, Выполнено, Перенаправить..., Создать на
-     * основании, Органайзер). */
-    if (insertion && insertion.tag === 'ButtonGroup' && rootNoAutofill) {
+    var explicitGlobalSegment = insertion && insertion.tag === 'ButtonGroup'
+        && /^FormCommandPanelGlobalCommands$/i.test(String(prop(insertion, ['CommandSource']) || ''));
+    if (insertion && insertion.tag === 'ButtonGroup' && (rootNoAutofill || explicitGlobalSegment)) {
         var kind = formObjectKind(model);
         var present = collectStdCommandKeys(bar.childItems || []);
         var leading = [];
-        if ((kind === 'catalog' || kind === 'document' || isWritableReferenceObjectForm(model))
+        if (rootNoAutofill && (kind === 'catalog' || kind === 'document' || isWritableReferenceObjectForm(model))
             && !present.write && !commandExcluded(model, 'Write'))
             leading.push(syntheticBtn('_stdWrite', 'Записать', '', 'Text', {
                 CommandName: 'Form.StandardCommand.Write'
@@ -2424,6 +2982,40 @@ function fillCommonCommands(model) {
         }
         generated = leading.concat(generated);
     }
+    /* A compact important-command group preceding the form's global-command
+     * insertion point is a separate platform segment. CreateBasedOn belongs
+     * before it; reusable command groups occupy it, before global leaves. */
+    if (insertion && insertion.tag === 'ButtonGroup' && !rootNoAutofill
+        && formObjectKind(model) === 'document' && bar && bar.childItems) {
+        var insertionIndex = bar.childItems.indexOf(insertion);
+        var importantIndex = -1;
+        for (var bi = 0; bi < insertionIndex; bi++) {
+            var candidate = bar.childItems[bi];
+            if (candidate && candidate.tag === 'ButtonGroup'
+                && /^compact$/i.test(String(prop(candidate, ['Representation']) || ''))
+                && (candidate.childItems || []).length > 0
+                && candidate.childItems.every(function (item) {
+                    return item && item.tag === 'Popup' && !popupHasCommands(item);
+                }))
+                importantIndex = bi;
+        }
+        if (importantIndex >= 0) {
+            var importantGroup = bar.childItems[importantIndex];
+            var basedOnAtRoot = generated.filter(isCreateBasedOnPopup);
+            var reusableGroups = generated.filter(function (item) {
+                return item && item.tag === 'Popup'
+                    && /^_global_group_/i.test(String(item.name || ''));
+            });
+            generated = generated.filter(function (item) {
+                return basedOnAtRoot.indexOf(item) < 0 && reusableGroups.indexOf(item) < 0;
+            });
+            if (basedOnAtRoot.length)
+                Array.prototype.splice.apply(bar.childItems,
+                    [importantIndex, 0].concat(basedOnAtRoot));
+            if (reusableGroups.length)
+                importantGroup.childItems = (importantGroup.childItems || []).concat(reusableGroups);
+        }
+    }
     if (insertion && insertion.tag === 'CommandBar' && (insertion.childItems || []).length) {
         /* An authored form-sourced bar keeps the root bar's segments: its
          * pictorial items, then the generated commands, then its text
@@ -2435,7 +3027,22 @@ function fillCommonCommands(model) {
             (rep === 'picture' || rep === 'pictureandtext' ? barPrimary : barTrailing).push(item);
         });
         insertion.childItems = barPrimary.concat(generated, barTrailing);
-    } else if (insertion) insertion.childItems = (insertion.childItems || []).concat(generated);
+    } else if (insertion && insertion.tag === 'ButtonGroup' && !rootNoAutofill
+        && isInterface85Mode(model.interfaceMode)
+        && /^FormCommandPanelGlobalCommands$/i.test(String(prop(insertion, ['CommandSource']) || ''))) {
+        /* The platform contribution precedes authored global commands. */
+        insertion.childItems = generated.concat(insertion.childItems || []);
+    } else if (insertion) {
+        var authoredItems = insertion.childItems || [];
+        var globalGroupIndex = rootNoAutofill && insertion.tag === 'ButtonGroup'
+            ? authoredItems.findIndex(function (item) {
+                return item && item.tag === 'ButtonGroup'
+                    && /^FormCommandPanelGlobalCommands$/i.test(String(prop(item, ['CommandSource']) || ''));
+            }) : -1;
+        insertion.childItems = globalGroupIndex < 0
+            ? authoredItems.concat(generated)
+            : authoredItems.slice(0, globalGroupIndex).concat(generated, authoredItems.slice(globalGroupIndex));
+    }
     else {
         /* Navigation is the authored platform segment immediately following
          * persistence actions. Generated global leaves, CreateBasedOn and
@@ -2446,16 +3053,9 @@ function fillCommonCommands(model) {
         (bar.childItems || []).forEach(function (item) {
             (isNavigationPopup(item) ? navigation : local).push(item);
         });
-        /* The reference keeps authored pictorial actions in the primary command segment,
-         * then contributes applicable global commands, while authored text
-         * actions remain in the trailing segment. */
         var localPrimary = [];
         var localTrailing = [];
         local.forEach(function (item) {
-            /* A command may carry a metadata picture even when its authored
-             * button representation is text. The reference keeps that button in the
-             * trailing text segment; only the button's explicit visual
-             * representation makes it part of the primary pictorial segment. */
             if (representationOf(item) === 'picture'
                 || representationOf(item) === 'pictureandtext') localPrimary.push(item);
             else {
@@ -2463,8 +3063,61 @@ function fillCommonCommands(model) {
                 localTrailing.push(item);
             }
         });
-        bar.childItems = navigation.concat(localPrimary, generated, localTrailing);
+        var hoistedMain = isInterface85Mode(model.interfaceMode)
+            ? liftMainButtonsFromPopups(localTrailing) : null;
+        if (hoistedMain) {
+            localTrailing = hoistedMain.items;
+            generated.forEach(function (item) {
+                if (!item.properties) item.properties = {};
+                item.properties.LocationInCommandBar = 'InAdditionalSubmenu';
+            });
+            bar.childItems = navigation.concat(hoistedMain.main, localPrimary, localTrailing, generated);
+            return;
+        }
+        var folderActions = rootFolderListActions(model);
+        if (folderActions.length) {
+            var primaryListPopup = localTrailing.filter(function (item) {
+                return item && item.tag === 'Popup' && (item.childItems || []).some(function (child) {
+                    return isTrue(prop(child, ['DefaultButton']))
+                        && /^create$/i.test(String(commandMeta(child, {
+                            commands: commandIndex(model.commands)
+                        }, 'actionPurpose') || ''));
+                });
+            });
+            localTrailing = localTrailing.filter(function (item) {
+                return primaryListPopup.indexOf(item) < 0;
+            });
+            bar.childItems = navigation.concat(folderActions, primaryListPopup,
+                generated, localPrimary, localTrailing);
+        } else bar.childItems = navigation.concat(localPrimary, generated, localTrailing);
     }
+}
+
+/* Visible Main-importance buttons of root popups, and the root items left
+ * once each such popup is replaced by its remaining children (none here:
+ * a popup that only wrapped the Main action disappears). Null when no popup
+ * holds a Main button. */
+function liftMainButtonsFromPopups(items) {
+    var main = [];
+    var rest = [];
+    items.forEach(function (item) {
+        if (!item || item.tag !== 'Popup') { rest.push(item); return; }
+        var kids = (item.childItems || []).filter(function (child) {
+            return child && !isFalse(prop(child, ['Visible', 'visible']));
+        });
+        var lifted = kids.filter(function (child) {
+            return child.tag === 'Button'
+                && normButtonImportance(prop(child, ['ButtonImportance', 'ВажностьКнопки'])) === 'Main';
+        });
+        if (!lifted.length) { rest.push(item); return; }
+        lifted.forEach(function (child) { child._fpLiftedMain = true; });
+        Array.prototype.push.apply(main, lifted);
+        if (lifted.length < kids.length) {
+            item.childItems = (item.childItems || []).filter(function (child) { return lifted.indexOf(child) < 0; });
+            rest.push(item);
+        }
+    });
+    return main.length ? { main: main, items: rest } : null;
 }
 
 function isCreateBasedOnPopup(item) {
@@ -2551,16 +3204,6 @@ function fillCreateBasedOnMenus(model) {
     });
 }
 
-/* The reference binds a table's Find/CancelSearch only inside that table's own
- * AutoCommandBar. A button placed in another CommandBar keeps the raw command
- * unresolved and is painted as a text button captioned with its element name
- * (the longer CancelSearch twin then overflows into «Еще»). */
-/* The reference paints nothing for a hyperlink button whose only face is a platform
- * StdPicture taken from its form command when the button has no authored
- * size: the platform Image is 0x0, yet its group still spends the item gap on it
- * (a field row of 124 px becomes 134 px = 124 + 10). Such buttons are absent
- * from the reference with or without functional options. The same hyperlink
- * is painted with a CommonPicture or with an authored Height. */
 function markUnpaintedStdPictureHyperlinks(model) {
     if (!model || !model.commands) return;
     var commands = commandIndex(model.commands);
@@ -2579,11 +3222,25 @@ function markUnpaintedStdPictureHyperlinks(model) {
 
 function markForeignSearchCommands(model) {
     if (!model) return;
+    var root = { childItems: model.childItemsRoot, autoCommandBar: model.autoCommandBar };
+    var itemTags = {};
+    walkFormItems(root, function (item) {
+        if (item && item.name) itemTags[item.name] = item.tag;
+    });
+    walkFormItems(root, function (bar) {
+        if (!bar || bar.tag !== 'CommandBar') return;
+        var source = String(prop(bar, ['CommandSource']) || '').match(/^Item\.([^.]+)$/i);
+        var sourceTag = source && itemTags[source[1]];
+        if (!sourceTag) return;
+        bar._fpCommandSourceTag = sourceTag;
+        walkFormItems(bar, function (button) {
+            if (button && button.tag === 'Button') button._fpCommandSourceTag = sourceTag;
+        });
+    });
     function markOwnBar(table) {
         if (!table.autoCommandBar) return;
         walkFormItems(table.autoCommandBar, function (item) { item._fpOwnTableBar = table.name; });
     }
-    var root = { childItems: model.childItemsRoot, autoCommandBar: model.autoCommandBar };
     walkFormItems(root, function (item) { if (item.tag === 'Table') markOwnBar(item); });
     walkFormItems(root, function (item) {
         if (item.tag !== 'Button') return;
@@ -2593,8 +3250,6 @@ function markForeignSearchCommands(model) {
     });
 }
 
-/* Inside its own table bar an Auto Find/CancelSearch button is a text command
- * in the reference (repres="Text" with «Найти...» and «Отменить поиск»). */
 var OWN_TABLE_SEARCH_TITLES = { find: 'Найти...', cancelsearch: 'Отменить поиск' };
 
 function ownTableSearchCommand(item) {
@@ -2604,14 +3259,86 @@ function ownTableSearchCommand(item) {
     return match ? match[1].toLowerCase() : '';
 }
 
+/* A list's authored menu of Create-purpose form commands replaces the generic
+ * Create/Copy pair in the 8.5 client. The same compact bar folds an unpinned
+ * Refresh into More, leaving explicit row actions on the strip. */
+function tableHasAuthoredCreationMenu(table, model) {
+    if (!isPlatform85Model(model) || isInterface85Mode(model && model.interfaceMode)
+        || !table || !table.autoCommandBar) return false;
+    var ctx = { model: model, commands: commandIndex(model && model.commands) };
+    return (table.autoCommandBar.childItems || []).some(function (popup) {
+        if (!popup || popup.tag !== 'Popup' || isCreateBasedOnPopup(popup)) return false;
+        var creates = 0;
+        walkFormItems(popup, function (item) {
+            if (item && item.tag === 'Button'
+                && /^Create$/i.test(String(commandMeta(item, ctx, 'actionPurpose') || '')))
+                creates++;
+        });
+        return creates >= 2;
+    });
+}
+
 function tableBarItems(table, model) {
     var std = tableStdCommands(table, model);
     var bar = table && table.autoCommandBar;
     var kids = ((bar && bar.childItems) || []).slice();
-    /* A visible SearchStringAddition is the managed client's representation
-     * of Find/CancelSearch. Configurations often keep those standard-command
-     * buttons in AutoCommandBar as generated metadata, but the reference consumes them
-     * into the search chrome instead of painting duplicate toolbar commands. */
+    if (tableHasAuthoredCreationMenu(table, model)) {
+        std = std.filter(function (item) { return item.name !== '_stdCreate' && item.name !== '_stdCopy'; });
+        kids.forEach(function (item) {
+            if (item && item.tag === 'Button'
+                && /^Form\.Item\.[^.]+\.StandardCommand\.Refresh$/i.test(
+                    String(prop(item, ['CommandName']) || ''))
+                && !prop(item, ['LocationInCommandBar'])) {
+                item.properties = item.properties || {};
+                item.properties.LocationInCommandBar = 'InAdditionalSubmenu';
+            }
+        });
+    }
+    /* A pinned Refresh anchors a compact 8.5 list bar. The client paints its
+     * caption and keeps unpinned wide form actions in More beside Search. */
+    if (isPlatform85Model(model) && !isInterface85Mode(model && model.interfaceMode)) {
+        var pinnedRefresh = kids.find(function (item) {
+            return item && item.tag === 'Button'
+                && /\.StandardCommand\.Refresh$/i.test(String(prop(item, ['CommandName']) || ''))
+                && /^InCommandBar$/i.test(String(prop(item, ['LocationInCommandBar']) || ''));
+        });
+        if (pinnedRefresh) {
+            pinnedRefresh.properties = pinnedRefresh.properties || {};
+            if (!prop(pinnedRefresh, ['Representation'])) pinnedRefresh.properties.Representation = 'Text';
+            kids.forEach(function (item) {
+                var commandName = String(prop(item, ['CommandName']) || '');
+                if (item && item.tag === 'Button'
+                    && ((/^Form\.Command\./i.test(commandName)
+                            && /^PictureAndText$/i.test(String(prop(item, ['Representation']) || '')))
+                        || /^CommonCommand\./i.test(commandName))
+                    && !prop(item, ['LocationInCommandBar'])) {
+                    item.properties = item.properties || {};
+                    item.properties.LocationInCommandBar = 'InAdditionalSubmenu';
+                }
+            });
+        }
+    }
+    if (interface85TableFilterCardWorkspace(model, table)) {
+        kids.forEach(function (item) {
+            var commandName = String(prop(item, ['CommandName']) || '');
+            if (item && item.tag === 'Button' && /\.StandardCommand\.Copy$/i.test(commandName)) return;
+            item.properties = item.properties || {};
+            item.properties.LocationInCommandBar = 'InAdditionalSubmenu';
+        });
+    }
+    /* In the clean client, a list whose own bar authors row actions uses those
+     * actions as its primary segment. Generic Create/Copy stay in overflow. */
+    if (interface85CardTabsForm(model) && tableIsList(table, model)
+        && kids.some(function (item) {
+            return item && item.tag === 'Button'
+                && /^Form\.Command\./i.test(String(prop(item, ['CommandName']) || ''))
+                && /InCommandBar/i.test(String(prop(item, ['LocationInCommandBar']) || ''));
+        })) {
+        std.forEach(function (item) {
+            item.properties = item.properties || {};
+            item.properties.LocationInCommandBar = 'InAdditionalSubmenu';
+        });
+    }
     if (table && table.searchStringAddition && !additionHidden(table, 'SearchStringLocation')) {
         kids = kids.filter(function (item) {
             var commandName = String(prop(item, ['CommandName']) || '');
@@ -2660,6 +3387,232 @@ function tableBarItems(table, model) {
     return items;
 }
 
+var PLAIN_FIELD_META_CLASSES = { Report: true, InformationRegister: true, AccumulationRegister: true };
+
+function objectFillCheckingOf(om) {
+    if (!om || PLAIN_FIELD_META_CLASSES[om.metaClass]) return {};
+    return om.fillChecking || {};
+}
+
+/* ------------------------------------------------ dynamic list fields
+ * A dynamic list column without a Title is captioned like its field: the
+ * title of the list's Field setting, else the presentation of the table
+ * field the query selects (a synonym, a standard attribute presentation),
+ * found through the table alias. Without a manual query every field is the
+ * MainTable's. Expression fields keep the generic caption. */
+var QUERY_IDENT_CHARS = 'A-Za-z0-9_А-яЁё';
+var QUERY_TABLE_KINDS = {
+    catalog: 'Catalog', 'справочник': 'Catalog', document: 'Document', 'документ': 'Document',
+    documentjournal: 'DocumentJournal', 'журналдокументов': 'DocumentJournal',
+    chartofcharacteristictypes: 'ChartOfCharacteristicTypes', 'планвидовхарактеристик': 'ChartOfCharacteristicTypes',
+    chartofaccounts: 'ChartOfAccounts', 'плансчетов': 'ChartOfAccounts',
+    chartofcalculationtypes: 'ChartOfCalculationTypes', 'планвидоврасчета': 'ChartOfCalculationTypes',
+    informationregister: 'InformationRegister', 'регистрсведений': 'InformationRegister',
+    accumulationregister: 'AccumulationRegister', 'регистрнакопления': 'AccumulationRegister',
+    accountingregister: 'AccountingRegister', 'регистрбухгалтерии': 'AccountingRegister',
+    calculationregister: 'CalculationRegister', 'регистррасчета': 'CalculationRegister',
+    businessprocess: 'BusinessProcess', 'бизнеспроцесс': 'BusinessProcess',
+    task: 'Task', 'задача': 'Task', exchangeplan: 'ExchangePlan', 'планобмена': 'ExchangePlan',
+    filtercriterion: 'FilterCriterion', 'критерийотбора': 'FilterCriterion'
+};
+
+/* Comments, string literals and DCS braces blanked out with the offsets kept. */
+function queryCodeOnly(text) {
+    var out = '';
+    var s = String(text || '');
+    for (var i = 0; i < s.length; i++) {
+        var ch = s.charAt(i);
+        if (ch === '/' && s.charAt(i + 1) === '/') {
+            while (i < s.length && s.charAt(i) !== '\n') { out += ' '; i++; }
+            if (i < s.length) out += '\n';
+            continue;
+        }
+        if (ch === '"') {
+            out += ' ';
+            i++;
+            while (i < s.length) {
+                if (s.charAt(i) === '"' && s.charAt(i + 1) === '"') { out += '  '; i += 2; continue; }
+                if (s.charAt(i) === '"') break;
+                out += s.charAt(i) === '\n' ? '\n' : ' ';
+                i++;
+            }
+            if (i < s.length) out += ' ';
+            continue;
+        }
+        out += ch === '{' || ch === '}' ? ' ' : ch;
+    }
+    return out;
+}
+
+function queryDepthAt(code, index) {
+    var depth = 0;
+    for (var i = 0; i < index; i++) {
+        var ch = code.charAt(i);
+        if (ch === '(') depth++;
+        else if (ch === ')') depth = Math.max(0, depth - 1);
+    }
+    return depth;
+}
+
+/* Table alias -> { kind, name, virtual }. An outer-level alias wins over a
+ * nested query's alias of the same name. */
+function queryTableAliases(code) {
+    var out = {};
+    var depths = {};
+    var re = new RegExp('(^|[^.' + QUERY_IDENT_CHARS + '])([' + QUERY_IDENT_CHARS + ']+)\\.([' + QUERY_IDENT_CHARS
+        + ']+)(?:\\.([' + QUERY_IDENT_CHARS + ']+))?', 'g');
+    var aliasRe = new RegExp('^\\s*(?:(?:КАК|AS)\\s+)?([' + QUERY_IDENT_CHARS + ']+)', 'i');
+    var match;
+    while ((match = re.exec(code))) {
+        var kind = QUERY_TABLE_KINDS[match[2].toLowerCase()];
+        if (!kind) continue;
+        var start = match.index + match[1].length;
+        var at = match.index + match[0].length;
+        var rest = code.slice(at);
+        var lead = rest.match(/^\s*\(/);
+        if (lead) {
+            var depth = 0;
+            var i = lead[0].length - 1;
+            for (; i < rest.length; i++) {
+                if (rest.charAt(i) === '(') depth++;
+                else if (rest.charAt(i) === ')' && --depth === 0) break;
+            }
+            at += i + 1;
+            rest = code.slice(at);
+        }
+        var aliasMatch = rest.match(aliasRe);
+        var alias = aliasMatch ? aliasMatch[1] : '';
+        /* Only `... КАК Alias` or a bare alias not being a keyword names the
+         * table; without one the table is referred to by its last segment. */
+        if (!alias || /^(?:ГДЕ|WHERE|ЛЕВОЕ|LEFT|ПРАВОЕ|RIGHT|ВНУТРЕННЕЕ|INNER|ПОЛНОЕ|FULL|СОЕДИНЕНИЕ|JOIN|ПО|ON|СГРУППИРОВАТЬ|GROUP|УПОРЯДОЧИТЬ|ORDER|ОБЪЕДИНИТЬ|UNION|ИМЕЮЩИЕ|HAVING|ИТОГИ|TOTALS|ДЛЯ|FOR|ИНДЕКСИРОВАТЬ|INDEX|И|AND|ИЛИ|OR|КОГДА|WHEN|ТОГДА|THEN|ИНАЧЕ|ELSE|КОНЕЦ|END|В|IN)$/i.test(alias))
+            alias = match[4] || match[3];
+        var aliasKey = alias.toLowerCase();
+        var tableDepth = queryDepthAt(code, start);
+        if (Object.prototype.hasOwnProperty.call(depths, aliasKey) && depths[aliasKey] <= tableDepth) continue;
+        depths[aliasKey] = tableDepth;
+        out[aliasKey] = { kind: kind, name: match[3], virtual: match[4] || '' };
+    }
+    return out;
+}
+
+/* The field list of the outermost first SELECT: [{ alias, table, field }],
+ * table/field empty for an expression. */
+function querySelectFields(code) {
+    var selectRe = /(^|[^A-Za-z0-9_А-яЁё])(ВЫБРАТЬ|SELECT)(?![A-Za-z0-9_А-яЁё])/gi;
+    var match;
+    var begin = -1;
+    while ((match = selectRe.exec(code))) {
+        var pos = match.index + match[1].length;
+        if (queryDepthAt(code, pos) === 0) { begin = pos + match[2].length; break; }
+    }
+    if (begin < 0) return [];
+    var items = [];
+    var depth = 0;
+    var from = begin;
+    var wordRe = new RegExp('^(ИЗ|FROM|ПОМЕСТИТЬ|INTO|ОБЪЕДИНИТЬ|UNION)(?![' + QUERY_IDENT_CHARS + '])', 'i');
+    var end = code.length;
+    var identChar = new RegExp('[' + QUERY_IDENT_CHARS + ']');
+    for (var i = begin; i < code.length; i++) {
+        var ch = code.charAt(i);
+        if (ch === '(') depth++;
+        else if (ch === ')') depth--;
+        else if (depth === 0 && ch === ',') { items.push(code.slice(from, i)); from = i + 1; }
+        else if (depth === 0 && !identChar.test(code.charAt(i - 1) || ' ')
+            && wordRe.test(code.slice(i, i + 12))) { end = i; break; }
+    }
+    items.push(code.slice(from, end));
+    var ident = '[' + QUERY_IDENT_CHARS + ']+';
+    var modifiers = new RegExp('^\\s*(?:(?:РАЗРЕШЕННЫЕ|ALLOWED|РАЗЛИЧНЫЕ|DISTINCT)\\s+|(?:ПЕРВЫЕ|TOP)\\s+\\d+\\s+)*', 'i');
+    var simple = new RegExp('^(' + ident + ')\\.(' + ident + ')(?:\\s+(?:(?:КАК|AS)\\s+)?(' + ident + '))?$', 'i');
+    var aliased = new RegExp('(?:^|\\s)(?:(?:КАК|AS)\\s+)?(' + ident + ')$', 'i');
+    var out = [];
+    for (var n = 0; n < items.length; n++) {
+        var item = items[n].replace(n === 0 ? modifiers : /^/, '').replace(/\s+/g, ' ').trim();
+        if (!item) continue;
+        var fieldMatch = item.match(simple);
+        if (fieldMatch) {
+            out.push({ alias: fieldMatch[3] || fieldMatch[2], table: fieldMatch[1], field: fieldMatch[2] });
+            continue;
+        }
+        var tail = item.match(aliased);
+        if (tail) out.push({ alias: tail[1], table: '', field: '' });
+    }
+    return out;
+}
+
+/* An object's field captions: attributes by synonym, then its standard
+ * fields under both names. */
+function objectFieldCaptions(meta) {
+    var out = {};
+    var sources = [meta && meta.captions, meta && meta.stdCaptions];
+    for (var i = 0; i < sources.length; i++) {
+        for (var key in sources[i]) {
+            if (Object.prototype.hasOwnProperty.call(sources[i], key) && !out[key]) out[key] = sources[i][key];
+        }
+    }
+    return out;
+}
+
+/* `<Kind>.<Name>.<Part>` is a tabular section when the object has one of
+ * that name (its columns are keyed `<Part>.<Column>`), else a virtual table
+ * (Остатки, СрезПоследних, ДвиженияССубконто) that reuses the object's own
+ * field names. */
+function queryFieldCaption(meta, part, field) {
+    if (!meta || !field) return '';
+    var own = meta.captions || {};
+    if (part) {
+        var prefix = part + '.';
+        var tabular = Object.prototype.hasOwnProperty.call(own, part);
+        for (var key in own) {
+            if (tabular) break;
+            if (Object.prototype.hasOwnProperty.call(own, key) && key.indexOf(prefix) === 0) tabular = true;
+        }
+        if (tabular) return Object.prototype.hasOwnProperty.call(own, prefix + field) ? own[prefix + field] : '';
+    }
+    if (Object.prototype.hasOwnProperty.call(own, field)) return own[field];
+    var std = meta.stdCaptions || {};
+    return Object.prototype.hasOwnProperty.call(std, field) ? std[field] : '';
+}
+
+function tableMeta(model, kind, name) {
+    var refMeta = (model && model.refMeta) || {};
+    var meta = refMeta[kind + '.' + name];
+    if (meta) return meta;
+    var om = model && model.objectMeta;
+    return om && om.name === name && om.kindTag === kind ? om : null;
+}
+
+function addDynamicListCaptions(attr, model, captions) {
+    var settings = attr.settings;
+    if (!settings || !/DynamicList/i.test(settings.type || '')) return;
+    var prefix = attr.name + '.';
+    var titles = settings.fieldTitles || {};
+    for (var path in titles) {
+        if (Object.prototype.hasOwnProperty.call(titles, path) && !captions[prefix + path])
+            captions[prefix + path] = titles[path];
+    }
+    if (settings.manualQuery) {
+        var code = queryCodeOnly(settings.queryText);
+        var tables = queryTableAliases(code);
+        var fields = querySelectFields(code);
+        for (var i = 0; i < fields.length; i++) {
+            var f = fields[i];
+            var table = f.table && tables[f.table.toLowerCase()];
+            if (!table || captions[prefix + f.alias]) continue;
+            var caption = queryFieldCaption(tableMeta(model, table.kind, table.name), table.virtual, f.field);
+            if (caption) captions[prefix + f.alias] = caption;
+        }
+        return;
+    }
+    var main = String(settings.mainTable || '').match(/^(\w+)\.(.+)$/);
+    var mainMeta = main && tableMeta(model, main[1], main[2]);
+    var mc = mainMeta ? objectFieldCaptions(mainMeta) : {};
+    for (var key in mc) {
+        if (Object.prototype.hasOwnProperty.call(mc, key) && !captions[prefix + key])
+            captions[prefix + key] = mc[key];
+    }
+}
+
 function buildCaptionIndex(model) {
     var captions = {};
     var stringLen = {};
@@ -2701,10 +3654,22 @@ function buildCaptionIndex(model) {
             if (col.numberQ) numberQ[colPath] = col.numberQ;
             if (col.dateFraction) dateFraction[colPath] = col.dateFraction;
         }
+        if (a.settings) addDynamicListCaptions(a, model, captions);
     }
     var om = model && model.objectMeta;
     if (om) {
         var oc = om.captions || {};
+        /* `Объект.X` / `Список.X` is the object's field X even when a form
+         * attribute is also named X (a filter «ЗаказНаПроизводство» titled
+         * «Заказ» must not caption the list column). */
+        var ownFields = objectFieldCaptions(om);
+        for (var mainName in mainNames) {
+            if (!Object.prototype.hasOwnProperty.call(mainNames, mainName)) continue;
+            for (var mk in ownFields) {
+                if (Object.prototype.hasOwnProperty.call(ownFields, mk) && !captions[mainName + '.' + mk])
+                    captions[mainName + '.' + mk] = ownFields[mk];
+            }
+        }
         for (var k in oc) {
             if (Object.prototype.hasOwnProperty.call(oc, k) && !captions[k]) captions[k] = oc[k];
         }
@@ -2729,11 +3694,7 @@ function buildCaptionIndex(model) {
     expandDefinedTypes(model, types, stringLen, numberQ, dateFraction);
     return {
         captions: captions, mainNames: mainNames, stringLen: stringLen,
-        /* Kept apart: the object's FillChecking applies through the main
-         * attribute only. Merged, an object attribute would shadow a form
-         * attribute of the same name, and list-form filters would be underlined
-         * although the reference leaves them plain. */
-        types: types, fillChecking: fillChecking, objectFillChecking: (om && om.fillChecking) || {},
+        types: types, fillChecking: fillChecking, objectFillChecking: objectFillCheckingOf(om),
         numberQ: numberQ,
         dateFraction: dateFraction, stringCharPx: stringCharPx,
         multiLine: (om && om.multiLine) || {},
@@ -2812,6 +3773,19 @@ function lookupPathMap(map, path, mainNames, noAlias) {
     if (normalized !== path && Object.prototype.hasOwnProperty.call(map, normalized))
         return map[normalized];
     var parts = normalized.split('.');
+    /* A tabular section's Total<Field> is the aggregate of that field and
+     * inherits its type and qualifiers. Resolve the full section path before
+     * falling back to an unrelated field with the same final name. */
+    var aggregate = parts.length >= 3 && /^Total(?=[A-ZА-ЯЁ])/.test(parts[parts.length - 1]);
+    if (aggregate) {
+        var aggregateField = parts[parts.length - 1].slice(5);
+        var memberPath = parts.slice(0, -1).concat(aggregateField).join('.');
+        if (Object.prototype.hasOwnProperty.call(map, memberPath)) return map[memberPath];
+        if (mainNames && mainNames[parts[0]]) {
+            var relativeMember = parts.slice(1, -1).concat(aggregateField).join('.');
+            if (Object.prototype.hasOwnProperty.call(map, relativeMember)) return map[relativeMember];
+        }
+    }
     if (parts.length >= 2 && mainNames && mainNames[parts[0]]) {
         var rest = parts.slice(1).join('.');
         if (Object.prototype.hasOwnProperty.call(map, rest)) return map[rest];
@@ -2890,10 +3864,6 @@ function humanizeIdent(s) {
     var t = String(s).replace(/[_]+/g, ' ');
     t = t.replace(/([а-яёa-z])([А-ЯЁA-Z])/g, '$1 $2');
     t = t.replace(/([А-ЯЁA-Z]+)([А-ЯЁA-Z][а-яёa-z])/g, '$1 $2');
-    /* A number glued to an identifier part is its own word: the reference renders
-     * ДолжностьЗамещаласьМенее12Месяцев as "менее 12 месяцев". Only the
-     * boundaries the platform also splits are cut - a digit followed by a
-     * lower-case letter stays inside its word (Форма1с). */
     t = t.replace(/([А-ЯЁA-Zа-яёa-z])([0-9])/g, '$1 $2');
     t = t.replace(/([0-9])([А-ЯЁA-Z])/g, '$1 $2');
     var words = t.replace(/\s+/g, ' ').trim().split(' ');
@@ -2933,24 +3903,69 @@ function pagesRep(item) {
     var v = String(raw || '').toLowerCase().replace(/[\s_-]+/g, '');
     if (v === 'none' || v.indexOf('нет') >= 0) return 'none';
     if (v.indexOf('bottom') >= 0 || v.indexOf('низ') >= 0 || v.indexOf('внизу') >= 0) return 'bottom';
+    if (v.indexOf('tabsonlefthorizontal') >= 0
+        || (v.indexOf('left') >= 0 && v.indexOf('horizontal') >= 0)
+        || (v.indexOf('слева') >= 0 && v.indexOf('горизонт') >= 0)) return 'left-horizontal';
     return 'top';
+}
+
+function isInterface85Mode(value) {
+    return /^Version85$/i.test(String(value || ''));
+}
+
+function isInterface85Context(ctx) {
+    return isInterface85Mode(ctx && ctx.model && ctx.model.interfaceMode);
+}
+
+/* ScaleVariant=Compact of the clean 8.5 interface (32px editors). */
+function isCompactScale85(ctx) {
+    return isInterface85Context(ctx)
+        && /compact|компакт/.test(normKey(prop(ctx.model, ['ScaleVariant'])));
+}
+
+function interface85AdaptivePageDetailStack(item, ctx) {
+    if (!isInterface85Context(ctx) || !item || !isContainer(item.tag)) return false;
+    var children = visibleLayoutChildren(item);
+    if (children.length !== 2 || children[0].tag !== 'Pages') return false;
+    if (!isContainer(children[1].tag)) return false;
+    return visibleLayoutChildren(children[1]).some(function (child) {
+        return child && child.tag === 'Pages';
+    });
+}
+
+function interface85RootSplitSpec(item, parentItem, ctx) {
+    if (!isInterface85Context(ctx) || !item || !parentItem || parentItem.tag !== 'Form') return null;
+    if (item.tag !== 'UsualGroup' && item.tag !== 'Group') return null;
+    var meta = layoutMeta(item);
+    if (meta.groupMode !== 'auto-screen-sensitive' || representationOf(item) !== 'none') return null;
+    var children = visibleLayoutChildren(item);
+    if (children.length !== 2) return null;
+    if (!children.every(function (child) {
+        return child.tag === 'UsualGroup' || child.tag === 'Group';
+    })) return null;
+    var first = layoutMeta(children[0]);
+    var second = layoutMeta(children[1]);
+    if (first.groupMode !== 'vertical' || second.groupMode !== 'vertical') return null;
+    if (!(first.authoredWidth > 0) || !(second.authoredWidth > first.authoredWidth)) return null;
+    var authoredParentWidth = parseInt(prop(item, ['Width', 'Ширина']), 10) || 0;
+    if (authoredParentWidth > 0) {
+        var railUnits = parseInt(prop(children[0], ['Width', 'Ширина']), 10) || 0;
+        var workspaceUnits = parseInt(prop(children[1], ['Width', 'Ширина']), 10) || 0;
+        var totalUnits = railUnits + workspaceUnits;
+        if (!(totalUnits > 0)) return null;
+        return { railTrack: (railUnits / totalUnits * 100) + '%', adaptive: true };
+    }
+    return { railTrack: (first.authoredWidth + 2) + 'px', adaptive: false };
 }
 
 function inAdditionalBar(item) {
     var v = String(prop(item, ['LocationInCommandBar', 'ПоложениеВКоманднойПанели']) || '').toLowerCase();
-    /* A Picture-only CustomizeForm/Help without an authored Picture has no bar
-     * face in the reference and lives only in «Еще» (a standard-commands
-     * group then shows just «Еще»). */
     if (item && !/^_std/.test(String(item.name || ''))
         && /StandardCommand\.(?:CustomizeForm|Help)$/.test(String(prop(item, ['CommandName']) || ''))
         && String(prop(item, ['Representation']) || '').toLowerCase() === 'picture' && !pictureRef(item))
         return true;
-    /* A table Delete button without an authored location is never on the bar
-     * row: the reference keeps it in «Еще». */
     if (item && !v && /StandardCommand\.Delete$/.test(String(prop(item, ['CommandName']) || '')))
         return true;
-    /* Likewise a table's own Change (row edit) is absent from the reference
-     * bar row. */
     if (item && !v && /^Form\.Item\.[^.]+\.StandardCommand\.Change$/.test(String(prop(item, ['CommandName']) || '')))
         return true;
     /* InCommandBar and InCommandBarAndInAdditionalSubmenu stay on the main
@@ -2962,9 +3977,6 @@ function inAdditionalBar(item) {
     var short = cmdShort(item);
     if (/CustomizeForm|ShowMultipleSelection|OutputList|ListSettings|LoadDynamicListSettings|SaveDynamicListSettings|DynamicListStandardSettings/i.test(short))
         return true;
-    /* The reference places the object form's Reread, ShowInList and
-     * SetDeletionMark in the additional submenu; an authored Auto button
-     * keeps that default. */
     if (/^Form\.StandardCommand\.(?:Reread|ShowInList|SetDeletionMark)$/i.test(String(prop(item, ['CommandName']) || '')))
         return true;
     /* A list form's own bar keeps Create/Copy/Find on the row and folds the
@@ -3017,8 +4029,6 @@ function metaType(item, ctx) {
          * absent from the authored form Attributes. Preserve the concrete
          * catalog type so its native dropdown/open buttons can be derived
          * from type semantics instead of the field's human-readable title. */
-        /* Hierarchical charts have the same standard Parent: ChartOfCharacteristicTypes
-         * and ChartOfAccounts parents paint arrow + open in the reference. */
         if (/^cfg:(?:Catalog|ChartOfCharacteristicTypes|ChartOfAccounts)Object\./i.test(ownerType)
             && /^(?:Parent|Родитель)$/i.test(member))
             return ownerType.replace(/^cfg:(Catalog|ChartOfCharacteristicTypes|ChartOfAccounts)Object\./i, 'cfg:$1Ref.');
@@ -3095,7 +4105,7 @@ function typePresentation(type) {
             var kind = m[1] ? cfgKinds[m[2]] : plainKinds[m[2]];
             if (kind) return kind + (m[3] ? '.' + m[3] : '');
         }
-        return part;
+        return XU.terms.typeName(part) || part;
     }).join(', ');
 }
 
@@ -3271,9 +4281,6 @@ function bindGroupPopupToggle(wrap, btn, ctx, item) {
     btn.addEventListener('click', function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
-        /* Group PopUp is an expanded logical group in the reference's designer canvas.
-         * Keep the caption selectable without converting its inline body to
-         * the runtime overlay used outside the mockup. */
         if (group && group.classList && group.classList.contains('fp-popup-designer-inline')
             && group.closest && group.closest('.fp-body.fp-mockup')) {
             if (item) {
@@ -3386,6 +4393,32 @@ function refreshCommandBarMoreMenu(more, overflowNodes, ctx) {
     more._fpMenu = menu;
 }
 
+/* A clean 8.5 table bar keeps an Auto form Command on the bar only when its
+ * button says where or how important it is; otherwise it waits in More. */
+function interface85UnplacedTableCommand(item) {
+    return isCommandBarButton(item)
+        && /^Form\.Command\./i.test(String(prop(item, ['CommandName']) || ''))
+        && !prop(item, ['LocationInCommandBar', 'ПоложениеВКоманднойПанели'])
+        && !prop(item, ['ButtonImportance', 'ВажностьКнопки']);
+}
+
+function interface85UnplacedTableGroup(item) {
+    var kids = (item.childItems || []).filter(function (it) {
+        return it && !isFalse(prop(it, ['Visible', 'visible'])) && !isDeadCommand(it);
+    });
+    return kids.length > 0 && kids.every(function (it) {
+        return it.tag === 'ButtonGroup' ? interface85UnplacedTableGroup(it) : interface85UnplacedTableCommand(it);
+    });
+}
+
+function collectInterface85UnplacedCommands(item, acc) {
+    (item.childItems || []).forEach(function (it) {
+        if (!it || isFalse(prop(it, ['Visible', 'visible'])) || isDeadCommand(it)) return;
+        if (it.tag === 'ButtonGroup') collectInterface85UnplacedCommands(it, acc);
+        else acc.push(it);
+    });
+}
+
 function collectAdditionalBarItems(item, acc) {
     var kids = item && item.childItems || [];
     for (var i = 0; i < kids.length; i++) {
@@ -3400,6 +4433,17 @@ function collectAdditionalBarItems(item, acc) {
     }
 }
 
+/* A table's own search string (placed into a bar by its CommandSource or a
+ * hoist), as opposed to a standalone authored SearchStringAddition. */
+function isTableSearchAddition(item, model) {
+    var found = false;
+    if (!item || !model) return false;
+    walkFormItems({ childItems: model.childItemsRoot || [] }, function (it) {
+        if (!found && it && it.tag === 'Table' && it.searchStringAddition === item) found = true;
+    });
+    return found;
+}
+
 function pinCommandBarTail(bar) {
     if (!bar) return;
     var old = bar.querySelector('.fp-bar-spacer');
@@ -3408,18 +4452,27 @@ function pinCommandBarTail(bar) {
     var searchControl = bar.querySelector('.fp-search-control-item');
     if (search && !searchControl) {
         var sca = searchControlForBar(search, bar);
-        if (sca) searchControl = makeSearchControlItem(sca);
+        if (sca) searchControl = makeSearchControlItem(sca, bar._fpCtx);
     }
     var more = bar.querySelector('.fp-more-item');
     var help = bar.querySelector('.fp-help-item');
-    /* The reference pins «?» after «Еще» even when authored commands follow it in the
-     * bar (Help before an authored command). */
     if (help && help._fpPinTail === undefined) help._fpPinTail = true;
-    if (search) bar.appendChild(search);
-    if (search && searchControl) bar.appendChild(searchControl);
+    var barItem = bar._fpItem;
+    var barModel = bar._fpCtx && bar._fpCtx.model;
+    var inlineSearch = !!(search && barItem && barItem.tag === 'CommandBar'
+        && (barItem.childItems || []).indexOf(search._fpItem) >= 0
+        && !isPlatform85Model(barModel) && !isTableSearchAddition(search._fpItem, barModel));
+    if (search) search.classList.toggle('fp-search-inline-fill', inlineSearch);
+    if (inlineSearch) {
+        if (searchControl && searchControl.previousElementSibling !== search) bar.insertBefore(searchControl, search.nextSibling);
+    } else {
+        if (search) bar.appendChild(search);
+        if (search && searchControl) bar.appendChild(searchControl);
+    }
     if (more) bar.appendChild(more);
     if (help && help._fpPinTail !== false) bar.appendChild(help);
-    var first = search || more || (help && help._fpPinTail !== false ? help : null);
+    var addedInterface85Action = bar.querySelector('.fp-interface85-added-command');
+    var first = addedInterface85Action || (inlineSearch ? null : search) || more || (help && help._fpPinTail !== false ? help : null);
     /* A document root bar lays its permanent More button in the ordinary
      * command rhythm. Inserting the catalog-style flexible tail spacer costs
      * two gaps plus its minimum width and needlessly moves the final generated
@@ -3428,7 +4481,7 @@ function pinCommandBarTail(bar) {
         && bar.classList.contains('fp-document-posting-commandbar');
     /* A bottom dialog bar is packed right as a whole: ОК/Отмена/«?». */
     var bottomDialogBar = bar.classList && bar.classList.contains('fp-form-bar-bottom');
-    if (first && !packedDocumentRoot && !bottomDialogBar) bar.insertBefore(el('div', 'fp-bar-spacer'), first);
+    if (first && !packedDocumentRoot && !bottomDialogBar && !inlineSearch) bar.insertBefore(el('div', 'fp-bar-spacer'), first);
 }
 
 function commandBarMore(bar) {
@@ -3471,9 +4524,6 @@ function commandBarLeadingContributionCount(items) {
         if (align.indexOf('left') < 0 && align.indexOf('лев') < 0) break;
         count++;
     }
-    /* A lone leading command is ordinary source order. An explicitly Left
-     * neighbour creates the reference's primary contribution segment; when a local bar
-     * overflows, the following automatic segment moves to More as a unit. */
     return count > 1 ? count : 0;
 }
 
@@ -3568,6 +4618,60 @@ function localCommandBarLaneBudget(bar, scrollport) {
         ownerRect.left, trailing, gap);
 }
 
+/* DisplayImportance (ВажностьОтображения) is the authored Button property the
+ * reference command-bar layouter reads as its removal weight (discardCells'
+ * cell.importance, sourced from Button.getButtonImportance/weight). Lower
+ * weight overflows into More first; an unauthored button defaults to Usual. */
+var DISPLAY_IMPORTANCE_WEIGHT = { VeryLow: 0, Low: 1, Usual: 2, High: 3, VeryHigh: 4 };
+var BUTTON_IMPORTANCE_WEIGHT = { Supplementary: 1, Usual: 2, Main: 4 };
+
+function normDisplayImportance(raw) {
+    var v = String(raw || '').toLowerCase().replace(/[\s_-]+/g, '');
+    if (!v) return 'Usual';
+    if (v.indexOf('verylow') >= 0 || v.indexOf('оченьнизк') >= 0) return 'VeryLow';
+    if (v.indexOf('veryhigh') >= 0 || v.indexOf('оченьвысок') >= 0) return 'VeryHigh';
+    if (v.indexOf('low') >= 0 || v.indexOf('низк') >= 0) return 'Low';
+    if (v.indexOf('high') >= 0 || v.indexOf('высок') >= 0) return 'High';
+    return 'Usual';
+}
+
+function commandBarButtonImportance(item, platform85) {
+    if (!item) return DISPLAY_IMPORTANCE_WEIGHT.Usual;
+    var semantic = normButtonImportance(prop(item, ['ButtonImportance', 'ВажностьКнопки']));
+    if (semantic !== 'Usual') return BUTTON_IMPORTANCE_WEIGHT[semantic];
+    var raw = prop(item, ['DisplayImportance', 'ВажностьОтображения']);
+    if (raw != null && raw !== '') return DISPLAY_IMPORTANCE_WEIGHT[normDisplayImportance(raw)];
+
+    /* Keep important common commands and edit controls ahead of ordinary
+     * actions. A submenu inherits the highest priority of its children when
+     * the responsive fitter moves a bar into «Еще». */
+    var commonGroup = prop(item, ['CommonCommandGroup']);
+    if (commonGroup && typeof commonGroup === 'object')
+        commonGroup = commonGroup.name || commonGroup.ref || '';
+    if (platform85 && normKey(commonGroup) === 'formcommandbarimportant') return BUTTON_IMPORTANCE_WEIGHT.Main;
+    if (item.tag === 'InputField') return BUTTON_IMPORTANCE_WEIGHT.Main;
+    /* The object's own write/post commands belong to the same important
+     * segment: an overfull bar keeps Записать и закрыть / Записать and moves
+     * the last important global command into «Еще». */
+    if (item.tag === 'Button' && /^(?:write|writeandclose|post|postandclose)$/.test(stdCommandKey(item) || ''))
+        return BUTTON_IMPORTANCE_WEIGHT.Main;
+
+    var weight = DISPLAY_IMPORTANCE_WEIGHT.Usual;
+    if (item.tag === 'Popup') {
+        var children = item.childItems || [];
+        for (var i = 0; i < children.length; i++)
+            weight = Math.max(weight, commandBarButtonImportance(children[i], platform85));
+    }
+    return weight;
+}
+
+function normButtonImportance(raw) {
+    var value = normKey(raw);
+    if (/main|главн|основн/.test(value)) return 'Main';
+    if (/supplementary|дополн/.test(value)) return 'Supplementary';
+    return 'Usual';
+}
+
 /* The 1C command bar moves trailing commands into "More" when the form is too
  * narrow.  A horizontal scrollbar is not part of the platform UI and, on
  * command-heavy forms, makes mutually exclusive commands look duplicated. */
@@ -3582,9 +4686,6 @@ function fitCommandBar(bar) {
      * width is output, never input; this makes ResizeObserver and repeated
      * strategy passes converge to the same sibling allocation. */
     resetLocalCommandBarLane(bar);
-    /* Nested popup wrappers can add up to four layout pixels to scrollWidth
-     * through borders and subpixel rounding even when every painted control is
-     * inside the bar. The reference keeps such a fitting command visible. */
     var overflowEpsilon = 4;
     var savedMeasure = null;
     var pageScrollport = bar.closest ? bar.closest('.fp-pages-active-panel') : null;
@@ -3654,6 +4755,15 @@ function fitCommandBar(bar) {
     for (var h = 0; h < previouslyHidden.length; h++)
         previouslyHidden[h].classList.remove('fp-bar-overflow-hidden');
 
+    if (bar._fpCommandSourceTag === 'HTMLDocumentField') {
+        var documentMore = commandBarMore(bar);
+        if (documentMore && documentMore.parentNode) documentMore.parentNode.removeChild(documentMore);
+        var documentSpacer = bar.querySelector('.fp-bar-spacer');
+        if (documentSpacer && documentSpacer.parentNode) documentSpacer.parentNode.removeChild(documentSpacer);
+        restoreMeasure();
+        return;
+    }
+
     var more = commandBarMore(bar);
     if (more && more.classList.contains('fp-responsive-more')) {
         if (more.classList.contains('fp-popup-open')) closeAllPopups(bar._fpCtx && bar._fpCtx.root);
@@ -3667,19 +4777,79 @@ function fitCommandBar(bar) {
     if (more) {
         var resetButton = more.querySelector('.fp-button');
         if (resetButton) resetButton.title = more._fpBaseTitle || '';
+        more.style.display = '';
     }
     pinCommandBarTail(bar);
+    var folderListRootBar = bar._fpFormRootBar && Array.prototype.some.call(
+        bar.querySelectorAll('.fp-bar-item'), function (node) {
+            return node._fpItem && /^Form\.StandardCommand\.CreateFolder$/i.test(
+                String(prop(node._fpItem, ['CommandName']) || ''));
+        });
+    if (folderListRootBar && bar.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+        && bodyScrollport
+        && bodyScrollport.scrollWidth > bodyScrollport.clientWidth + 1) {
+        restoreMeasure();
+        bar.style.width = 'max-content';
+        bar.style.minWidth = 'max-content';
+        bar.style.maxWidth = 'none';
+        bar.style.flex = '0 0 auto';
+        return;
+    }
+    /* A Help-only authored additional menu need not consume the last command
+     * slot when every actual command fits. The managed client can omit that
+     * empty-help affordance and keep the final grouped command visible. */
+    if (more && bar._fpFormRootBar && more._fpBaseEntries
+        && more._fpBaseEntries.length === 1 && isHelpItem(more._fpBaseEntries[0])) {
+        more.style.display = 'none';
+        if (bar.scrollWidth > bar.clientWidth + overflowEpsilon) more.style.display = '';
+    }
 
     /* SearchStringAddition shrinks from 260px down to 140px through its flex
      * band before authored commands move into More; unlike ordinary commands,
      * search remains visible (a bar with room keeps a full 260px search).
      * It regrows once commands have left. */
     var searchControl = bar.querySelector('.fp-search-control-item');
-    if (searchControl && bar.scrollWidth > bar.clientWidth + overflowEpsilon)
+    var searchItem = bar.querySelector('.fp-search-item');
+    var searchPreferred = searchItem && typeof getComputedStyle === 'function'
+        ? (parseFloat(getComputedStyle(searchItem).maxWidth) || 0) : 0;
+    var searchReserve = searchItem && bar.classList.contains('fp-table-toolbar')
+        && bar.closest && bar.closest('.fp-clean85')
+        ? Math.max(0, 260 - Math.ceil(searchItem.getBoundingClientRect().width || 0)) : 0;
+    var barOverflows = function () {
+        if (bar.scrollWidth > bar.clientWidth + overflowEpsilon) return true;
+        if (!searchReserve) return false;
+        /* The search pushes itself right with an auto margin, so scrollWidth
+         * never shows the reserve: measure the commands' own right edge. */
+        var barRight = bar.getBoundingClientRect().right;
+        var searchLeft = searchItem.getBoundingClientRect().left;
+        var commandsRight = 0;
+        var nodes = bar.querySelectorAll('.fp-bar-item');
+        for (var ni = 0; ni < nodes.length; ni++) {
+            var n = nodes[ni];
+            if (n === searchItem || n.classList.contains('fp-more-item')
+                || n.classList.contains('fp-search-control-item')
+                || n.classList.contains('fp-bar-overflow-hidden')
+                || (n.closest && n.closest('.fp-popup-menu'))) continue;
+            var nr = n.getBoundingClientRect();
+            if (nr.width > 0 && nr.right <= searchLeft + 1) commandsRight = Math.max(commandsRight, nr.right);
+        }
+        return commandsRight > 0 && barRight - commandsRight < (barRight - searchLeft) + searchReserve;
+    };
+    if (searchControl && (barOverflows()
+        || (searchPreferred > 0 && searchItem && isPlatform85Model(bar._fpCtx && bar._fpCtx.model)
+            && searchItem.clientWidth + searchControl.clientWidth < searchPreferred - 1))) {
         searchControl.classList.add('fp-bar-overflow-hidden');
+        var searchSpacer = bar.querySelector('.fp-bar-spacer');
+        if (searchSpacer && searchItem && searchItem.clientWidth < searchPreferred - 1)
+            searchSpacer.style.display = 'none';
+    }
 
-    if (bar.scrollWidth <= bar.clientWidth + overflowEpsilon) {
+    if (!barOverflows()) {
         if (more) refreshCommandBarMoreMenu(more, [], bar._fpCtx || {});
+        restoreMeasure();
+        return;
+    }
+    if (!more && bar.closest && bar.closest('.fp-clean85 .fp-root-commandbar-bottom')) {
         restoreMeasure();
         return;
     }
@@ -3704,13 +4874,17 @@ function fitCommandBar(bar) {
         if (node.closest && node.closest('.fp-popup-menu')) continue;
         candidates.push(node);
     }
-    /* A command bar is a sequence of groups (authored ButtonGroup/Popup,
-     * generated global and CreateBasedOn segments), and the reference fills it in that
-     * order: commands overflow strictly from the end. How many commands a
-     * group shows therefore depends on how much room the groups before it
-     * took: an early group keeps its commands while a later one moves into
-     * More. */
-    var hideOrder = candidates.slice().reverse();
+    /* CmdPanelHorizontalLayouter.discardCells picks the item to drop by its
+     * authored DisplayImportance (VeryLow..VeryHigh); items of equal
+     * importance — the common case, nothing authored — overflow strictly from
+     * the end, which a plain reverse() already gives. A stable sort by
+     * (importance asc, DOM position desc) generalises that without changing
+     * the equal-importance order. */
+    var platform85 = isPlatform85Model(bar._fpCtx && bar._fpCtx.model);
+    var hideOrder = candidates
+        .map(function (node, idx) { return { node: node, idx: idx, imp: commandBarButtonImportance(node && node._fpItem, platform85) }; })
+        .sort(function (a, b) { return a.imp !== b.imp ? a.imp - b.imp : b.idx - a.idx; })
+        .map(function (entry) { return entry.node; });
     /* SearchStringAddition is fixed toolbar chrome in the managed client.
      * Under width pressure commands move into More, while the search field
      * remains on the bar. Hiding it here made command-dense table parts lose
@@ -3733,12 +4907,9 @@ function fitCommandBar(bar) {
         ? commandBarLeadingContributionCount(candidates.map(function (node) {
             return node && node._fpItem;
         })) : 0;
-    /* The reference sizes the lane with the primary contribution already captioned
-     * (a «Сохранить» caption is 89px of text, not a 30px picture), so the
-     * caption must be in place before anything overflows. */
     for (var primaryText = 1; primaryText < leadingCount; primaryText++)
         setAdaptivePrimaryCommandText(candidates[primaryText], true);
-    for (var c = 0; c < hideOrder.length && bar.scrollWidth > bar.clientWidth + overflowEpsilon; c++) {
+    for (var c = 0; c < hideOrder.length && barOverflows(); c++) {
         var candidate = hideOrder[c];
         if (candidate.classList.contains('fp-bar-overflow-hidden')) continue;
         candidate.classList.add('fp-bar-overflow-hidden');
@@ -3818,10 +4989,23 @@ function pictureRef(item) {
      * form-context.js referencedItemPictures. */
     var abs = raw.match(/^Abs:(.+)$/);
     if (abs) return item.name ? '@item:' + item.name + '/' + abs[1] : '';
-    /* The reference's designer paints no image for ExecuteTask: «Выполнено» in
-     * the bar and «Выполнена» in the body are text only. */
-    if (/^(?:StdPicture|БиблиотекаКартинок)\.(?:ExecuteTask|ВыполнитьЗадачу)$/i.test(raw)) return '';
+    /* Command and plain-body ExecuteTask decorations are text only. A
+     * PictureDecoration with ShowRight tooltip paints the task legend icon. */
+    if (/^(?:StdPicture|БиблиотекаКартинок)\.(?:ExecuteTask|ВыполнитьЗадачу)$/i.test(raw)
+        && !(item.tag === 'PictureDecoration'
+            && /^showright$/i.test(String(prop(item, ['ToolTipRepresentation']) || '')))) return '';
     return raw;
+}
+
+/* PictureDecorationGenerator.generateElement paints an unpictured decoration
+ * (no Picture at all — a spacer/indent item) at Width chars * the profile's
+ * average character width (10px at AverageCharacterWidth=10), with no
+ * padding or border — unlike the fixed 24x24 icon chrome an actual picture
+ * gets. Height is left alone: no equally clear formula was found for it. */
+function pictureDecorationSpacerWidthPx(item) {
+    if (!item || pictureRef(item)) return 0;
+    var chars = parseInt(prop(item, ['Width', 'Ширина']), 10);
+    return chars > 0 ? chars * REF_AUTHORED_CHAR_PX : 0;
 }
 
 function cmdShort(item) {
@@ -3846,6 +5030,8 @@ function commandMeta(item, ctx, key) {
     if (key === 'picture') return pictureRef(c) || prop(c, ['Picture']);
     if (key === 'title') return rawTitle(c);
     if (key === 'rep') return representationOf(c);
+    if (key === 'actionPurpose') return prop(c, ['ActionPurpose']);
+    if (key === 'selectedRowsUse') return prop(c, ['SelectedRowsUse']);
     return '';
 }
 
@@ -3952,6 +5138,36 @@ function commonPictureResource(ref, ctx) {
     return null;
 }
 
+function svgIntrinsicSizeFromText(text) {
+    var opening = String(text || '').match(/<svg\b[^>]*>/i);
+    if (!opening) return null;
+    function dimension(name) {
+        var match = opening[0].match(new RegExp('\\b' + name
+            + '\\s*=\\s*["\\\']\\s*([0-9]+(?:\\.[0-9]+)?)\\s*(?:px)?\\s*["\\\']', 'i'));
+        return match ? parseFloat(match[1]) : 0;
+    }
+    var width = dimension('width');
+    var height = dimension('height');
+    var viewBox = opening[0].match(/\bviewBox\s*=\s*["']\s*[-+0-9.e]+[\s,]+[-+0-9.e]+[\s,]+([-+0-9.e]+)[\s,]+([-+0-9.e]+)\s*["']/i);
+    if (!width && viewBox) width = parseFloat(viewBox[1]) || 0;
+    if (!height && viewBox) height = parseFloat(viewBox[2]) || 0;
+    return width > 0 && height > 0 ? { width: width, height: height } : null;
+}
+
+function itemLocalPictureIntrinsicSize(item, ref, ctx) {
+    if (!item || !/^@item:/.test(String(ref || ''))
+        || prop(item, ['PictureSize', 'РазмерКартинки'])
+        || prop(item, ['Width', 'Ширина']) || prop(item, ['Height', 'Высота'])) return null;
+    var resource = commonPictureResource(ref, ctx);
+    if (!resource || !/^image\/svg\+xml$/i.test(String(resource.mime || ''))
+        || !resource.data || typeof atob !== 'function') return null;
+    try {
+        return svgIntrinsicSizeFromText(atob(resource.data));
+    } catch (e) {
+        return null;
+    }
+}
+
 function bytesFromBase64(value) {
     var raw = atob(String(value || ''));
     var out = new Uint8Array(raw.length);
@@ -3986,10 +5202,15 @@ async function readStreamLimited(stream, maximum) {
  * variants (l.png/l.gif/100.gif) and even extensionless SVG files. Read the
  * central directory rather than trusting local-header sizes: ZIP writers may
  * put those sizes in a trailing data descriptor. */
-async function zipPictureDataUrl(resource) {
+/* prefer85: the clean 8.5 client paints a picture's version8_5 variant, an
+ * SVG template tinted with the text colour (UNF85 common pictures). The
+ * resolved URL carries `template` so the caller can paint it as a mask. */
+async function zipPictureDataUrl(resource, prefer85) {
     if (!resource || !resource.data) return '';
-    if (resource._pictureUrlPromise) return resource._pictureUrlPromise;
-    resource._pictureUrlPromise = (async function () {
+    var cacheKey = prefer85 ? '_pictureUrlPromise85' : '_pictureUrlPromise';
+    if (resource[cacheKey]) return resource[cacheKey];
+    var templateEntryName = '';
+    resource[cacheKey] = (async function () {
         var bytes = bytesFromBase64(resource.data);
         var view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         var entries = [];
@@ -4029,10 +5250,8 @@ async function zipPictureDataUrl(resource) {
                 if (entries[i].name.toLowerCase() === low) return entries[i];
             return null;
         }
-        /* The current managed client follows the manifest and prefers the
-         * plain ldpi variant at 96 DPI. Picture.png is commonly the legacy
-         * version8_2 face and must only be a fallback when the manifest has no
-         * current-interface variant. */
+        /* Follow the manifest for the active interface. At 96 DPI, prefer ldpi
+         * within that interface; Picture.png is often the legacy 8.2 face. */
         var preferredNames = [];
         var manifestBytes = await unpack(entryNamed('manifest.xml'));
         if (manifestBytes) {
@@ -4046,7 +5265,13 @@ async function zipPictureDataUrl(resource) {
                 var iface = (attrs.match(/\binterfaceVariant\s*=\s*["']([^"']*)["']/i) || [])[1] || '';
                 var densityRank = /^ldpi$/i.test(density) ? 0 : /^bldpi$/i.test(density) ? 1 : 2;
                 var interfaceRank = !iface ? 0 : /^version8_2$/i.test(iface) ? 1 : 2;
-                variants.push({ name: nameMatch[1], rank: densityRank * 10 + interfaceRank });
+                var is85 = /^version8_5$/i.test(iface);
+                if (is85 && !prefer85) continue;
+                if (is85 && /\bisTemplate\s*=\s*["']true["']/i.test(attrs) && !templateEntryName)
+                    templateEntryName = nameMatch[1].toLowerCase();
+                variants.push({ name: nameMatch[1], rank: prefer85
+                    ? (is85 ? densityRank : 10 + interfaceRank * 10 + densityRank)
+                    : densityRank * 10 + interfaceRank });
             }
             variants.sort(function (a, b) { return a.rank - b.rank; });
             for (var v = 0; v < variants.length; v++) preferredNames.push(variants[v].name);
@@ -4070,14 +5295,21 @@ async function zipPictureDataUrl(resource) {
         else if (unpackedBytes.length >= 3 && unpackedBytes[0] === 0xff && unpackedBytes[1] === 0xd8
             && unpackedBytes[2] === 0xff) mime = 'image/jpeg';
         else {
-            var head = new TextDecoder('utf-8').decode(unpackedBytes.subarray(0, Math.min(256, unpackedBytes.length)))
+            var head = new TextDecoder('utf-8').decode(unpackedBytes.subarray(0, Math.min(1024, unpackedBytes.length)))
                 .replace(/^\uFEFF/, '').trimStart();
-            if (/^<svg\b/i.test(head)) mime = 'image/svg+xml';
+            /* 1C exports real SVG variants with an XML declaration (and may
+             * put comments before the root element). Requiring <svg> to be
+             * the first token rejected those otherwise valid Picture.zip
+             * bundles and left large PictureField controls empty. */
+            if (/^(?:<\?xml[\s\S]*?\?>\s*)?(?:<!--(?:[\s\S]*?)-->\s*)*<svg\b/i.test(head))
+                mime = 'image/svg+xml';
         }
         if (!mime) return '';
-        return 'data:' + mime + ';base64,' + bytesToBase64(unpackedBytes);
+        var url = 'data:' + mime + ';base64,' + bytesToBase64(unpackedBytes);
+        if (templateEntryName && entry.name.toLowerCase() === templateEntryName) resource._pictureTemplate85 = true;
+        return url;
     })().catch(function () { return ''; });
-    return resource._pictureUrlPromise;
+    return resource[cacheKey];
 }
 
 function appendPictureIcon(parent, ref, ctx, fallbackName, cls) {
@@ -4096,7 +5328,7 @@ function appendPictureIcon(parent, ref, ctx, fallbackName, cls) {
      * outline. Prefer the exact resource over the outline fallback: the latter
      * is visually close but has different stroke geometry and colours at
      * this size. */
-    if (fallbackName === 'data-history') {
+    if (fallbackName === 'data-history' && !isInterface85Context(ctx)) {
         var platformHistory = el('img', iconClass);
         platformHistory.alt = '';
         platformHistory.setAttribute('aria-hidden', 'true');
@@ -4104,11 +5336,23 @@ function appendPictureIcon(parent, ref, ctx, fallbackName, cls) {
         parent.appendChild(platformHistory);
         return platformHistory;
     }
-    var stdUrl = resource ? '' : stdPictureUrl(ref);
+    var std85 = resource ? '' : platform85StdPictureUrl(ref, ctx);
+    if (std85) {
+        var clean = el('img', iconClass + ' fp-std-picture-85');
+        clean.alt = '';
+        clean.setAttribute('aria-hidden', 'true');
+        clean.src = std85;
+        parent.appendChild(clean);
+        return clean;
+    }
+    /* Never substitute a Taxi library bitmap for a clean-interface picture. */
+    var stdUrl = resource || isInterface85Context(ctx) ? '' : stdPictureUrl(ref);
     if (stdUrl) {
         /* The platform library file itself; a host that did not ship
          * std-pictures/ falls back to the outline sprite. */
         var std = el('img', iconClass);
+        if (isInterface85Context(ctx) && /^StdPicture\.Stop$/i.test(String(ref)))
+            std.classList.add('fp-std-picture-stop-fallback-85');
         std.alt = '';
         std.setAttribute('aria-hidden', 'true');
         std.onerror = function () {
@@ -4122,9 +5366,16 @@ function appendPictureIcon(parent, ref, ctx, fallbackName, cls) {
     parent.appendChild(fallback);
     if (resource && resource.mime === 'application/zip') {
         fallback.classList.add('fp-picture-loading');
-        zipPictureDataUrl(resource).then(function (url) {
+        zipPictureDataUrl(resource, isInterface85Context(ctx)).then(function (url) {
             if (!url || !fallback.parentNode) {
                 fallback.classList.remove('fp-picture-loading');
+                return;
+            }
+            if (resource._pictureTemplate85 && isInterface85Context(ctx)) {
+                var tinted = el('span', iconClass + ' fp-picture-template-85');
+                tinted.setAttribute('aria-hidden', 'true');
+                tinted.style.setProperty('--fp-picture-mask', 'url("' + url + '")');
+                fallback.parentNode.replaceChild(tinted, fallback);
                 return;
             }
             var image = el('img', iconClass);
@@ -4149,12 +5400,11 @@ function appendBackgroundPicture(parent, picture, ctx) {
     return backdrop;
 }
 
-/* Editor-button glyphs the reference paints as small bitmaps, not scalable icons:
- * «i-px-*» reproduce them pixel for pixel in the 20×23 cell. */
 var PIXEL_BUTTON_GLYPHS = { 'caret-down': 1, dots: 1, x: 1, 'open-1c': 1 };
 
 function iconBtn(name) {
     var span = el('span', 'fp-input-btn');
+    span.classList.add('fp-input-btn-' + String(name || '').replace(/[^a-z0-9_-]+/gi, '-'));
     if (PIXEL_BUTTON_GLYPHS[name]) span.appendChild(svgIcon('px-' + name, 'fp-btn-icon fp-px-glyph'));
     else span.appendChild(svgIcon(name, 'fp-btn-icon'));
     return span;
@@ -4194,9 +5444,43 @@ function authoredEditorPaintWidth(raw, tag, buttons) {
     return declared + (appended ? 1 + appended * 21 : 0);
 }
 
-/* A fixed short text or list editor keeps the Width text lane and appends
- * its buttons: Width 6 paints 70 + 21, W12 151, W10 110 in the reference.
- * Without the lane the caret overpainted the trailing «?». */
+/* A card rail beside tabbed pages is a full-width clean-client workspace.
+ * The card's authored content width is not the width of the outer rail. */
+function interface85CardTabsWorkspace(item, ctx) {
+    if (!isInterface85Context(ctx) || !item || item.tag !== 'UsualGroup') return false;
+    var children = visibleLayoutChildren(item);
+    if (children.length !== 2 || children[1].tag !== 'Pages') return false;
+    var rail = children[0];
+    if (rail.tag !== 'UsualGroup' || layoutMeta(item).groupMode !== 'always-horizontal') return false;
+    return visibleLayoutChildren(rail).some(function (child) { return showAsCard(child); });
+}
+
+var interface85CardTabsFormCache = typeof WeakMap === 'function' ? new WeakMap() : null;
+function interface85CardTabsForm(model) {
+    if (!isInterface85Mode(model && model.interfaceMode)) return false;
+    if (interface85CardTabsFormCache && interface85CardTabsFormCache.has(model))
+        return interface85CardTabsFormCache.get(model);
+    var found = false;
+    var context = { model: model };
+    walkFormItems({ childItems: model.childItemsRoot }, function (item) {
+        if (!found && interface85CardTabsWorkspace(item, context)) found = true;
+    });
+    if (interface85CardTabsFormCache) interface85CardTabsFormCache.set(model, found);
+    return found;
+}
+
+/* Clean 8.5 keeps authored editor widths on its compact 8px ruler. Its 31px
+ * trailing buttons are part of the painted box; an authored leading picture
+ * is overlaid in the text lane and adds only the native 10px inset. */
+function interface85AuthoredInputWidth(item, ctx, raw) {
+    if (!isInterface85Context(ctx)) return 0;
+    var chars = parseInt(raw, 10);
+    if (!chars || chars < 0) return 0;
+    var buttons = inputButtonKinds(item, ctx).length;
+    var leadingPictureInset = pictureRef(item) ? 10 : 0;
+    return chars * CHAR_PX + 4 + buttons * 31 + leadingPictureInset;
+}
+
 function horizontalDecorationWidthPx(item, tag, parentMeta) {
     if (tag !== 'LabelDecoration' || !parentMeta || parentMeta.orientation !== 'horizontal') return 0;
     var chars = parseInt(prop(item, ['Width', 'Ширина']), 10) || 0;
@@ -4228,18 +5512,10 @@ function authoredAutoMaxEditorPaintWidth(item, tag, parentMeta, ctx) {
      * the following sibling. A bound field has the full reference width contract. */
     if (!width && !prop(item, ['DataPath', 'ПутьКДанным'])) return 0;
     if (!maximum || !isFalse(prop(item, ['AutoMaxWidth']))) return 0;
-    /* In a horizontal row AutoMaxWidth=false publishes MaxWidth as the TextBox
-     * even when Width is smaller: the reference paints ИНН MaxWidth=17 (≈177px), not
-     * Width=15 (160px), and КПП starts at that trailing edge. Vertical columns
-     * still keep Width as the paint band so MaxWidth remains a stretch cap. */
     if (width && maximum > width
         && parentMeta && parentMeta.orientation === 'horizontal')
         return autoMaxEditorBandWidth(maximum);
     if (width) return 0;
-    /* AutoMaxWidth=false without Width used to omit the editor inset and
-     * painted the field 6px narrower than the reference, shifting the next
-     * one left. The full char-unit ruler +10 (170) is still too much for
-     * this lane. */
     return shortNumberBand(item, ctx, autoMaxEditorBandWidth(maximum))
         + autoMaxAppendedButtonsPx(item, tag, ctx);
 }
@@ -4254,9 +5530,6 @@ function autoMaxAppendedButtonsPx(item, tag, ctx) {
     return buttons ? 1 + buttons * 21 : 0;
 }
 
-/* A number narrower than its MaxWidth keeps its data length: Number(2,0)
- * paints 30px in the reference under MaxWidth 12, while Number(15,3) fills
- * the 130px MaxWidth band. */
 function shortNumberBand(item, ctx, band) {
     if (!ctx || !band || fieldKind(item, ctx) !== 'number') return band;
     var nq = metaNumberQualifiers(item, ctx);
@@ -4264,10 +5537,6 @@ function shortNumberBand(item, ctx, band) {
     return Math.min(band, numberDefaultChars(nq) * REF_AUTHORED_CHAR_PX + TAXI_LAYOUT_METRICS.autoMaxEditorPaintInset);
 }
 
-/* MaxWidth band of a text editor. The reference paints the full char-unit ruler
- * MaxWidth*10+10 in vertical columns and horizontal rows alike. A row whose
- * summed bands exceed the available width is compressed by the allocator
- * instead, which is what the reference does rather than scrolling the window. */
 function autoMaxEditorBandWidth(maxChars) {
     maxChars = Math.max(0, Number(maxChars) || 0);
     if (!maxChars) return 0;
@@ -4358,6 +5627,42 @@ function authoredControlHeightPx(raw, tag) {
     return n * ROW_PX;
 }
 
+/* In Taxi 8.5 a PictureField line uses the 32px image ruler. Its explicit
+ * MaxHeight bounds the painted image before following controls are placed. */
+function pictureFieldHeightPx(raw, ctx) {
+    var n = parseInt(raw, 10);
+    if (!n || n < 0) return 0;
+    return n * (ctx && isPlatform85Model(ctx.model) && !isInterface85Context(ctx)
+        ? 32 : ROW_PX);
+}
+
+/* The clean 8.5 client counts a scalable picture decoration's vertical
+ * Height/MaxHeight on its 40px control ruler. Reusing the legacy 18px form
+ * row shrinks a Height=3, MaxHeight=10 splash illustration to 180px instead
+ * of allowing it to fill the roughly 400px authored band. */
+function pictureDecorationHeightPx(raw, item, ctx) {
+    var n = parseInt(raw, 10);
+    if (!n || n < 0) return 0;
+    var scalable = /^(?:proportionally|stretch)$/.test(normPictureSize(
+        prop(item, ['PictureSize', 'РазмерКартинки'])));
+    var font = item && item.properties && item.properties.FontSpec;
+    if (isPlatform85Model(ctx && ctx.model) && !pictureRef(item)
+        && prop(item, ['NonselectedPictureText', 'ТекстКартинкиНевыбранного'])
+        && font && font.height > 0) {
+        // Text-only pictures use their authored font's two-line box, not
+        // the 18px image row used by icons and ordinary decorations.
+        var fontPx = Math.round(font.height * (FONT_BASE_PX / FONT_BASE_PT));
+        return n * Math.round(fontPx * 1.1);
+    }
+    /* Taxi 8.5 AutoSize keeps a taller authored image band than the legacy
+     * 18px form row. The SVG then scales with that band rather than shrinking
+     * a splash illustration and pulling the following title upward. */
+    if (isPlatform85Model(ctx && ctx.model) && !isInterface85Context(ctx)
+        && normPictureSize(prop(item, ['PictureSize', 'РазмерКартинки'])) === 'autosize'
+        && pictureRef(item)) return n * 26;
+    return n * (isInterface85Context(ctx) && scalable ? 40 : ROW_PX);
+}
+
 function htmlDocumentAuthoredSize(item) {
     var widthUnits = parseInt(prop(item, ['Width', 'Ширина']), 10) || 0;
     var heightUnits = parseInt(prop(item, ['Height', 'Высота']), 10) || 0;
@@ -4389,8 +5694,44 @@ function chartFillRemainingHeight(maxHeight, remaining) {
     return maxH;
 }
 
+function choiceButtonPictureRef(item) {
+    var authored = prop(item, ['ChoiceButtonPicture', 'КартинкаКнопкиВыбора']);
+    if (authored) return authored;
+    var picture = item && item.runtime && item.runtime.choiceButtonPicture;
+    return picture && picture.ref || '';
+}
+
 function hasCalendarChoicePicture(item) {
     return /InputFieldCalendar|Calendar|Календар/i.test(
+        choiceButtonPictureRef(item));
+}
+
+function hasDropListChoicePicture(item) {
+    return /DropDownList|DropList|КнопкаВыпадающегоСписка/i.test(choiceButtonPictureRef(item));
+}
+
+/* A clean-client footer can pair two left rows (a ShowRight picture legend
+ * and hyperlink commands) with a right-aligned version label. All three
+ * parts must share the available pane width instead of their min-content. */
+function interface85LegendFooter(item, ctx) {
+    if (!isInterface85Context(ctx) || !item || !isContainer(item.tag)) return false;
+    var columns = visibleLayoutChildren(item);
+    if (columns.length !== 2 || !isContainer(columns[0].tag)
+        || columns[1].tag !== 'LabelDecoration'
+        || !/^right$/i.test(String(prop(columns[1], ['GroupHorizontalAlign']) || ''))) return false;
+    var leftRows = visibleLayoutChildren(columns[0]);
+    if (leftRows.length !== 2 || !isContainer(leftRows[0].tag)
+        || !isContainer(leftRows[1].tag)) return false;
+    var pictures = visibleLayoutChildren(leftRows[0]);
+    return pictures.length >= 3 && pictures[0].tag === 'LabelDecoration'
+        && pictures.slice(1).every(function (child) {
+            return child.tag === 'PictureDecoration'
+                && /^showright$/i.test(String(prop(child, ['ToolTipRepresentation']) || ''));
+        });
+}
+
+function hasDropDownChoicePicture(item) {
+    return /КнопкаВыпадающегоСписка|DropDownList|Dropdown/i.test(
         prop(item, ['ChoiceButtonPicture', 'КартинкаКнопкиВыбора']));
 }
 
@@ -4401,11 +5742,6 @@ function fieldKind(item, ctx) {
      * standard calendar picture is then the only reliable type marker. */
     if (hasCalendarChoicePicture(item)) return 'date';
     var type = String(metaType(item, ctx)).toLowerCase();
-    /* A reference is named after the object it points at, so `CatalogRef.
-     * PhoneNumber` and `CatalogRef.UpdateDate` carry `number` and `date` in
-     * their spelling without being either. Settle the reference first, then
-     * match the primitive kinds against the type name alone — everything after
-     * the first dot is an object name, not a type. */
     if (/ref\.|object\.|reference/.test(type)) return 'ref';
     var dot = type.indexOf('.');
     var primitive = dot >= 0 ? type.slice(0, dot) : type;
@@ -4418,9 +5754,6 @@ function fieldKind(item, ctx) {
 }
 
 function formatPlaceholder(item, ctx) {
-    /* A ReadOnly number used to print a sample "0", and a null format
-     * (ЧН=0,00) "0,00". The reference's designer leaves the box empty like every other
-     * unbound editor (e.g. read-only totals). */
     return '';
 }
 
@@ -4486,13 +5819,9 @@ function isTypeSetName(type) {
         .test(name);
 }
 
-/* Type features from the reference property defaults. */
 function typeFeaturesOf(types, dateFraction, numberQ) {
     var features = { selection: 'none', clear: false, adjust: false, open: false };
     if (!types || !types.length) return features;
-    /* A composite type, or a type set (AnyIBRef, AnyRef, DefinedType.X,
-     * CatalogRef) whose members are not resolved here, picks the value type
-     * in a dialog: the reference paints a bare choice button. */
     if (types.length > 1 || isTypeSetName(types[0])) {
         features.selection = 'dialog';
         features.composite = true;
@@ -4524,11 +5853,6 @@ function typeFeaturesOf(types, dateFraction, numberQ) {
     return features;
 }
 
-/* Both defaults below return layout width units: the reference uses Date 9,
- * DateTime 17 and a Time length above 6 (MaxWidth 6 clamps it and drops
- * buttonsCount), and numbers exactly as the Taxi 5.4|5.5/8 value
- * (15,2 -> 15; 17,3+ -> 15). A DateTime 19 / Time 6 / digits+sign+separators
- * width disagrees with the reference. */
 function dateDefaultChars(fraction) {
     var key = dateFractionKey(fraction, 'date');
     var length = TYPE_DATETIME_PRESENTATION_CHARS;
@@ -4556,7 +5880,6 @@ function numberDefaultChars(nq) {
     return Math.ceil(converted);
 }
 
-/* The reference default data length before the Taxi dataMaxLength clamp. */
 function presentationLengthOf(types, options) {
     options = options || {};
     var stringLen = options.stringLen;
@@ -4630,11 +5953,6 @@ function resolveInputFieldButtons(item, features, options) {
     options = options || {};
     features = features || { selection: 'none', clear: false, adjust: false, open: false };
     var selection = features.selection || 'none';
-    /* A ReadOnly editor is not interactive, and the reference's designer paints it as a
-     * plain box: no choice, open, clear or spin chrome (e.g. read-only totals).
-     * The value type still decides the editor's band, so only the affordances
-     * are dropped. Opening the value is not editing: a ReadOnly reference keeps
-     * its open button. */
     if (isTrue(prop(item, ['ReadOnly', 'ТолькоПросмотр']))) {
         var readOnlyOpen = authoredTriState(prop(item, ['OpenButton']));
         if (readOnlyOpen == null) readOnlyOpen = !!features.open && !options.multiValue;
@@ -4687,18 +6005,53 @@ function inputButtonKindsFromButtons(item, ctx, buttons) {
     var kind = fieldKind(item, ctx);
     var representation = buttons.choiceButtonRepresentation;
     var choiceInInput = representation !== 'showInDropList';
+    var clean85 = isInterface85Context(ctx);
+    if (clean85 && buttons.clearButton) kinds.push('x');
     if (kind === 'date' && buttons.choiceButton)
         kinds.push(hasCalendarChoicePicture(item) ? 'calendar' : 'dots');
-    if (buttons.dropListButton || buttons.choiceListButton) kinds.push('caret-down');
     /* ExtendedEditMultipleValues adds no chrome in the designer (Код and
      * strings have no «...», references keep open). */
-    if (choiceInInput && buttons.choiceButton && kind !== 'date') kinds.push('dots');
-    if (isTrue(prop(item, ['CreateButton']))) kinds.push('plus');
+    if (!clean85 && (buttons.dropListButton || buttons.choiceListButton)) kinds.push('caret-down');
+    if (choiceInInput && buttons.choiceButton && kind !== 'date'
+        && !(hasDropDownChoicePicture(item) && kinds.indexOf('caret-down') >= 0))
+        kinds.push(clean85 && hasDropListChoicePicture(item) || hasDropDownChoicePicture(item)
+            ? 'caret-down' : 'dots');
+    if (isTrue(prop(item, ['CreateButton']))
+        && (!clean85 || typeInfoFromItem(item, ctx).types.some(referenceTypeSupportsOpen)))
+        kinds.push('plus');
     /* Reference paint order: clear and spin precede open. */
-    if (buttons.clearButton) kinds.push('x');
+    if (!clean85 && buttons.clearButton) kinds.push('x');
     if (buttons.spinButton) kinds.push('spin');
+    if (clean85 && (buttons.dropListButton || buttons.choiceListButton)) kinds.push('caret-down');
     if (buttons.openButton) kinds.push('open-1c');
     return kinds;
+}
+
+function inputButtonKindsForInterface(item, ctx, kinds) {
+    if (!isInterface85Context(ctx)) return kinds;
+    /* A composite value type whose type choice is disabled (ChooseType=false)
+     * has neither a type dialog nor a single list to drop: the clean client
+     * paints no choice or drop-list button unless one is authored. */
+    var features85 = item && item.runtime && item.runtime.typeFeatures;
+    if (features85 && features85.composite && isFalse(prop(item, ['ChooseType', 'ВыбиратьТип']))) {
+        var authoredChoice = authoredTriState(prop(item, ['ChoiceButton'])) === true;
+        var authoredDrop = authoredTriState(prop(item, ['DropListButton'])) === true
+            || isTrue(prop(item, ['ListChoiceMode']));
+        kinds = kinds.filter(function (kind) {
+            if (kind === 'dots') return authoredChoice;
+            if (kind === 'caret-down') return authoredDrop || authoredChoice;
+            return true;
+        });
+    }
+    if (hasDropListChoicePicture(item))
+        kinds = kinds.map(function (kind) { return kind === 'dots' ? 'caret-down' : kind; });
+    var reference = typeInfoFromItem(item, ctx).types.some(referenceTypeSupportsOpen);
+    var rank = { x: 0, calendar: 1, dots: 2, 'caret-down': 3, plus: 4, spin: 5, 'open-1c': 6 };
+    kinds = kinds.filter(function (kind) { return kind !== 'plus' || reference; });
+    return kinds.sort(function (left, right) {
+        return (Object.prototype.hasOwnProperty.call(rank, left) ? rank[left] : 99)
+            - (Object.prototype.hasOwnProperty.call(rank, right) ? rank[right] : 99);
+    });
 }
 
 function typeInfoFromItem(item, ctx) {
@@ -4737,10 +6090,6 @@ function applyTypeDefaultsToItem(item, ctx) {
     runtime.minChars = Math.min(runtime.defaultChars, TYPE_DEFAULT_MIN_CHARS);
     runtime.maxChars = TYPE_DEFAULT_MAX_CHARS;
     runtime.buttonsCount = runtime.inputButtonKinds.length;
-    /* With automatic maximum width a serialized MaxWidth below the type's
-     * presentation is not a cap in the reference: a reference with MaxWidth 8
-     * paints the full 410px column. A larger MaxWidth (e.g. 29) still bounds
-     * the stretch. */
     var ignoredMaxChars = parseInt(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
     if (item.tag === 'InputField' && ignoredMaxChars > 0 && ignoredMaxChars < runtime.defaultChars
         && !isFalse(prop(item, ['AutoMaxWidth'])) && !charSize(prop(item, ['Width', 'Ширина']))) {
@@ -4792,9 +6141,6 @@ function compactQualifiedSingleFieldWidth(item, tag, parentMeta, ctx) {
     return nativeWidth > 0 && nativeWidth < 80 ? nativeWidth : 0;
 }
 
-/* A pure select (ListChoiceMode, TextEdit=false) in a vertical column treats
- * Width as its initial size and grows to the 40-char band (W18 paints 410px
- * in the reference). */
 function verticalSelectBandStretch(item, tag, parentMeta) {
     return tag === 'InputField' && !!parentMeta && parentMeta.orientation === 'vertical'
         && parentMeta.tag !== 'Page'
@@ -4836,12 +6182,6 @@ function wantsHStretch(item, tag, parentMeta, ctx) {
     /* MaxWidth with AutoMaxWidth=false is a cap, including when Stretch is
      * explicitly true. Honouring Stretch first made one field of an
      * AlwaysHorizontal pair eat the leftover and shove the other. */
-    /* A LabelField is the exception: the reference stretches AutoMaxWidth=false
-     * + MaxWidth LabelFields, and its grid column takes the row surplus when
-     * the owner is wider than its content: an authored group Width (W91 gives
-     * the label column 503) or a flattened Page row. A trailing hyperlink and
-     * button then sit on the right. Without such an owner the column stays at
-     * MaxWidth (e.g. 100px), so do not grow there. */
     var cappedLabelFieldStretch = tag === 'LabelField'
         && isFalse(prop(item, ['AutoMaxWidth']))
         && charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))
@@ -4865,9 +6205,6 @@ function wantsHStretch(item, tag, parentMeta, ctx) {
     if ((tag === 'CommandBar' || tag === 'AutoCommandBar')
         && /right|прав/i.test(String(prop(item, ['HorizontalLocation', 'ГоризонтальноеПоложение']) || '')))
         return false;
-    /* [PINNED-TAIL-BAR] the reference stretches an authored CommandBar whose row ends in
-     * the pinned «Еще»/«?»/search tail, so the tail reaches the owner's right
-     * edge. */
     if (tag === 'CommandBar' && !String(hs || '').trim() && commandBarHasPinnedTail(item)) return true;
     if (compactQualifiedSingleFieldWidth(item, tag, parentMeta, ctx)) return false;
     if ((tag === 'InputField' || tag === 'LabelField' || tag === 'ValueList')
@@ -4894,9 +6231,6 @@ function wantsHStretch(item, tag, parentMeta, ctx) {
         && !charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))
         && !charSize(prop(item, ['Width', 'Ширина']))
         && parentMeta && parentMeta.orientation === 'horizontal') return true;
-    /* MaxWidth with the default AutoMaxWidth is only a cap: the reference
-     * stretches such an InputField up to it (default 15 chars, 203px normal,
-     * stretch=Hor). The 15-char reference default otherwise leaves 120px. */
     if (tag === 'InputField' && !String(hs || '').trim()
         && !charSize(prop(item, ['Width', 'Ширина']))
         && charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))
@@ -4923,9 +6257,34 @@ function wantsHStretch(item, tag, parentMeta, ctx) {
         if (hasWidth && !hasMaxWidth && parentMeta.singleInputChild
             && !isFalse(prop(item, ['AutoMaxWidth']))) return true;
     }
-    /* In a vertical group with its own Width a bare ref value still grows to
-     * its presentation band (group W83: 407px in the reference); the cap is
-     * applied with the decoration-titled case. */
+    /* Format 2.21: a fixed-width vertical column (authored Width with
+     * HorizontalStretch=false) is the value lane of its fields. A field with
+     * the automatic stretch mode and no MaxWidth reaches the column's right
+     * edge even when it carries its own compact Width. */
+    if (tag === 'InputField' && parentMeta && parentMeta.orientation === 'vertical'
+        && parentMeta.explicitWidth && parentMeta.fixedWidth
+        && formVersionAtLeast(item, '2.21')
+        && !String(hs || '').trim()
+        && !charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))
+        && !isFalse(prop(item, ['AutoMaxWidth']))
+        && titleLocation(item) !== 'top') return true;
+    /* Inside such a row every automatic value field shares the lane. */
+    if (tag === 'InputField' && parentMeta && parentMeta.fixedColumnLaneRow
+        && parentMeta.orientation === 'horizontal'
+        && !String(hs || '').trim()
+        && !charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))
+        && !isFalse(prop(item, ['AutoMaxWidth']))) return true;
+    /* The same lane holds for an automatic row group of that column: its
+     * value fields share the column width instead of shrinking to content. */
+    if (tag === 'UsualGroup' && parentMeta && parentMeta.orientation === 'vertical'
+        && parentMeta.explicitWidth && parentMeta.fixedWidth
+        && formVersionAtLeast(item, '2.21')
+        && !String(hs || '').trim() && !charSize(prop(item, ['Width', 'Ширина']))
+        && (item.childItems || []).some(function (child) {
+            return child && child.tag === 'InputField'
+                && !isFalse(prop(child, ['Visible', 'visible']))
+                && !isFalse(prop(child, ['HorizontalStretch', 'ГоризонтальноеРастягивание']));
+        })) return true;
     if (vertBandStretch(item, tag, parentMeta, ctx)) return true;
     /* Configurator-generated explicit field rows carry Width on the enclosing
      * horizontal group and put the actual field title in a LabelDecoration.
@@ -4933,18 +6292,12 @@ function wantsHStretch(item, tag, parentMeta, ctx) {
      * remainder of the row; dates and numbers retain their compact width.
      * Keeping this conditional on that serialized row marker preserves compact
      * side-title fields in ordinary horizontal groups. */
-    /* The same generated row without a group Width: a sized LabelDecoration
-     * stands in for the title, and the reference stretches the untitled value
-     * up to its default maximum width. */
     if (tag === 'InputField' && parentMeta
         && (parentMeta.explicitWidth || parentMeta.decorationTitledField)
         && titleLocation(item) === 'none' && !isTumbler(item)) {
         var kind = fieldKind(item, ctx);
         if (kind === 'text' || kind === 'ref' || kind === 'list') return true;
     }
-    /* Followed by a data LabelField on its row, the uncapped editor keeps its
-     * default presentation band (205px in the reference); the label owns the
-     * rest of the row. */
     if (tag === 'InputField' && isFalse(prop(item, ['AutoMaxWidth']))
         && !charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))
         && !charSize(prop(item, ['Width', 'Ширина']))
@@ -5012,6 +6365,13 @@ function wantsHStretch(item, tag, parentMeta, ctx) {
  * horizontal content stretch and width-dependent height. */
 function labelDecorationCanDynamicHeight(item) {
     if (!item) return false;
+    var font = item.properties && item.properties.FontSpec;
+    /* A centred, unbounded display heading keeps its intrinsic line and lets
+     * the page scroll horizontally. Wrapping it to the viewport changes the
+     * whole splash-page composition. */
+    if (isFalse(prop(item, ['AutoMaxWidth']))
+        && /titlelevel1/i.test(String(font && font.ref || ''))
+        && /center|центр/i.test(String(prop(item, ['HorizontalAlign']) || ''))) return false;
     if (isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
         || isFalse(prop(item, ['VerticalStretch', 'ВертикальноеРастягивание']))) return false;
     if ((parseInt(prop(item, ['Height', 'Высота']), 10) || 0) > 0
@@ -5019,12 +6379,9 @@ function labelDecorationCanDynamicHeight(item) {
     return String(rawTitle(item) || '').indexOf(' ') >= 0;
 }
 
-/* An untitled string editor leading a horizontal row paints the 40-unit
- * band, and the next item follows it directly: a 410px «Комментарий» with
- * «Ответственный» 10px after it, likewise an untitled «Наименование» next
- * to «Код», or an untitled reference filter. Only when every later editor
- * of the row is fixed: several automatic filters in one row share the
- * window evenly. */
+/* An untitled leading string editor in a horizontal band owns the native
+ * 40-unit lane when later editors have bounded widths. A capped sibling is
+ * fixed for this decision even when it has no explicit Width property. */
 function untitledLeadingStringEditor(item, parentMeta, ctx) {
     return !!(item && parentMeta && item.tag === 'InputField' && !rawTitle(item)
         && parentMeta.orientation === 'horizontal'
@@ -5039,13 +6396,11 @@ function untitledLeadingStringEditor(item, parentMeta, ctx) {
         && (fieldKind(item, ctx) === 'text'
             || (fieldKind(item, ctx) === 'ref' && titleLocation(item) === 'none'))
         && (parentMeta.visibleChildren || []).every(function (kid) {
-            return kid === item || !automaticWidthEditor(kid, ctx);
+            return kid === item || charSize(prop(kid, ['MaxWidth', 'МаксимальнаяШирина']))
+                || !automaticWidthEditor(kid, ctx);
         }));
 }
 
-/* An editor whose width the reference still decides: no Width, no stretch=false, and a
- * reference, list or long/unlimited string (a String(9) «Код» is fixed by its
- * type). */
 function automaticWidthEditor(item, ctx) {
     if (!item || (item.tag !== 'InputField' && item.tag !== 'LabelField')) return false;
     if (isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))) return false;
@@ -5061,11 +6416,6 @@ function refDefaultWrapperStretch(item, parentMeta, ctx) {
     if (!item || !parentMeta) return false;
     if (parentMeta.ignoreDefaultWrapperStretch) return false;
     if (item.tag === 'LabelDecoration' && !labelDecorationCanDynamicHeight(item)) return false;
-    /* A generated horizontal value row has one automatic growth owner. When
-     * the row contains a later editable value (possibly followed by compact
-     * actions), the reference gives that value the surplus instead of stretching the
-     * first titled control. This is the same topology used by compound
-     * selector rows such as number + reference + hyperlink. */
     if (parentMeta.compoundSelectorChildren
         && parentMeta.compoundSelectorChildren.indexOf(item) >= 0) return true;
     if (parentMeta.defaultStretchChild)
@@ -5092,6 +6442,29 @@ function defaultFieldWidthPx(item, ctx) {
     return chars * (charPx || CHAR_PX);
 }
 
+/* Taxi 8.3 explicit HorizontalStretch=false string editor without Width:
+ * presentation length capped at 50 units on the 10px ruler, plus inset and
+ * buttons (0 when the rule does not apply). */
+function taxiFixedStringEditorWidth(item, ctx) {
+    var stretchValue = prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']);
+    var autoShort = !String(stretchValue || '').trim() && !isFalse(prop(item, ['AutoMaxWidth']))
+        && !charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']));
+    if (!isFalse(stretchValue) && !autoShort) return 0;
+    if (charSize(prop(item, ['Width', 'Ширина']))) return 0;
+    if (isPlatform85Model(ctx && ctx.model)) return 0;
+    var numberPath = /(?:^|\.)(?:Number|Номер)$/.test(String(prop(item, ['DataPath']) || ''));
+    if (fieldKind(item, ctx) !== 'text' && !numberPath) return 0;
+    var info = typeInfoFromItem(item, ctx);
+    var chars = info.stringLen > 0 ? Math.min(presentationLengthOf(info.types, info), 50) : 0;
+    var objectMeta = ctx && ctx.model && ctx.model.objectMeta;
+    if (!chars && objectMeta && objectMeta.numberLength > 0
+        && /(?:^|\.)(?:Number|Номер)$/.test(String(prop(item, ['DataPath']) || '')))
+        chars = Math.min(objectMeta.numberLength, 50);
+    if (!chars) return 0;
+    if (autoShort && chars > TYPE_DEFAULT_MAX_CHARS) return 0;
+    return chars * REF_AUTHORED_CHAR_PX + 10 + inputButtonKinds(item, ctx).length * 21;
+}
+
 function defaultEditorPaintWidth(item, ctx, tag, appendedButtons) {
     var width = defaultFieldWidthPx(item, ctx);
     if ((tag === 'InputField' || tag === 'ValueList') && !defaultWidthClampsButtons(item, ctx))
@@ -5102,14 +6475,6 @@ function defaultEditorPaintWidth(item, ctx, tag, appendedButtons) {
 function tableWidthMetrics(item) {
     var authoredWidth = parseInt(prop(item, ['Width', 'Ширина']), 10);
     var authoredMaximum = parseInt(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), 10);
-    /* The reference's table generator gives a Table without Width min(88, 40 + 12(n-3))
-     * form units, n = the table's generated top-level columns/column groups
-     * (Visible=false items are not generated; command bars and additions are
-     * not columns), e.g. 5 visible of 6 -> 64, 4 of 5 -> 52. A hidden
-     * LineNumber column is the known exception the reference still generates.
-     * At Taxi/96 DPI a form width unit is exactly 10px.  With explicit
-     * HorizontalStretch=false the table group publishes the same value
-     * as min/normal/max; MaxWidth is irrelevant because there is no growth. */
     var columns = (item.childItems || []).filter(function (child) {
         return child && !isFalse(prop(child, ['Visible', 'visible'])) && !isAdditionTag(child.tag);
     }).length;
@@ -5136,16 +6501,19 @@ function tableWidgetWidthMetrics(gridWidth, chromeWidths) {
 }
 
 function dimensionBands(item, tag, parentMeta, ctx) {
-    var authoredWidth = fixedShortEditorWidth(item, tag, ctx)
+    var clean85InputWidth = (tag === 'InputField' || tag === 'ValueList')
+        ? interface85AuthoredInputWidth(item, ctx, prop(item, ['Width', 'Ширина'])) : 0;
+    var authoredWidth = clean85InputWidth || fixedShortEditorWidth(item, tag, ctx)
         || horizontalDecorationWidthPx(item, tag, parentMeta)
         || authoredFieldWidthPx(prop(item, ['Width', 'Ширина']), tag);
     var compactQualifiedWidth = compactQualifiedSingleFieldWidth(item, tag, parentMeta, ctx);
-    var authoredMaxWidth = authoredFieldWidthPx(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), tag);
-    /* An authored Width is allowed to underspecify the editor, but it cannot
-     * make a Date+Time value lose its time lane. The reference applies the native value
-     * presentation minimum after reading Width/MaxWidth. */
+    var clean85InputMaxWidth = (tag === 'InputField' || tag === 'ValueList')
+        ? interface85AuthoredInputWidth(item, ctx, prop(item, ['MaxWidth', 'МаксимальнаяШирина'])) : 0;
+    var authoredMaxWidth = clean85InputMaxWidth
+        || authoredFieldWidthPx(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), tag);
     var dateTimeMinimum = tag === 'InputField'
         && fieldKind(item, ctx) === 'date'
+        && charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))
         && String(metaDateFraction(item, ctx)).toLowerCase() === 'datetime'
         ? defaultFieldChars(item, ctx) * CHAR_PX + 20 : 0;
     if (authoredWidth && dateTimeMinimum) authoredWidth = Math.max(authoredWidth, dateTimeMinimum);
@@ -5159,8 +6527,16 @@ function dimensionBands(item, tag, parentMeta, ctx) {
             ? shortNumberBand(item, ctx, explicitMaxChars * REF_AUTHORED_CHAR_PX)
                 + autoMaxAppendedButtonsPx(item, tag, ctx)
             : explicitMaxChars * REF_AUTHORED_CHAR_PX;
-    var authoredHeight = authoredControlHeightPx(prop(item, ['Height', 'Высота']), tag);
-    var authoredMaxHeight = authoredControlHeightPx(prop(item, ['MaxHeight', 'МаксимальнаяВысота']), tag);
+    var authoredHeight = tag === 'PictureDecoration'
+        ? pictureDecorationHeightPx(prop(item, ['Height', 'Высота']), item, ctx)
+        : tag === 'PictureField'
+        ? pictureFieldHeightPx(prop(item, ['Height', 'Высота']), ctx)
+        : authoredControlHeightPx(prop(item, ['Height', 'Высота']), tag);
+    var authoredMaxHeight = tag === 'PictureDecoration'
+        ? pictureDecorationHeightPx(prop(item, ['MaxHeight', 'МаксимальнаяВысота']), item, ctx)
+        : tag === 'PictureField'
+        ? pictureFieldHeightPx(prop(item, ['MaxHeight', 'МаксимальнаяВысота']), ctx)
+        : authoredControlHeightPx(prop(item, ['MaxHeight', 'МаксимальнаяВысота']), tag);
     var hStretch = wantsHStretch(item, tag, parentMeta, ctx);
     var vStretch = wantsVStretch(item, tag, ctx);
     var normalWidth = authoredWidth || compactQualifiedWidth;
@@ -5176,15 +6552,15 @@ function dimensionBands(item, tag, parentMeta, ctx) {
             normalWidth = TYPE_DEFAULT_MAX_CHARS * REF_AUTHORED_CHAR_PX
                 + TAXI_LAYOUT_METRICS.authoredEditorInsetWidth;
         else normalWidth = fixedAutoMaximum ? authoredMaxWidth : defaultFieldWidthPx(item, ctx);
-        /* MaxWidth with the default AutoMaxWidth caps a platform TextBox whose
-         * normal is the reference default data length on the char-unit ruler plus its
-         * input buttons: 150+10+22 = 182, or 203 with an open button. */
         if (tag === 'InputField' && authoredMaxWidth && !fixedAutoMaximum
             && !isFalse(prop(item, ['AutoMaxWidth']))) {
             var nativeButtons = defaultWidthClampsButtons(item, ctx) ? 0 : inputButtonKinds(item, ctx).length;
             normalWidth = Math.min(authoredMaxWidth,
                 defaultFieldChars(item, ctx) * REF_AUTHORED_CHAR_PX + 10 + nativeButtons * 21);
         }
+        var generatedWidth = tag === 'InputField' ? taxiFixedStringEditorWidth(item, ctx) : 0;
+        if (generatedWidth)
+            normalWidth = authoredMaxWidth ? Math.min(authoredMaxWidth, generatedWidth) : generatedWidth;
         recommendedWidth = normalWidth;
         if (fixedAutoMaximum) {
             /* MaxWidth=false/MaxWidth is the generated normal ceiling, while
@@ -5253,15 +6629,6 @@ function distributeDimensionBands(entries, available) {
             function (e) { return !e.stretchPriority && !e.compressPriority; },
             function (e) { return !!e.stretchPriority; }];
     if (!growing) {
-        /* Grid tracks publish two floors for titled TextBox rows:
-         * minLengthWithNormalPriority keeps HorStretchPriority content, the
-         * side title, whole while the value lanes give way;
-         * minLengthWithStretchPriority lets that title wrap and is reached
-         * only after the first floor is exhausted. The platform layout takes
-         * a shortage in proportion to slack above the floor, but the reference
-         * stretches that result on the client and slack weighting moves
-         * header columns away from the reference, so the pass keeps the equal
-         * water-fill. */
         var floors = [function (e) {
             var own = Math.max(0, Number(e.min) || 0);
             return e.minNormal == null ? own : Math.max(own, Number(e.minNormal) || 0);
@@ -5296,10 +6663,6 @@ function distributeDimensionBands(entries, available) {
         for (var i = 0; i < entries.length; i++) if (groups[g](entries[i])) active.push(i);
         while (active.length && remaining > 0.001) {
             var share = remaining / active.length;
-            /* The reference client stretch of a grid: surplus goes to growable tracks
-             * in proportion to their standardLength, capped by each maximum,
-             * leftovers redistributed. A track without a standard weighs its
-             * length. */
             var standardSum = 0;
             for (var sw = 0; sw < active.length; sw++) {
                 var weighted = entries[active[sw]];
@@ -5332,12 +6695,6 @@ function distributeDimensionBands(entries, available) {
     return sizes;
 }
 
-/* The reference lays out a horizontal logical grid from size bands and only then paints
- * controls into the allocated tracks. CSS flex cannot reproduce that contract:
- * it loses authored normal widths before the responsive decision and assigns
- * fractional remainder differently on every nesting level. This browser-safe
- * allocator keeps the existing priority order, then serializes integer tracks
- * with a stable source-order remainder. */
 function allocateHorizontalDimensionBands(entries, available, childItemsWidth) {
     entries = (entries || []).map(function (entry) {
         var copy = {};
@@ -5369,8 +6726,6 @@ function allocateHorizontalDimensionBands(entries, available, childItemsWidth) {
     var lastFractional = -1;
     for (var lf = 0; lf < exact.length; lf++) if (Math.abs(exact[lf] - Math.round(exact[lf])) > 0.001) lastFractional = lf;
     if (lastFractional >= 0) {
-        /* The reference client stretch rounds each track and hands the rounding
-         * remainder to the last growing one. */
         var rounded = exact.map(function (value) { return Math.round(value); });
         var roundedTotal = rounded.reduce(function (sum, value) { return sum + value; }, 0);
         rounded[lastFractional] += sizesTotal - roundedTotal;
@@ -5386,12 +6741,6 @@ function allocateHorizontalDimensionBands(entries, available, childItemsWidth) {
     return integers;
 }
 
-/* A detached pair of vertical logical columns can expose two different
- * horizontal bands for its trailing value column: the type recommendation
- * and the authored normal ceiling. When the leading column is already at its
- * normal band and the parent has spare width, the reference spends that width restoring
- * the trailing normal track before leaving an unused tail. This is wrapper
- * allocation: the editor remains shrinkable and keeps its own authored max. */
 function balancedBoundedLogicalPairWidth(entries) {
     if (!entries || entries.length !== 2) return 0;
     var leading = entries[0] || {};
@@ -5422,6 +6771,47 @@ function fitTrailingLogicalThroughAlignTrack(item) {
     var width = throughAlignTitleTrackWidth(glyphWidths);
     for (var l = 0; l < labels.length; l++) labels[l].style.minWidth = width + 'px';
     return width;
+}
+
+function autoCappedFieldColumn(item, ctx) {
+    if (!item || item.tag !== 'UsualGroup' || isPlatform85Model(ctx && ctx.model)) return false;
+    if (!/^vertical$|^вертикальная$/i.test(String(prop(item, ['Group', 'Группировка']) || ''))) return false;
+    var kids = (item.childItems || []).filter(function (child) {
+        return child && !isFalse(prop(child, ['Visible', 'visible']));
+    });
+    if (!kids.length) return false;
+    return kids.every(function (child) {
+        if (child.tag !== 'InputField') return false;
+        if (isTrue(prop(child, ['MultiLine'])) || isTrue(prop(child, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))) return false;
+        return !isFalse(prop(child, ['AutoMaxWidth'])) || !!charSize(prop(child, ['MaxWidth', 'МаксимальнаяШирина']));
+    });
+}
+
+/* The column's ceiling is its widest editor at its own maximum plus the
+ * caption lane in front of it. */
+function capAutoCappedFieldColumns(body) {
+    if (!body || !body.querySelectorAll || typeof getComputedStyle !== 'function') return;
+    var columns = body.querySelectorAll('.fp-item.fp-auto-capped-column');
+    for (var i = 0; i < columns.length; i++) {
+        var column = columns[i];
+        var box = column.querySelector('.fp-children');
+        if (!box) continue;
+        var widest = 0;
+        var complete = true;
+        for (var c = 0; c < box.children.length; c++) {
+            var child = box.children[c];
+            if (!child.classList || !child.classList.contains('fp-item') || child.hidden) continue;
+            var input = child.querySelector('.fp-input-wrap');
+            var maximum = input ? parseFloat(input.style.maxWidth) : NaN;
+            if (!(maximum > 0)) { complete = false; break; }
+            var row = input.parentElement;
+            var label = row && row.querySelector(':scope > .fp-field-label');
+            var gap = row ? (parseFloat(getComputedStyle(row).columnGap) || 0) : 0;
+            var labelWidth = label ? label.getBoundingClientRect().width : 0;
+            widest = Math.max(widest, labelWidth + (label ? gap : 0) + maximum);
+        }
+        if (complete && widest > 0) column.style.maxWidth = Math.ceil(widest) + 'px';
+    }
 }
 
 function hasFixedHorizontalSize(item) {
@@ -5468,8 +6858,6 @@ function tableLeafFontHeight(item, specName) {
 }
 
 function tableFontRowExtraPx(item, specName) {
-    /* The reference's 10pt default row is 30px and a 14pt FontDef row is 40px;
-     * interpolate the same 2.5px/pt scale for explicit column fonts. */
     return Math.max(0, Math.round((tableLeafFontHeight(item, specName) - 10) * 2.5));
 }
 
@@ -5606,10 +6994,6 @@ function wantsVStretch(item, tag, ctx, ignoreOwnStretch) {
     if (tag === 'HTMLDocumentField' || tag === 'TextDocumentField' || tag === 'FormattedDocumentField')
         return isTrue(vs) || !(fieldHeight(item) > 0);
     if (tag === 'Pages' &&pagesRep(item) !== 'none') {
-        /* The default stretch of a tabbed Pages belongs to the outermost tab
-         * set. A tab set nested in a page of another tab set stays at content
-         * height unless it opts in explicitly: the reference paints the inner
-         * Pages down to its last row while the outer Pages fills the window. */
         return isTrue(vs) || !nestedInTabbedPage(item, ctx);
     }
     if (tag === 'InputField') {
@@ -5685,7 +7069,15 @@ function fontCss(spec) {
     if (!spec) return null;
     var css = {};
     var ref = String(spec.ref || '');
+    var styleName = ref.replace(/^style:/i, '');
+    /* 8.5 exposes an HTML-like typographic scale as platform style fonts.
+     * The values are stored in the 8.5 managed-client resource table in
+     * points; unlike LargeTextFont, their level number is meaningful and
+     * must not fall through to the ordinary 12px form font. */
+    var level = styleName.match(/^(TitleLevel|TextLevel|SubtitleLevel)([1-5])$/i);
     var bold = spec.bold;
+    if (bold == null && level && /^TitleLevel$/i.test(level[1]) && Number(level[2]) >= 3)
+        bold = true;
     if (bold == null && /bold|важн|жирн/i.test(ref)) bold = true;
     if (bold != null) css.fontWeight = bold ? '700' : '400';
     var italic = spec.italic;
@@ -5697,15 +7089,21 @@ function fontCss(spec) {
     if (deco.length) css.textDecoration = deco.join(' ');
     var px = 0;
     if (spec.height > 0) px = spec.height * (FONT_BASE_PX / FONT_BASE_PT);
+    else if (level) {
+        var levelPoints = /^TitleLevel$/i.test(level[1])
+            ? { 1: 18, 2: 15, 3: 12, 4: 11, 5: 8 }
+            : /^TextLevel$/i.test(level[1])
+                ? { 1: 14, 2: 12, 3: 10 }
+                : { 1: 8, 2: 6 };
+        px = (levelPoints[Number(level[2])] || 0) * (FONT_BASE_PX / FONT_BASE_PT);
+    }
     /* ExtraLargeTextFont is an 18pt Taxi display caption. Match it before
      * the generic Large style instead of collapsing both to 15px. */
     else if (/extralarge|сверхкрупн/i.test(ref)) px = FONT_BASE_PX * 2;
     else if (/large|крупн/i.test(ref)) px = FONT_BASE_PX * 1.5;
     else if (/small|мелк/i.test(ref)) px = FONT_BASE_PX * 0.85;
     if (spec.scale > 0 && spec.scale !== 100) px = (px || FONT_BASE_PX) * (spec.scale / 100);
-    /* A GDI font height is a whole pixel, round(pt * 96 / 72).
-     * Fractional sizes (10pt = 13.3px) wrap captions 1C keeps on one line. */
-    if (px > 0) css.fontSize = Math.max(7, Math.min(48, Math.round(px))) + 'px';
+    if (px > 0) css.fontSize = Math.max(1, Math.min(48, Math.round(px))) + 'px';
     if (spec.faceName) css.fontFamily = spec.faceName + ', Arial, sans-serif';
     for (var k in css) { if (Object.prototype.hasOwnProperty.call(css, k)) return css; }
     return null;
@@ -5737,7 +7135,7 @@ function applyFonts(div, item, tag) {
     if (props.FontSpec && /(?:^|:)LargeTextFont$/i.test(String(props.FontSpec.ref || '')))
         div.classList.add('fp-large-text-font');
     if (body) {
-        var targets = div.querySelectorAll('.fp-label-decoration, .fp-input, .fp-btn-text, .fp-fallback-label');
+        var targets = div.querySelectorAll('.fp-label-decoration, .fp-input, .fp-btn-text, .fp-fallback-label, .fp-picture-decoration-text');
         if (targets.length) {
             for (var i = 0; i < targets.length; i++) {
                 setFontCss(targets[i], body);
@@ -5786,11 +7184,53 @@ function normPictureSize(raw) {
 }
 
 /* Only absolute colours can be drawn as-is; style names keep going through the
- * existing keyword matching, which is all Form.xml gives us. */
-function absoluteColor(raw) {
+ * existing keyword matching. pal:* uses the standard web-colour palette also
+ * used by 1C template documents. Keep the small registry explicit and extend
+ * it only for values observed in managed-form metadata. */
+var MANAGED_FORM_PALETTE_COLORS = {
+    lightblue: '#add8e6',
+    green: '#008000',
+    gray: '#808080',
+    red: '#ff0000'
+};
+
+var CLEAN85_PALETTE_BACK = {
+    firstbrand: '#fff4ab', secondbrand: '#b3d6fc', red: '#ffbbb8', orange: '#ffdfb3',
+    yellow: '#fff1ab', green: '#abf7be', lightblue: '#b8ebff', blue: '#abd3ff',
+    violet: '#c3c2ff', purple: '#e7b8ff', pink: '#ffb3ee', gray: '#e8e8e8',
+    text: '#dcdce3', background: '#c7c7c7', additional: '#ffffff'
+};
+var CLEAN85_PALETTE_TEXT = {
+    firstbrand: '#a18b00', secondbrand: '#0c519c', red: '#a11810', orange: '#a16108',
+    yellow: '#a18600', green: '#048f27', lightblue: '#10769e', blue: '#004da1',
+    violet: '#1d1b9e', purple: '#700ea1', pink: '#a1067f', gray: '#b3b3b3',
+    text: '#5e5e69', background: '#7a7a7a', additional: '#ffffff'
+};
+var CLEAN85_PALETTE_PICTURE = { lightblue: '#53cbfb' };
+
+/* role: 'back', 'text' or 'picture'. */
+function clean85PaletteColor(raw, ctx, role) {
+    if (!isInterface85Context(ctx)) return '';
+    var palette = String(raw || '').trim().match(/^pal:([a-z]+)$/i);
+    if (!palette) return '';
+    var table = role === 'back' ? CLEAN85_PALETTE_BACK
+        : role === 'picture' ? CLEAN85_PALETTE_PICTURE : CLEAN85_PALETTE_TEXT;
+    return table[palette[1].toLowerCase()] || '';
+}
+
+function absoluteColor(raw, ctx) {
     var v = String(raw || '').trim();
     if (/^#[0-9a-f]{3}$/i.test(v) || /^#[0-9a-f]{6}$/i.test(v)) return v;
     if (/^web:[a-z]+$/i.test(v)) return v.slice(4);
+    var palette = v.match(/^pal:([a-z]+)$/i);
+    if (palette) {
+        if (isPlatform85Model(ctx && ctx.model)) {
+            if (palette[1].toLowerCase() === 'green') return '#0cdc40';
+            if (palette[1].toLowerCase() === 'lightblue') return '#32c1fa';
+            if (palette[1].toLowerCase() === 'gray') return '#9da5ad';
+        }
+        return MANAGED_FORM_PALETTE_COLORS[palette[1].toLowerCase()] || '';
+    }
     var rgb = v.match(/^(\d{1,3})\s*[,;]\s*(\d{1,3})\s*[,;]\s*(\d{1,3})$/);
     if (rgb) return 'rgb(' + rgb[1] + ',' + rgb[2] + ',' + rgb[3] + ')';
     return '';
@@ -5822,11 +7262,11 @@ var TAXI_PLATFORM_STYLE_COLORS = {
     accentcolor: '#009646',
     auxiliarynavigationcolor: '#ffffd9',
     tablefooterbackcolor: '#fafafa',
-    /* Caption ink in the reference: #4d4d4d. */
+    formbackcolor: '#ffffff',
     buttontextcolor: '#4d4d4d'
 };
 
-function styleItemColor(raw, styleItems, seen) {
+function styleItemColor(raw, styleItems, seen, ctx) {
     var original = String(raw || '');
     var name = original.replace(/^style:/i, '');
     /* One style item may point at another, and the chain can close on itself
@@ -5839,11 +7279,13 @@ function styleItemColor(raw, styleItems, seen) {
     visited[visitKey] = true;
     var configured = styleItemLookup(styleItems, name);
     if (configured) {
-        var absolute = absoluteColor(configured);
+        var absolute = absoluteColor(configured, ctx);
         if (absolute) return absolute;
         if (/^web:[a-z]+$/i.test(configured)) return configured.slice(4);
-        if (/^style:/i.test(configured)) return styleItemColor(configured, styleItems, visited);
+        if (/^style:/i.test(configured)) return styleItemColor(configured, styleItems, visited, ctx);
     }
+    if (visitKey === 'activitycolor' && isPlatform85Model(ctx && ctx.model)
+        && !isInterface85Context(ctx)) return '#faca20';
     /* Platform style names are stable API identifiers. Their light Taxi
      * palette is the only built-in mapping; configuration-owned names are
      * resolved from cf/StyleItems instead of guessed from their spelling. */
@@ -5893,6 +7335,12 @@ function tooltipRepresentation(item) {
     return 'auto';
 }
 
+function tooltipPlacement(item, ctx) {
+    var rep = tooltipRepresentation(item);
+    if (isInterface85Context(ctx) && (rep === 'top' || rep === 'left')) return 'bottom';
+    return rep;
+}
+
 function applyPageTooltip(container, page) {
     var rep = tooltipRepresentation(page);
     if (rep !== 'top' && rep !== 'bottom') return;
@@ -5914,14 +7362,19 @@ function tooltipText(item) {
  * form as grey text; Button puts a link-like "?" next to the control, matching
  * the thin blue help marker used by Configurator. Anything else stays a hover
  * title, which is what 1C does too. */
-function applyTooltip(div, item, inBar) {
+function applyTooltip(div, item, inBar, ctx) {
     var text = tooltipText(item);
-    var rep = tooltipRepresentation(item);
+    var rep = tooltipPlacement(item, ctx);
     /* The designer paints the «?» marker for Button even when the tooltip
      * text lives only on the command («Подробно ?»). */
-    if (!text && !(rep === 'button' && !inBar && item && (item.tag === 'Button' || item.tag === 'Hyperlink')))
+    var runtimeTip = isInterface85Context(ctx) && item && item.extendedTooltip
+        && (item.extendedTooltip.events || []).length > 0;
+    if (!text && !(rep === 'button' && !inBar && item
+        && (item.tag === 'Button' || item.tag === 'Hyperlink' || runtimeTip)))
         return;
     if (rep === 'none') return;
+    if (isInterface85Context(ctx) && item && item.tag === 'UsualGroup' && showGroupTitle(item)
+        && rep !== 'button' && rep !== 'auto' && rep !== 'balloon') return;
     /* Inside a command bar 1C only ever shows the tooltip on hover, whatever
      * the representation says - a text line there would break the bar. */
     if (inBar || rep === 'auto' || rep === 'balloon') {
@@ -5936,13 +7389,15 @@ function applyTooltip(div, item, inBar) {
         return;
     }
     var note = el('span', 'fp-tooltip-text fp-tooltip-' + rep, text);
+    if (item.extendedTooltip && isTrue(prop(item.extendedTooltip, ['Hyperlink', 'Гиперссылка'])))
+        note.classList.add('fp-tooltip-hyperlink');
     if (rep === 'top' || rep === 'left') div.insertBefore(note, div.firstChild);
     else div.appendChild(note);
     div.classList.add('fp-tooltip-side-' + (rep === 'left' || rep === 'right' ? 'h' : 'v'));
 }
 
-/* A borderless, coloured AlwaysHorizontal row made only from text
- * decorations is the managed client's notification band. Its background
+/* A borderless, coloured AlwaysHorizontal row made from text decorations and
+ * an optional leading status picture is the managed client's notification band. Its background
  * owns a real 5/6 px inset; treating the row as a transparent label wrapper
  * collapses the band to the glyph height and shifts every following root
  * item. */
@@ -5954,9 +7409,13 @@ function isCompactColorBand(item) {
     var children = (item.childItems || []).filter(function (child) {
         return child && !isFalse(prop(child, ['Visible', 'visible'])) && !isAdditionTag(child.tag);
     });
-    return children.length > 0 && children.every(function (child) {
-        return child.tag === 'LabelDecoration';
-    });
+    var pictures = children.filter(function (child) { return child.tag === 'PictureDecoration'; });
+    return children.some(function (child) { return child.tag === 'LabelDecoration'; })
+        && pictures.length <= 1
+        && (!pictures.length || (children[0] === pictures[0] && !!pictureRef(pictures[0])))
+        && children.every(function (child) {
+            return child.tag === 'LabelDecoration' || child.tag === 'PictureDecoration';
+        });
 }
 
 var COMPACT_LIST_COLUMN_WIDTH = 64;
@@ -5988,9 +7447,6 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
     if (!div || !item) return;
     var hs = prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']);
     var w = charSize(prop(item, ['Width', 'Ширина']));
-    /* A LabelField value lane is on the reference char-unit ruler (Width 12 -> 130,
-     * which also places the controls after it); the 8px grid left it 34px
-     * short. */
     if (w && tag === 'LabelField') w = authoredFieldWidthPx(prop(item, ['Width', 'Ширина']), tag);
     var compactQualifiedWidth = compactQualifiedSingleFieldWidth(item, tag, parentMeta, ctx);
     if (!w && compactQualifiedWidth) {
@@ -5999,7 +7455,7 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
     }
     var mw = charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']));
     var dateTimeMinimum = tag === 'InputField'
-        && fieldKind(item, ctx) === 'date'
+        && fieldKind(item, ctx) === 'date' && mw
         && String(metaDateFraction(item, ctx)).toLowerCase() === 'datetime'
         ? defaultFieldChars(item, ctx) * CHAR_PX + 20 : 0;
     if (w && dateTimeMinimum) w = Math.max(w, dateTimeMinimum);
@@ -6008,17 +7464,9 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
     var maxWidthChars = parseInt(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
     if (maxWidthChars > 0
         && (tag === 'InputField' || tag === 'LabelField' || tag === 'ValueList')) {
-        /* The painted editor and allocator use the same reference ruler. With Width
-         * present the cap stayed on the 8px grid (MaxWidth 10 -> 80) while
-         * dimensionBands published 110, so a stretched ReadOnly total
-         * stopped 30px short of the reference's TextBox maximum. */
         mw = w ? Math.max(authoredFieldWidthPx(maxWidthChars, tag), dateTimeMinimum)
             : autoMaxEditorBandWidth(maxWidthChars);
     }
-    /* A decoration-titled value stretches only to its type's presentation
-     * band: a catalog with DescriptionLength 120 ends at 40 chars, 410px, in
-     * the reference, not at the row edge. The 15-char ref default is the
-     * initial width, not this cap. */
     if (!w && tag === 'InputField' && parentMeta && parentMeta.inputThenLabelField
         && isFalse(prop(item, ['AutoMaxWidth'])) && !charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))) {
         var rowButtons = defaultWidthClampsButtons(item, ctx) ? 0 : inputButtonKinds(item, ctx).length;
@@ -6047,14 +7495,40 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
     var va = String(prop(item, ['GroupVerticalAlign',
         'ВертикальноеПоложениеВГруппе']) || '').toLowerCase();
     var bands = dimensionBands(item, tag, parentMeta, ctx);
+    if (tag === 'InputField' && isInterface85Context(ctx) && !bands.horizontal.stretch
+        && !(parseInt(prop(item, ['Width', 'Ширина']), 10) > 0) && !isFalse(hs)
+        && /^(?:number|date)$/.test(fieldKind(item, ctx)))
+        bands.horizontal.stretch = true;
     if (parentMeta && parentMeta.compoundSelectorChildren
         && parentMeta.compoundSelectorChildren.indexOf(item) >= 0)
         div.classList.add('fp-compound-selector-track');
     var stretch = bands.horizontal.stretch;
     var vstretch = bands.vertical.stretch;
     var widthChars = parseInt(prop(item, ['Width', 'Ширина']), 10);
-    if (div.dataset && !isNaN(widthChars) && widthChars > 0)
+    if ((tag === 'InputField' || tag === 'ValueList') && isInterface85Context(ctx)
+        && widthChars > 0) {
+        w = bands.horizontal.normal;
+        if (isFinite(bands.horizontal.max)) mw = bands.horizontal.max;
+    }
+    if (tag === 'LabelDecoration' && isInterface85Context(ctx) && widthChars > 0) {
+        w = widthChars * 11;
+        div.style.width = w + 'px';
+        div.style.maxWidth = w + 'px';
+        div.classList.add('fp-label-width-85');
+        var labelAlign85 = String(prop(item, ['HorizontalAlign']) || '').toLowerCase();
+        if (/center|центр/.test(labelAlign85)) div.style.textAlign = 'center';
+        else if (/right|прав/.test(labelAlign85)) div.style.textAlign = 'right';
+    }
+    var maxWidthChars = parseInt(prop(item, ['MaxWidth']), 10);
+    if (div.style && maxWidthChars > 0 && isFalse(prop(item, ['AutoMaxWidth'])))
+        div.style.setProperty('--fp-authored-max-width-chars', String(maxWidthChars));
+    if (div.dataset && !isNaN(widthChars) && widthChars > 0) {
         div.dataset.fpAuthoredWidthPresent = '1';
+        /* Profile CSS sizes some editors straight from the authored Width. */
+        div.style.setProperty('--fp-authored-width-chars', String(widthChars));
+        if (isFalse(prop(item, ['HorizontalStretch'])))
+            div.dataset.fpAuthoredNoStretch = '1';
+    }
     if (div.dataset && !isNaN(widthChars) && widthChars > 0)
         div.dataset.fpAuthoredDecisionWidth = String(fixedShortEditorWidth(item, tag, ctx)
             || widthChars * REF_AUTHORED_CHAR_PX);
@@ -6071,9 +7545,11 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
         var declaredWidth = fixedShortWidth || authoredFieldWidthPx(prop(item, ['Width', 'Ширина']), tag);
         if (declaredWidth) div.dataset.fpDeclaredWidthBand = String(declaredWidth);
         if (fixedShortWidth) div.dataset.fpDeclaredIncludesButtons = '1';
+        if (isInterface85Context(ctx) && tag === 'InputField')
+            div.style.setProperty('--fp-authored-normal-width', bands.horizontal.normal + 'px');
     }
     if (div.dataset && isFalse(hs)) div.dataset.fpAuthoredFixedWidth = '1';
-    if (tag === 'InputField' && !stretch && widthChars > 0) {
+    if (tag === 'InputField' && !stretch && widthChars > 0 && !isInterface85Context(ctx)) {
         var widthFieldKind = fieldKind(item, ctx);
         if (widthFieldKind === 'number') w = widthChars * 11;
         else if (widthFieldKind === 'date')
@@ -6094,9 +7570,19 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
      * which configurator-generated forms use as a flexible layout spacer (for
      * example before a right-aligned document total), and a LabelField whose
      * width cap the form has lifted - it absorbs the free width of its row. */
+    var scalablePictureStretch = tag === 'PictureDecoration' && stretch
+        && /^(?:proportionally|stretch)$/.test(normPictureSize(
+            prop(item, ['PictureSize', 'РазмерКартинки'])));
+    /* Notification bands use a stretching text decoration as the middle
+     * track and a compact hyperlink as the tail. Treating every non-empty
+     * LabelDecoration as compact left «Закрыть» immediately after the text
+     * instead of at the right edge of the coloured band. */
+    var colorBandTextStretch = tag === 'LabelDecoration' && stretch && parentH
+        && isCompactColorBand(parentItem);
     var emptyStretchSpacer = (tag === 'LabelDecoration' && isTrue(hs)
         && !displayLabel(item, ctx, tag))
-        || (tag === 'LabelField' && stretch && parentH);
+        || (tag === 'LabelField' && stretch && parentH)
+        || scalablePictureStretch || colorBandTextStretch;
     if ((compactTag(tag) && !emptyStretchSpacer) || !stretch) {
         /* A fixed-width descendant fixes only that control, not every wrapper
          * group above it. Treating it as a recursive lock made a whole header
@@ -6124,6 +7610,8 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
             div.style.minWidth = '0';
         }
         div.classList.add('fp-no-hstretch');
+        if (parentH && splitterPane(item, ctx) && cappedSplitterField(item, tag))
+            div.classList.add('fp-splitter-leaf');
     } else {
         div.classList.add('fp-hstretch');
         if (parentH && splitterPane(item, ctx) && ownHorizontalStretch(item, tag, parentMeta, ctx))
@@ -6132,8 +7620,10 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
          * viewport. A slightly larger shrink factor preserves compact command
          * clusters in neighbouring columns without forcing a line wrap. */
         div.style.flex = parentH
-            ? (isContainer(tag) && parentMeta && parentMeta.hasLargeFixedWidthChild ? '1 1 0' : '1 1.7 auto')
+            ? (isContainer(tag) && parentMeta && parentMeta.hasLargeFixedWidthChild ? '1 1 0'
+                : '1 1.7 auto')
             : '0 0 auto';
+        if (parentH && autoCappedFieldColumn(item, ctx)) div.classList.add('fp-auto-capped-column');
         /* An unbounded min-content floor makes wide standard document headers
          * overflow, while a zero floor can crush a narrow status/FEO column
          * until its checkbox caption paints outside the form. Keep a small,
@@ -6152,8 +7642,6 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
          * Growing only the transparent item wrapper leaves a large blank gap
          * before the next control (e.g. an OKPO/OGRN row). */
         div.style.flex = '0 1 auto';
-        /* An empty data LabelField still occupies its MaxWidth band in the reference:
-         * MaxWidth 28 keeps 280px before the following labels. */
         if (tag === 'LabelField' && !div.classList.contains('fp-hstretch')
             && prop(item, ['DataPath']) && maxWidthChars > 0)
             div.style.width = (maxWidthChars * REF_AUTHORED_CHAR_PX) + 'px';
@@ -6178,9 +7666,6 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
         && parentMeta.tableChromeCadenceChildren.indexOf(item) >= 0)
         div.classList.add('fp-page-table-chrome-cadence');
     if (isCompactHeaderlessListGroup(item, parentH)) {
-        /* A columnless List publishes the native compressed minimum of six
-         * authored form units. Its enclosing titled group may be stretchable,
-         * yet the reference gives the useful width to the neighbouring detail page. */
         div.classList.add('fp-compact-list-group');
         div.style.flex = '0 1 64px';
         div.style.width = '64px';
@@ -6217,12 +7702,20 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
             /* Width is the authored size of the group. 1C keeps it as a floor
              * and gives the window a scrollbar instead of squeezing the group
              * below it, so the floor belongs in both branches. */
-            div.style.minWidth = groupWidthPx + 'px';
+            /* AutoScreenTypeSensitive in 2.21 adapts its columns to the
+             * window, so its Width is a recommendation there: a Width=100
+             * workspace still fits a 936px window without a scrollbar. */
+            var screenAdaptive = normGroupMode(prop(item, ['Group'])) === 'auto-screen-sensitive'
+                && formVersionAtLeast(item, '2.21');
+            if (!screenAdaptive) div.style.minWidth = groupWidthPx + 'px';
+            if (isInterface85Context(ctx)) div.classList.add('fp-authored-width-floor-85');
             /* Width is fixed only when stretching is explicitly disabled (or
              * no descendant requests it). Otherwise it is the flex basis: a
              * pair of Width=32 cards can evenly fill a Width=67 row. */
             if (stretch) {
                 if (parentH) div.style.flex = '1 1 ' + groupWidthPx + 'px';
+            } else if (isFalse(hs) && isInterface85Context(ctx)) {
+                if (parentH) div.style.flex = '0 0 auto';
             } else if (isFalse(hs)) {
                 div.style.width = groupWidthPx + 'px';
                 /* flex addresses the parent main axis. In a vertical parent
@@ -6246,10 +7739,6 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                 div.style.minHeight = groupHeightPx + 'px';
                 /* Height is a band, not permission to clip a native control
                  * row whose intrinsic box is taller than one group unit. */
-                /* A titled ordinary group grows past its Height when its rows need
-                 * more: a Height 6 group holding three label rows pushes the
-                 * next group down in the reference instead of letting its
-                 * content run into the next title. */
                 if (!vstretch && !authoredContainerHeightUsesIntrinsicFloor(item)
                     && !(item.tag === 'UsualGroup' && showGroupTitle(item)))
                     div.style.height = groupHeightPx + 'px';
@@ -6320,6 +7809,29 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
             div.style.alignSelf = 'stretch';
         }
         if (tag === 'Pages') div.classList.add('fp-pages-tabs');
+        if (tag === 'Pages' && isInterface85Context(ctx)) {
+            var authoredBandWidth = function (node) {
+                if (!node || isFalse(prop(node, ['Visible', 'visible']))) return 0;
+                var units = parseInt(prop(node, ['Width', 'Ширина']), 10) || 0;
+                /* Editors compress to their minimum; only fixed groups
+                 * publish a width the platform keeps. */
+                if (!isContainer(node.tag)) return 0;
+                var fixed = units > 0 && isFalse(prop(node, ['HorizontalStretch']))
+                    ? units * CLEAN85_GROUP_COL_PX : 0;
+                var mode = String(prop(node, ['Group', 'Группировка']) || '').toLowerCase();
+                var horizontal = node.tag !== 'Pages' && node.tag !== 'Page'
+                    && /horizontal/.test(mode);
+                var widths = (node.childItems || []).map(authoredBandWidth)
+                    .filter(function (width) { return width > 0; });
+                var content = horizontal
+                    ? widths.reduce(function (sum, width) { return sum + width; }, 0)
+                        + Math.max(0, widths.length - 1) * CLEAN85_AUTHORED_BAND_GAP_PX
+                    : widths.reduce(function (max, width) { return Math.max(max, width); }, 0);
+                return Math.max(fixed, content);
+            };
+            var widestPagePx = authoredBandWidth(item);
+            if (widestPagePx) div.dataset.fpWidestPageGroup = String(widestPagePx);
+        }
     }
     /* A Table's first .fp-input-wrap is its toolbar search: an authored
      * table Width 60 would pin the search to 480px and push «Добавить» out
@@ -6358,17 +7870,27 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                 inputWrap.querySelectorAll('.fp-input-btn').length);
             if (authoredPaintWidth) w = authoredPaintWidth;
         }
-        var authoredAutoMaximumPaint = authoredAutoMaxEditorPaintWidth(item, tag, parentMeta, ctx);
+        var authoredAutoMaximumPaint = isInterface85Context(ctx) && widthChars > 0
+            ? 0 : authoredAutoMaxEditorPaintWidth(item, tag, parentMeta, ctx);
+        if (authoredAutoMaximumPaint && !widthChars && tag === 'InputField' && taxiFixedStringEditorWidth(item, ctx))
+            authoredAutoMaximumPaint = Math.min(authoredAutoMaximumPaint, taxiFixedStringEditorWidth(item, ctx));
+        /* Read-only totals in a right-aligned row occupy their authored Width
+         * lane. MaxWidth remains a ceiling for other layouts, but does not
+         * enlarge every displayed amount in this content-sized footer. */
+        if (authoredAutoMaximumPaint && widthChars > 0 && tag === 'InputField'
+            && fieldKind(item, ctx) === 'number'
+            && isTrue(prop(item, ['ReadOnly', 'ТолькоПросмотр']))
+            && isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
+            && parentItem && /right|прав/i.test(String(prop(parentItem,
+                ['HorizontalAlign', 'ГоризонтальноеПоложениеПодчиненных']) || ''))
+            && parentMeta && parentMeta.orientation === 'horizontal')
+            authoredAutoMaximumPaint = 0;
         var widthSlotPaint = widthChars > 0
             ? widthChars * REF_AUTHORED_CHAR_PX + TAXI_LAYOUT_METRICS.authoredEditorInsetWidth
             : 0;
         var editorOverpaint = 0;
         if (authoredAutoMaximumPaint) {
             resolvedPaintMaximum = authoredAutoMaximumPaint;
-            /* Horizontal Width < MaxWidth: the reference's next sibling starts after the
-             * painted MaxWidth, not the narrower Width slot. A negative-margin
-             * overpaint kept the item at its Width and placed the following
-             * button 18px too far left. */
             if (widthSlotPaint && authoredAutoMaximumPaint > widthSlotPaint) {
                 if (parentMeta && parentMeta.orientation === 'horizontal')
                     w = authoredAutoMaximumPaint;
@@ -6376,19 +7898,12 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                     editorOverpaint = authoredAutoMaximumPaint - widthSlotPaint;
             }
             else
-                /* MaxWidth without Width: the slot is the full char-unit ruler band
-                 * (MaxWidth*10+10) for the trailing editor as well. The reference keeps
-                 * that paint inside the row and compresses the row instead of
-                 * letting the last editor overpaint its slot (the editors end
-                 * at the 72-unit column edge). */
                 w = authoredAutoMaximumPaint;
         }
         if (applyMultilineEditorPaintBand(inputWrap, multilineLayout)) {
             resolvedPaintMaximum = multilineLayout.editorPaintMaximum;
         } else if (w) {
             if (automaticRowOwner) {
-                /* Width is the normal band. Once the reference assigns the item the
-                 * remainder track, its editor paints the complete track. */
                 inputWrap.style.width = '100%';
                 inputWrap.style.maxWidth = '100%';
                 inputWrap.style.flex = '1 1 auto';
@@ -6409,16 +7924,14 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                     inputWrap.style.flex = '0 0 auto';
                     inputWrap.style.marginRight = (-editorOverpaint) + 'px';
                 } else {
-                    /* The preferred width is the char-unit ruler paint (Width=60:
-                     * 610px in the reference, not the 480px 8px lane); a zero
-                     * minimum keeps it compressible. */
                     /* Only a sole editor of its row: several such editors
                      * share an AlwaysHorizontal header and are compressed to
                      * the window. */
                     var soleRowEditor = parentItem && (parentItem.childItems || []).filter(function (sib) {
                         return sib && (sib.tag === 'InputField' || sib.tag === 'LabelField');
                     }).length === 1;
-                    var preferredPaint = soleRowEditor && widthChars > 0 && tag === 'InputField'
+                    var preferredPaint = !isInterface85Context(ctx)
+                        && soleRowEditor && widthChars > 0 && tag === 'InputField'
                         ? authoredEditorPaintWidth(widthChars, tag,
                             inputWrap.querySelectorAll('.fp-input-btn').length) : 0;
                     if (preferredPaint > w) {
@@ -6427,9 +7940,8 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                         div.style.minWidth = '0';
                     }
                     inputWrap.style.width = w + 'px';
-                    inputWrap.style.flex = '1 1 ' + w + 'px';
-                    /* The automatic cap never undercuts the authored lane
-                     * (Width=60: 610px in the reference). */
+                    inputWrap.style.flex = isInterface85Context(ctx) && widthChars > 0
+                        ? '0 1 ' + w + 'px' : '1 1 ' + w + 'px';
                     if (!mw && !isFalse(prop(item, ['AutoMaxWidth'])))
                         inputWrap.style.maxWidth = Math.max(50 * CHAR_PX + 10,
                             widthChars > 0 && tag === 'InputField'
@@ -6458,10 +7970,6 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                 inputWrap.style.maxWidth = authoredAutoMaximumPaint + 'px';
                 inputWrap.style.flex = '0 0 auto';
                 if (!editorOverpaint && parentMeta && parentMeta.orientation === 'horizontal') {
-                    /* The reference compresses an over-wide horizontal row by taking
-                     * width from these MaxWidth bands (e.g. 260->258, 270->251)
-                     * down to the 71px field minimum, instead of scrolling the
-                     * window. */
                     inputWrap.style.flex = '0 1 auto';
                     inputWrap.style.minWidth = Math.min(authoredAutoMaximumPaint,
                         TAXI_LAYOUT_METRICS.compressedFieldMinimumWidth) + 'px';
@@ -6481,10 +7989,8 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                 inputWrap.style.minWidth = TAXI_LAYOUT_METRICS.compressedFieldMinimumWidth + 'px';
                 inputWrap.style.flex = '0 1 auto';
             } else {
-                /* A fixed Width is the text lane on the reference char-unit ruler with
-                 * the value buttons appended: W11 paints 120px, W5 with two
-                 * buttons 103px. */
                 if ((tag === 'InputField' || tag === 'ValueList') && widthChars > 0
+                    && !isInterface85Context(ctx)
                     && !authoredAutoMaximumPaint && !(parentMeta && parentMeta.authoredEditorActionRow))
                     w = Math.max(w, authoredEditorPaintWidth(widthChars, tag,
                         inputWrap.querySelectorAll('.fp-input-btn').length));
@@ -6549,13 +8055,9 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                     var columnKind = fieldKind(item, ctx);
                     if (columnKind === 'text' || columnKind === 'ref' || columnKind === 'list') {
                         var columnCap = TAXI_LAYOUT_METRICS.automaticEditorPresentationWidth;
-                        /* A short string stops at its own length (String(2) is 30px in
-                         * the reference). */
                         if (columnKind === 'text') {
                             var columnTypes = typeInfoFromItem(item, ctx);
                             var columnChars = presentationLengthOf(columnTypes.types, columnTypes);
-                            /* A long qualifier still paints the whole band: a CodeLength 36
-                             * code is 410px in the reference, not 370. */
                             if (columnTypes.stringLen > 0 && columnChars > 0 && columnChars < 25)
                                 columnCap = Math.min(columnCap, autoMaxEditorBandWidth(columnChars));
                             /* Below the generic 80px editor floor. */
@@ -6583,22 +8085,22 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                         + TAXI_LAYOUT_METRICS.tooltipButtonGap
                         + TAXI_LAYOUT_METRICS.inputBorderChromeWidth
                     : 0,
-                natural: defaultFieldWidthPx(item, ctx),
+                natural: taxiFixedStringEditorWidth(item, ctx) || defaultFieldWidthPx(item, ctx),
                 autoMaxWidth: !autoMaxWidthFalse,
-                /* A button-style extended tooltip is a sibling lane in the reference's
-                 * rich editor group. It assigns the value editor its authored
-                 * maximum before appending the tooltip affordance. */
                 occupiesMaximum: !autoMaxWidthFalse
                     && /button|кнопк/i.test(String(prop(item, ['ToolTipRepresentation']) || ''))
             });
             resolvedPaintMaximum = paintBand.maximum;
             var preferred = paintBand.preferred;
+            var fixedStringWidth = tag === 'InputField' ? taxiFixedStringEditorWidth(item, ctx) : 0;
+            if (fixedStringWidth) preferred = Math.min(preferred, fixedStringWidth);
             inputWrap.style.width = preferred + 'px';
             inputWrap.style.flex = titleAbove ? '0 0 auto' : '0 1 ' + preferred + 'px';
             inputWrap.style.maxWidth = paintBand.maximum + 'px';
         } else {
             var dw = defaultEditorPaintWidth(item, ctx, tag,
                 inputWrap.querySelectorAll('.fp-input-btn').length);
+            var fixedLeadingStringBand = untitledLeadingStringEditor(item, parentMeta, ctx);
             /* A Width-less non-stretched reference paints the char-unit ruler
              * lane the allocator already recommends (150+11+21n, e.g. 203 with
              * two buttons). */
@@ -6611,7 +8113,9 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                         inputWrap.querySelectorAll('.fp-input-btn').length));
             if (tag === 'InputField' && parentMeta && parentMeta.tag === 'Page'
                 && parentMeta.hasCommandBarChild) dw = 410;
-            if (untitledLeadingStringEditor(item, parentMeta, ctx))
+            if (tag === 'InputField' && taxiFixedStringEditorWidth(item, ctx))
+                dw = taxiFixedStringEditorWidth(item, ctx);
+            if (fixedLeadingStringBand)
                 dw = TAXI_LAYOUT_METRICS.automaticEditorPresentationWidth;
             /* [W-DATE] Date lane = chars + inset + appended 21px buttons
              * (121px = 100 + 21; DateTime 180px). */
@@ -6619,9 +8123,26 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                 dw = defaultFieldChars(item, ctx) * REF_AUTHORED_CHAR_PX + 10
                     + inputWrap.querySelectorAll('.fp-input-btn').length * 21;
             inputWrap.style.width = dw + 'px';
-            inputWrap.style.flex = titleAbove ? '0 0 auto' : '0 1 ' + dw + 'px';
+            inputWrap.style.flex = titleAbove ? '0 0 auto'
+                : fixedLeadingStringBand ? '0 0 ' + dw + 'px' : '0 1 ' + dw + 'px';
         }
         if (mw) inputWrap.style.maxWidth = (resolvedPaintMaximum || mw) + 'px';
+        /* For an untitled multiline field with an external choice button the
+         * authored maximum bounds the whole control, including that button.
+         * Other width paths may publish the TextBox band first, so apply the
+         * shared maximum after those paths have settled. */
+        if (tag === 'InputField' && isMultilineField(item, ctx)
+            && titleLocation(item, parentMeta) === 'none' && !widthChars
+            && isFalse(prop(item, ['AutoMaxWidth']))
+            && maxWidthChars > 0 && inputWrap.parentNode.querySelector('.fp-input-btn')) {
+            var multilineWithButtonWidth = Math.max(TAXI_LAYOUT_METRICS.compressedFieldMinimumWidth,
+                autoMaxEditorBandWidth(maxWidthChars)
+                    - TAXI_LAYOUT_METRICS.inputButtonLaneWidth
+                    - TAXI_LAYOUT_METRICS.inputBorderChromeWidth);
+            inputWrap.style.width = multilineWithButtonWidth + 'px';
+            inputWrap.style.maxWidth = multilineWithButtonWidth + 'px';
+            inputWrap.style.flex = '0 0 ' + multilineWithButtonWidth + 'px';
+        }
         /* A stretching editor whose row slot is capped by MaxWidth fills the
          * cap. */
         if (mw && tag === 'InputField' && stretch && parentH && !autoMaxWidthFalse
@@ -6636,22 +8157,22 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                 if (!vstretch) inputWrap.style.maxHeight = authoredControlHeight + 'px';
             }
             applyMultilineEditorVerticalBand(inputWrap, multilineLayout);
+            var multiline85Height = parseInt(inputWrap.dataset.fpMultilineHeight, 10);
+            if (multiline85Height > 0 && !vstretch) {
+                inputWrap.style.height = multiline85Height + 'px';
+                inputWrap.style.minHeight = multiline85Height + 'px';
+                inputWrap.style.maxHeight = multiline85Height + 'px';
+            }
         }
         var hint = prop(item, ['InputHint']);
         var inpEl = inputWrap.querySelector('.fp-input');
         if (hint && inpEl && !inpEl.value) inpEl.placeholder = hint;
     } else if (w && (tag === 'LabelField' || tag === 'LabelDecoration')) {
         var lab = div.querySelector('.fp-label');
-        /* A LabelDecoration Width is on the reference's 10px text ruler: W16 spans
-         * 160px, so every value of a label/value block starts on one column. */
         if (lab) lab.style.minWidth = (horizontalDecorationWidthPx(item, tag, parentMeta) || w) + 'px';
     }
     if (tag === 'LabelDecoration') {
         var textDecoration = div.querySelector('.fp-label-decoration');
-        /* The reference generates maxWidth=40 for AutoMaxWidth labels.
-         * The reference static-text calculation scales this by 10, independently of
-         * the input editor's browser grid. An 8px cap spuriously wraps
-         * long labels. */
         var textMaxChars = parseInt(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
         var textCap = textMaxChars > 0 ? textMaxChars * REF_AUTHORED_CHAR_PX
             : (!w && !isFalse(prop(item, ['AutoMaxWidth'])) ? 40 * REF_AUTHORED_CHAR_PX : 0);
@@ -6664,9 +8185,24 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
         }
     }
     if (tag === 'LabelDecoration' || tag === 'PictureDecoration') {
-        var decorationHeight = charHeight(prop(item, ['Height', 'Высота']));
+        var decorationHeight = tag === 'PictureDecoration'
+            ? pictureDecorationHeightPx(prop(item, ['Height', 'Высота']), item, ctx)
+            : charHeight(prop(item, ['Height', 'Высота']));
+        if (decorationHeight && tag === 'PictureDecoration' && isInterface85Context(ctx)
+                && normPictureSize(prop(item, ['PictureSize', 'РазмерКартинки'])) === 'autosize') {
+            decorationHeight = (parseInt(prop(item, ['Height', 'Высота']), 10) || 0)
+                * CLEAN85_AUTOSIZE_PICTURE_ROW_PX;
+            div.classList.add('fp-clean85-autosize-picture-band');
+        }
         if (decorationHeight) {
-            div.style.height = decorationHeight + 'px';
+            var elasticPlatform85Picture = tag === 'PictureDecoration'
+                && formVersionAtLeast(item, '2.21') && vstretch
+                && isFalse(prop(item, ['AutoMaxHeight', 'АвтоМаксимальнаяВысота']))
+                && parseInt(prop(item, ['MaxHeight', 'МаксимальнаяВысота']), 10) > 0
+                && /^(?:proportionally|stretch)$/.test(normPictureSize(
+                    prop(item, ['PictureSize', 'РазмерКартинки'])));
+            if (!elasticPlatform85Picture) div.style.height = decorationHeight + 'px';
+            else div.style.maxHeight = bands.vertical.max + 'px';
             div.style.minHeight = decorationHeight + 'px';
             var decorationWrap = div.querySelector('.fp-control-wrap');
             if (decorationWrap) decorationWrap.style.height = '100%';
@@ -6703,6 +8239,8 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
         div.classList.add('fp-align-bottom');
     } else if ((va.indexOf('center') >= 0 || va.indexOf('центр') >= 0) && parentH) {
         div.style.alignSelf = 'center';
+    } else if ((va.indexOf('top') >= 0 || va.indexOf('верх') >= 0) && parentH) {
+        div.style.alignSelf = 'flex-start';
     }
     var bc = prop(item, ['BackColor']);
     if (bc) {
@@ -6714,8 +8252,12 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
     var buttonTarget = (tag === 'Button' || tag === 'Popup' || tag === 'Hyperlink')
         ? div.querySelector('.fp-button, .fp-link') : null;
     var tc = prop(item, ['TextColor']);
+    if (tc && tag === 'Button' && isInterface85Context(ctx) && /^style:/i.test(String(tc))
+        && !isCommandBarButton(item) && !isHyperlinkItem(item)
+        && !/hyperlink|гиперссылк/i.test(String(prop(item, ['Type', 'Вид']) || ''))) tc = '';
     if (tc) {
-        var tcAbs = absoluteColor(tc) || styleItemColor(tc, ctx && ctx.styleItems);
+        var tcAbs = clean85PaletteColor(tc, ctx, tag === 'PictureDecoration' ? 'picture' : 'text') || absoluteColor(tc, ctx)
+            || styleItemColor(tc, ctx && ctx.styleItems, null, ctx);
         var tcl = tc.toLowerCase();
         /* Hyperlink decorations and their formatted text spans both use the
          * --fp-link token. Override it at the rendered link as well as color:
@@ -6724,15 +8266,21 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
         var colorTarget = buttonTarget || linkTarget || div;
         if (tcAbs) {
             colorTarget.style.color = tcAbs;
-            if (linkTarget) linkTarget.style.setProperty('--fp-link', tcAbs);
+            if (linkTarget) {
+                linkTarget.style.setProperty('--fp-link', tcAbs);
+                linkTarget.classList.add('fp-authored-link-color');
+            }
         }
         else if (/firebrick|красный|red|проблема/i.test(tcl)) colorTarget.classList.add('fp-text-danger');
         else if (/заголовокотчета|группавариантов/i.test(tcl)) colorTarget.classList.add('fp-text-accent');
         else if (/гиперссылка/i.test(tcl)) colorTarget.classList.add('fp-text-link');
         else if (/серый|gray|grey/i.test(tcl)) colorTarget.classList.add('fp-text-muted');
     }
+    if (bc && tag === 'InputField' && isInterface85Context(ctx) && /^style:/i.test(String(bc))) bc = '';
+    if (bc && buttonTarget && isInterface85Context(ctx) && /^pal:/i.test(String(bc))) bc = '';
     if (bc) {
-        var bcAbs = absoluteColor(bc) || styleItemColor(bc, ctx && ctx.styleItems);
+        var bcAbs = clean85PaletteColor(bc, ctx, 'back') || absoluteColor(bc, ctx)
+            || styleItemColor(bc, ctx && ctx.styleItems, null, ctx);
         if (bcAbs) {
             var bcTarget = buttonTarget || div.querySelector('.fp-input-wrap') || div;
             if (buttonTarget) {
@@ -6751,15 +8299,13 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
             }
         }
     }
-    /* A vertical stack of authored white cards paints its Half/Single gaps on
-     * the native section background. Transparent CSS would otherwise make the
-     * cards merge into one white block and erase the reference's separators. */
     if (!bc && isNativeCardStack(item)) {
         div.classList.add('fp-native-card-stack');
     }
-    var borderAbs = absoluteColor(prop(item, ['BorderColor', 'ЦветРамки']));
+    var borderColor = prop(item, ['BorderColor', 'ЦветРамки']);
+    var borderAbs = absoluteColor(borderColor, ctx) || styleItemColor(borderColor, ctx && ctx.styleItems, null, ctx);
     if (borderAbs) {
-        var bTarget = div.querySelector('.fp-input-wrap') || div;
+        var bTarget = div.querySelector('.fp-input-wrap, .fp-spreadsheet-viewport') || div;
         bTarget.style.borderColor = borderAbs;
     }
     var runtime = item.runtime || {};
@@ -6780,18 +8326,34 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
         chromeTarget.dataset.borderStyle = runtime.border.style || '';
     }
     if (runtime.backPicture) appendBackgroundPicture(chromeTarget, runtime.backPicture, ctx);
-    /* Enabled=false is 1C's "недоступен": the control still occupies its place
-     * but its text goes grey. ReadOnly already has its own washed-out field.
-     * The reference leaves a CommandBarButton drawn as usual whatever its
-     * Enabled: #4d4d4d text and the #b2b2b2 frame. */
     if (isFalse(prop(item, ['Enabled', 'Доступность', 'Доступен'])) && !isCommandBarButton(item))
         div.classList.add('fp-disabled');
     /* Native tables publish MaxHeight as an explicit cap only when
      * AutoMaxHeight=false. The default automatic mode must not cap the
      * browser item merely because a serialized MaxHeight is present. */
-    var mh = charHeight(prop(item, ['MaxHeight', 'МаксимальнаяВысота']));
-    if (mh && tag !== 'ChartField' && !(tag === 'Table' && tableAuthoredHeightPx(item)))
-        div.style.maxHeight = mh + 'px';
+    var mhRaw = prop(item, ['MaxHeight', 'МаксимальнаяВысота']);
+    var mh = tag === 'PictureDecoration'
+        ? pictureDecorationHeightPx(mhRaw, item, ctx)
+        : tag === 'PictureField' ? pictureFieldHeightPx(mhRaw, ctx) : charHeight(mhRaw);
+    if (mh && tag !== 'ChartField' && !(tag === 'Table' && tableAuthoredHeightPx(item))) {
+        /* A text editor counts its rows on the TextBox ruler, not the 18px
+         * form row: Height=6 paints a 175px editor while charHeight(6) is 108.
+         * Capping the item on the form-row ruler therefore cut the box below
+         * its own painted editor, and everything after it was drawn on top.
+         * The item may also carry bands the cap knows nothing about - an Auto
+         * caption promoted above the editor, and the ShowTop/ShowBottom
+         * tooltip line that applyTooltip adds later. With such a band the item
+         * has no single correct cap, and the editor's own authored height
+         * already bounds it, so the item-level cap is dropped. */
+        if (tag === 'InputField' || tag === 'ValueList' || tag === 'LabelField') {
+            mh = authoredControlHeightPx(mhRaw, tag);
+            var paintedTooltipRow = /^show(top|bottom)$/i
+                .test(String(prop(item, ['ToolTipRepresentation']) || '').replace(/\s+/g, ''))
+                && !!tooltipText(item);
+            if (paintedTooltipRow || div.querySelector('.fp-title-top')) mh = 0;
+        }
+        if (mh) div.style.maxHeight = mh + 'px';
+    }
     var th = parseInt(prop(item, ['TitleHeight', 'ВысотаЗаголовка']), 10);
     if (th > 1) {
         var thLabel = div.querySelector('.fp-field-label');
@@ -6799,6 +8361,18 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
             thLabel.style.whiteSpace = 'normal';
             thLabel.style.maxHeight = (th * 16) + 'px';
             div.classList.add('fp-title-multiline');
+            if (isInterface85Context(ctx)) {
+                thLabel.style.maxHeight = '';
+                thLabel.style.minHeight = (th * 20) + 'px';
+                thLabel.style.lineHeight = '20px';
+                thLabel.style.textWrap = 'balance';
+                div.classList.add('fp-title-height-85');
+            }
+        }
+        var thDecoration = div.querySelector('.fp-label-decoration');
+        if (thDecoration) {
+            div.classList.add('fp-decoration-title-multiline');
+            div.style.setProperty('--fp-decoration-title-lines', String(th));
         }
     }
     var psize = normPictureSize(prop(item, ['PictureSize', 'РазмерКартинки']));
@@ -6809,8 +8383,29 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
         if (picBox) {
             picBox.classList.add('fp-picture-' + psize);
             if (w) picBox.style.width = w + 'px';
-            var picH = charHeight(prop(item, ['Height', 'Высота']));
-            if (picH) picBox.style.height = picH + 'px';
+            else if (stretch && (psize === 'proportionally' || psize === 'stretch'))
+                picBox.style.width = '100%';
+            /* An explicit MaxHeight (AutoMaxHeight=false) caps the authored
+             * Height instead of letting the picture paint past the item box:
+             * Height=6 with MaxHeight=5 is a 5-row picture, not a 6-row one
+             * spilling over the buttons underneath it. */
+            var picH = tag === 'PictureDecoration'
+                ? pictureDecorationHeightPx(prop(item, ['Height', 'Высота']), item, ctx)
+                : tag === 'PictureField'
+                ? pictureFieldHeightPx(prop(item, ['Height', 'Высота']), ctx)
+                : charHeight(prop(item, ['Height', 'Высота']));
+            if (picH && isFalse(prop(item, ['AutoMaxHeight'])) && mh) picH = Math.min(picH, mh);
+            if (psize === 'autosize' && tag === 'PictureDecoration' && isInterface85Context(ctx)) picH = 0;
+            if (vstretch && (psize === 'proportionally' || psize === 'stretch'))
+                picBox.style.height = '100%';
+            else if (picH) picBox.style.height = picH + 'px';
+        }
+    }
+    if (tag === 'PictureDecoration') {
+        var spacerWidthPx = pictureDecorationSpacerWidthPx(item);
+        if (spacerWidthPx) {
+            var spacerBox = div.querySelector('.fp-picture-icon');
+            if (spacerBox) spacerBox.style.width = spacerWidthPx + 'px';
         }
     }
     applyFonts(div, item, tag);
@@ -6908,6 +8503,10 @@ function collectStdCommandKeys(items, acc) {
     for (var i = 0; i < items.length; i++) {
         var it = items[i];
         if (!it) continue;
+        /* A hidden authored branch is a runtime alternative or an extension
+         * insertion point. Its standard-command placeholders do not replace
+         * the visible commands generated for the current form state. */
+        if (isFalse(prop(it, ['Visible', 'visible']))) continue;
         /* An extension can keep a standard button's inherited name while its
          * CommandName is serialized as 0. Such a button is filtered later and
          * must not suppress the synthetic standard replacement. */
@@ -6932,10 +8531,15 @@ function formStdCommandButtons(model) {
     if (bar && isFalse(prop(bar, ['Autofill']))) return [];
     var kind = formObjectKind(model);
     var out = [];
+    var authoredDefault = false;
+    walkFormItems({ childItems: model && model.childItemsRoot || [] }, function (item) {
+        if (item && item.tag === 'Button' && !isFalse(prop(item, ['Visible', 'visible']))
+            && isTrue(prop(item, ['DefaultButton']))) authoredDefault = true;
+    });
     if (kind === 'catalog' || isWritableReferenceObjectForm(model)) {
         if (!commandExcluded(model, 'WriteAndClose'))
             out.push(syntheticBtn('_stdWriteAndClose', 'Записать и закрыть', '', 'Text', {
-                DefaultButton: 'true',
+                DefaultButton: authoredDefault ? 'false' : 'true',
                 CommandName: 'Form.StandardCommand.WriteAndClose'
             }));
         if (!commandExcluded(model, 'Write'))
@@ -6956,11 +8560,12 @@ function formStdCommandButtons(model) {
             out.push(syntheticBtn('_stdPost', 'Провести', 'StdPicture.Post', 'Text', {
                 CommandName: 'Form.StandardCommand.Post'
             }));
+        if (isInterface85Mode(model && model.interfaceMode) && !commandExcluded(model, 'Post')
+            && !commandExcluded(model, 'UndoPosting'))
+            out.push(syntheticBtn('_stdUndoPosting', 'Отменить проведение', '', 'Text', {
+                CommandName: 'Form.StandardCommand.UndoPosting'
+            }));
     }
-    /* The reference paints «?» for exactly the objects that carry help content
-     * (e.g. a report: yes; documents and processors without help: no),
-     * whatever the object kind. Without an owner descriptor fall back to the
-     * catalog default. */
     var objectMeta = model && model.objectMeta;
     var hasHelp = objectMeta ? !!objectMeta.hasHelp : kind === 'catalog';
     if (hasHelp && !commandExcluded(model, 'Help'))
@@ -6970,25 +8575,23 @@ function formStdCommandButtons(model) {
     return out;
 }
 
-/* In the root document command panel the reference renders the persistence trio as the
- * platform's primary text actions. This role wins over an authored Picture
- * representation (common in generated Form.xml). Nested CommandBar controls
- * are author-owned and deliberately remain untouched. */
-function normalizeRootDocumentActions(items) {
+function normalizeRootDocumentActions(items, model) {
     var changed = false;
     var out = (items || []).map(function (item) {
         if (!item) return item;
         var role = stdCommandKey(item);
         var picture = String(pictureRef(item) || '').toLowerCase().replace(/[ _-]+/g, '');
-        /* CreateListItem is table-row chrome. When generated metadata reuses
-         * it on a root document command, the reference keeps the authored command as a
-         * text action instead of painting the table's plus glyph. */
         var rootTableGlyph = /(?:^|\.)createlistitem$/.test(picture);
-        var forceText = role === 'postandclose' || role === 'write' || role === 'post'
-            || rootTableGlyph;
+        var cleanWritePicture = role === 'write' && isInterface85Mode(model && model.interfaceMode)
+            && /^Form\.Command\./i.test(String(prop(item, ['CommandName']) || ''))
+            && /^StdPicture\.Write$/i.test(String(commandMeta(item, {
+                model: model, commands: commandIndex(model && model.commands)
+            }, 'picture') || ''));
+        var forceText = role === 'postandclose' || (role === 'write' && !cleanWritePicture)
+            || role === 'post' || rootTableGlyph;
         var children = item.childItems;
         var normalizedChildren = children;
-        if (children && children.length) normalizedChildren = normalizeRootDocumentActions(children);
+        if (children && children.length) normalizedChildren = normalizeRootDocumentActions(children, model);
         if (!forceText && normalizedChildren === children) return item;
         changed = true;
         var copy = {};
@@ -7011,16 +8614,39 @@ function normalizeRootDocumentActions(items) {
     return changed ? out : items;
 }
 
+/* A catalog root's explicitly pictorial standard Write button is a text action
+ * in the Taxi configurator. Keep other catalog commands and their authored
+ * representations intact. */
+function normalizeRootCatalogActions(items) {
+    var changed = false;
+    var out = (items || []).map(function (item) {
+        if (!item || stdCommandKey(item) !== 'write' || representationOf(item) !== 'picture') return item;
+        var copy = {};
+        for (var key in item) {
+            if (Object.prototype.hasOwnProperty.call(item, key)) copy[key] = item[key];
+        }
+        copy.properties = {};
+        var props = item.properties || {};
+        for (var propName in props) {
+            if (Object.prototype.hasOwnProperty.call(props, propName)) copy.properties[propName] = props[propName];
+        }
+        copy.properties.Representation = 'Text';
+        changed = true;
+        return copy;
+    });
+    return changed ? out : items;
+}
+
 function normalizeRootFormBar(bar, model) {
-    if (!bar || formObjectKind(model) !== 'document') return bar;
-    /* Change belongs to editable catalog object forms. Generated document
-     * forms can still inherit a direct root placeholder, but the reference omits it
-     * while preserving Change commands authored inside nested popups. */
+    var kind = formObjectKind(model);
+    if (!bar || (kind !== 'document' && kind !== 'catalog')) return bar;
     var rootItems = bar.childItems || [];
     var filtered = rootItems.filter(function (item) {
         return stdCommandKey(item) !== 'change';
     });
-    var children = normalizeRootDocumentActions(filtered);
+    var children = kind === 'catalog'
+        ? normalizeRootCatalogActions(filtered)
+        : normalizeRootDocumentActions(filtered, model);
     if (children === bar.childItems) return bar;
     var copy = {};
     for (var key in bar) {
@@ -7038,9 +8664,6 @@ function hoistedMainListItems(model) {
     return mainListStandardItems(model);
 }
 
-/* Records of a recorder-bound register are not created from its list: the reference
- * paints only the search for AccumulationRegister, while
- * InformationRegister/Task/ChartOf* /ExchangePlan lists keep Create/Copy. */
 function mainListCreatesRows(main) {
     var mainTable = String((main && main.settings && main.settings.mainTable) || '').trim();
     return !/^(AccumulationRegister|AccountingRegister|CalculationRegister|РегистрНакопления|РегистрБухгалтерии|РегистрРасчета)\./i
@@ -7131,6 +8754,12 @@ function tableSearchWithoutBarHoistedToForm(table, model) {
     if (String(prop(table, ['SearchStringLocation']) || 'Auto').toLowerCase() !== 'auto') return false;
     if (isFalse(prop(table, ['Visible', 'visible']))) return false;
     if (commandBarLocation(table) !== 'none') return false;
+    /* The platform generates the search string for a dynamic list, value
+     * table or tabular section; a value tree or value list takes it only with
+     * SearchStringLocation=CommandBar, and this path is Auto only. */
+    var attr = tableDataAttr(table, model);
+    if (attr && /(^|:)(ValueTree|ValueList|ДеревоЗначений|СписокЗначений)$/i.test(String(prop(attr, ['Type']) || '').trim()))
+        return false;
     var formBar = model.autoCommandBar;
     if (formBar && isFalse(prop(formBar, ['Autofill']))) return false;
     return commandBarLocation(model) !== 'none';
@@ -7234,6 +8863,13 @@ function searchControlForBar(search, bar) {
     var model = bar && bar._fpCtx && bar._fpCtx.model;
     if (!table || !model || !table.searchControlAddition) return null;
     if (additionHidden(table, 'SearchControlLocation') || !tableIsDynamicList(table, model)) return null;
+    if (interface85TableFilterCardWorkspace(model, table)) return null;
+    if (isPlatform85Model(model) && !isInterface85Mode(model.interfaceMode)
+        && table.autoCommandBar && (table.autoCommandBar.childItems || []).some(function (item) {
+            return item && item.tag === 'Button'
+                && /\.StandardCommand\.Refresh$/i.test(String(prop(item, ['CommandName']) || ''))
+                && /^InCommandBar$/i.test(String(prop(item, ['LocationInCommandBar']) || ''));
+        })) return null;
     if (bar._fpFormRootBar) {
         var main = mainAttribute(model);
         if (!main || String(prop(table, ['DataPath']) || '') !== main.name) return null;
@@ -7241,7 +8877,11 @@ function searchControlForBar(search, bar) {
     return table.searchControlAddition;
 }
 
-function makeSearchControlItem(item) {
+function searchControlPicture(ctx) {
+    return isInterface85Context(ctx) ? 'filter-list' : 'search';
+}
+
+function makeSearchControlItem(item, ctx) {
     var wrap = el('div', 'fp-item fp-control fp-bar-item fp-search-control-item');
     wrap._fpItem = item;
     wrap.dataset.id = itemKey(item);
@@ -7249,7 +8889,9 @@ function makeSearchControlItem(item) {
     var btn = el('button', 'fp-button fp-popup fp-search-control-btn');
     btn.type = 'button';
     btn.title = 'Управление поиском';
-    btn.appendChild(svgIcon('search', 'fp-btn-icon'));
+    /* Taxi paints the platform УправлениеПоиском bitmap (blue magnifier). */
+    if (isInterface85Context(ctx)) btn.appendChild(svgIcon(searchControlPicture(ctx), 'fp-btn-icon'));
+    else appendPictureIcon(btn, 'StdPicture.SearchControl', ctx, 'search');
     var caret = el('span', 'fp-caret');
     caret.textContent = '▾';
     btn.appendChild(caret);
@@ -7305,8 +8947,14 @@ function tableStdCommands(table, model) {
                 out.push(syntheticBtn('_stdCopy', 'Скопировать', 'StdPicture.CloneListItem', 'Picture', {
                     CommandName: 'Form.StandardCommand.Copy'
                 }));
-        } else if (!tableExcludes(table, ['Create', 'Add'])) {
-            out.push(syntheticBtn('_stdAdd', 'Добавить', '', 'Text'));
+        } else if (!tableExcludes(table, ['Create', 'Add'])
+            && (!isTrue(prop(table, ['AutoInsertNewRow']))
+                || !isPlatform85Model(model)
+                || (model && (/^taxienableversion8_5$/i.test(String(model.configInterfaceMode || ''))
+                        || isInterface85Mode(model.interfaceMode))
+                    && /^activate$/i.test(String(prop(table, ['InitialRowActivation']) || ''))))) {
+            out.push(syntheticBtn('_stdAdd', 'Добавить',
+                isInterface85Mode(model && model.interfaceMode) ? 'StdPicture.CreateListItem' : '', 'Text'));
         }
     }
     if (!isList && (!table || !isFalse(prop(table, ['ChangeRowOrder'])))) {
@@ -7328,9 +8976,6 @@ function isAdditionTag(tag) {
 }
 
 function additionHidden(item, locProp) {
-    /* The chart of accounts' ExtDimensionTypes collection is not a searchable
-     * tabular section: the reference paints neither the search string nor the filter
-     * labels over «Виды субконто», whatever the additions say. */
     if (item && item.tag === 'Table' && /\.ExtDimensionTypes$/i.test(String(prop(item, ['DataPath']) || ''))
         && /^(?:SearchStringLocation|ViewStatusLocation|SearchControlLocation)$/.test(locProp)) return true;
     var v = String(prop(item, [locProp]) || '').toLowerCase().replace(/[\s_-]+/g, '');
@@ -7401,7 +9046,8 @@ function inCellCaption(group, ctx) {
     var kids = group.childItems || [];
     for (var i = 0; i < kids.length; i++) {
         var it = kids[i];
-        if (!it || isFalse(prop(it, ['ShowInHeader']))) continue;
+        if (!it || isFalse(prop(it, ['Visible', 'visible']))
+            || isFalse(prop(it, ['ShowInHeader']))) continue;
         var pic = pictureRef(it) || prop(it, ['HeaderPicture']);
         if (it.tag === 'PictureField' || (pic && (titleLocation(it) === 'none' || !rawTitle(it)))) {
             hasGlyph = true;
@@ -7469,10 +9115,6 @@ function isPlainHorizontalColumnGroup(it) {
         && /^horizontal$|горизонт/i.test(String(prop(it, ['Group']) || '')));
 }
 
-/* A vertical ColumnGroup whose stack holds a horizontal subgroup of several
- * columns spans those physical columns: in [Регистратор, (Период|Номер
- * строки|...)] the reference paints «Регистратор» over the subgroup's
- * columns. */
 function isSpanningVerticalColumnGroup(it) {
     if (!isVerticalColumnGroup(it)) return false;
     var kids = headerShownChildren(it);
@@ -7598,9 +9240,6 @@ function tableHeaderNodeLayout(it) {
 function radioOptions(item) {
     var list = item && item.properties && item.properties.ChoiceListItems;
     if (list && list.length) return list.slice();
-    /* A runtime-filled radio has no design-time items; the reference shows one
-     * «<Значение N>» placeholder per authored column (ColumnsCount 2 gives
-     * two), and three without ColumnsCount (radio buttons and tumbler alike). */
     var columns = parseInt(prop(item, ['ColumnsCount']), 10) || 3;
     var placeholders = [];
     for (var i = 1; i <= Math.min(columns, 8); i++) placeholders.push('<Значение ' + i + '>');
@@ -7704,6 +9343,13 @@ function titleOf(item, ctx) {
         }
         if (STD_COMMANDS[short]) return STD_COMMANDS[short];
     }
+    /* An authored CommandBarButton can be named "ФормаКоманда1" even though
+     * its target command is "Команда1". The designer labels the button from
+     * that Form.Command reference when neither the button nor command has an
+     * explicit title; do not expose the generated child-item name. */
+    if (isCommandBarButton(item) && /^Form\.Command\./i.test(String(cmd || ''))
+            && ctx && ctx.commands && ctx.commands[lastSeg(cmd)])
+        return lastSeg(cmd);
     var path = prop(item, ['DataPath']);
     var cap = captionForPath(path, ctx && ctx.captionIndex);
     if (cap) return cap;
@@ -7765,7 +9411,13 @@ function titleLocation(item, parentMeta) {
         && String(prop(item, ['ColumnsCount', 'КоличествоКолонок']) || '') === '1'
         && !/tumbler|тумблер/i.test(String(prop(item, ['RadioButtonType', 'ВидПереключателя']) || '')))
         return 'top';
-    if (!v) return 'left';
+    if (!v && item && item.tag === 'Table') return 'none';
+    if ((!v || v === 'auto' || v === 'авто') && item
+        && (item.tag === 'Table' || (item.tag === 'InputField'
+            && (parseInt(prop(item, ['Height', 'Высота']), 10) > 1
+                || isTrue(prop(item, ['VerticalStretch', 'ВертикальноеРастягивание']))))))
+        return 'top';
+    if (!v || v === 'auto' || v === 'авто') return 'left';
     if (v === 'none' || v.indexOf('нет') >= 0) return 'none';
     if (v === 'right' || v.indexOf('прав') >= 0) return 'right';
     if (v === 'top' || v.indexOf('верх') >= 0) return 'top';
@@ -7866,9 +9518,6 @@ function normGroupRepresentation(raw) {
 }
 
 function effectiveThroughAlign(item, mode) {
-    /* The reference logical-group preparation first requires United. Collapsible and
-     * popup behavior disable through alignment after enum resolution. On the
-     * desktop Taxi path Auto is true only for Representation=None. */
     if (isFalse(prop(item, ['United', 'Объединять']))) return 'dontuse';
     if (groupBehavior(item) !== 'usual') return 'dontuse';
     if (mode === 'use') return 'use';
@@ -7898,9 +9547,6 @@ function defaultContainerOrientation(tag) {
 }
 
 function defaultContainerGroupMode(tag) {
-    /* The reference's ordinary-group default is HorizontalIfPossible. Treating an
-     * omitted Group as fixed Horizontal made the browser skip the same
-     * responsive vertical fallback that the generated layout input receives. */
     if (tag === 'UsualGroup' || tag === 'Group' || tag === 'CollapsibleGroup'
         || tag === 'ButtonGroup' || tag === 'ColumnGroup')
         return 'horizontal-if-possible';
@@ -7947,13 +9593,72 @@ function authoredContainerHeightUsesIntrinsicFloor(item) {
     });
 }
 
-/* The reference's designer expands a vertical PopUp group in place, so an authored
- * Height on any ordinary ancestor is only a floor: clipping it to one row lets
- * the expanded body overlay the following siblings. */
 function containsDesignerInlinePopUp(item) {
     if (!item || !isContainer(item.tag || '')) return false;
-    if (isPopUpGroup(item) && normGroupMode(prop(item, ['Group', 'Группа'])) === 'vertical') return true;
+    if (designerInlinePopUp(item)) return true;
     return visibleLayoutChildren(item).some(containsDesignerInlinePopUp);
+}
+
+function controlTitleLocation(item, tag, ctx, parentMeta) {
+    var loc = titleLocation(item, parentMeta);
+    var authoredLocation = String(prop(item, ['TitleLocation', 'ПоложениеЗаголовка']) || '');
+    if (!isInterface85Context(ctx) || titleLocationAuthored(item)
+        || (tag === 'CheckBoxField' && authoredLocation && !/^auto$/i.test(authoredLocation))) return loc;
+    if (loc === 'none' && parentMeta
+        && (parentMeta.tag === 'Form' || (parentMeta.orientation === 'horizontal' && parentMeta.singleInputChild
+            && !parentMeta.tooltipButton))
+        && /^none$/i.test(String(prop(item, ['TitleLocation', 'ПоложениеЗаголовка']) || '')))
+        return loc;
+    if (tag === 'LabelField' && !ctx.controlGallery85
+        && !(parentMeta && parentMeta.tag === 'Form' && parentMeta.orientation === 'vertical'))
+        return loc;
+    if (tag === 'InputField' || tag === 'ValueList' || tag === 'LabelField'
+        || tag === 'RadioButton' || tag === 'RadioButtonField') return 'top';
+    if (tag === 'CheckBoxField') {
+        var checkBoxType = String(prop(item, ['CheckBoxType', 'ВидФлажка']) || '')
+            .toLowerCase().replace(/[\s_-]+/g, '');
+        return checkBoxType === 'tumbler' ? 'top' : 'right';
+    }
+    return loc;
+}
+
+/* The gallery detector enables reference geometry for one known control
+ * composition. Control appearance and 8.5 Auto captions use the shared profile
+ * regardless of whether this composition is present. */
+function isInterface85ControlGallery(model) {
+    if (!model || !isInterface85Mode(model.interfaceMode)) return false;
+    var counts = {};
+    function visit(item) {
+        if (!item) return;
+        counts[item.tag] = (counts[item.tag] || 0) + 1;
+        var children = item.childItems || [];
+        for (var i = 0; i < children.length; i++) visit(children[i]);
+    }
+    var roots = displayItems(model);
+    for (var i = 0; i < roots.length; i++) visit(roots[i]);
+    var galleryColumns = roots.some(function (rootItem) {
+        if (!rootItem || (rootItem.tag !== 'UsualGroup' && rootItem.tag !== 'Group')) return false;
+        if (normGroupMode(prop(rootItem, ['Group', 'Группа'])) !== 'horizontal') return false;
+        var columns = visibleLayoutChildren(rootItem);
+        return columns.length === 3 && columns.every(function (column) {
+            return column && (column.tag === 'UsualGroup' || column.tag === 'Group')
+                && normGroupMode(prop(column, ['Group', 'Группа'])) === 'vertical';
+        });
+    });
+    return galleryColumns
+        && (counts.InputField || 0) >= 8
+        && (counts.CheckBoxField || 0) >= 3
+        && ((counts.RadioButtonField || 0) + (counts.RadioButton || 0)) >= 2
+        && (counts.Button || 0) >= 4
+        && (counts.LabelDecoration || 0) >= 2
+        && (counts.Pages || 0) >= 1
+        && (counts.Table || 0) >= 1;
+}
+
+function designerInlinePopUp(item) {
+    return isPopUpGroup(item)
+        && normGroupMode(prop(item, ['Group', 'Группа'])) === 'vertical'
+        && !formVersionAtLeast(item, '2.21');
 }
 
 function isEmptyLabelDecoration(item) {
@@ -7964,6 +9669,10 @@ function visibleLayoutChildren(item) {
     return item && item.childItems ? item.childItems.filter(function (child) {
         return child && !isFalse(prop(child, ['Visible', 'visible'])) && !isAdditionTag(child.tag);
     }) : [];
+}
+
+function hasVisibleLayoutChild(item) {
+    return visibleLayoutChildren(item).length > 0;
 }
 
 function firstLayoutLeaf(item) {
@@ -7994,17 +9703,11 @@ function isTitledDecorationLeaf(item) {
 }
 
 function pictureDecorationIconId(ref) {
-    /* An unresolved decoration is an empty image surface in the reference. The generic
-     * `photo` glyph is useful for command discovery, but turns absent metric
-     * pictures into four visible fake icons in the rendered form. */
     var icon = iconIdFromRef(ref);
     return icon === 'photo' ? '' : icon;
 }
 
 function emptyDecorationIsCompactInParent(item, parentMeta) {
-    /* With explicit VerticalSpacing=None an empty decoration contributes
-     * only the compact logical spacer track. Omitted spacing is different:
-     * the reference retains such a decoration as an authored section spacer. */
     if (!parentMeta || parentMeta.orientation !== 'vertical'
         || parentMeta.verticalSpacing !== 'none') return false;
     return isEmptyLabelDecoration(item);
@@ -8051,10 +9754,6 @@ function omittedVerticalSectionSpacing(previous, current) {
     var radioEdge = previous && (previous.tag === 'RadioButtonField' || previous.tag === 'RadioButton')
         || current && (current.tag === 'RadioButtonField' || current.tag === 'RadioButton')
         || isRadioLayoutLeaf(previous) || isRadioLayoutLeaf(current);
-    /* The source radio edge is projected through both its RichElement lane and
-     * the following wrapper. Each projected boundary contributes 7px; together
-     * they reproduce the reference's section cadence without doubling the full 9px step.
-     * Empty authored spacers still establish the full Single section step. */
     return radioEdge ? 7
         : TAXI_LAYOUT_METRICS.verticalSpacing.single;
 }
@@ -8072,8 +9771,6 @@ function applyOmittedVerticalSectionBoundaries(box, parent) {
         if (omittedVerticalSectionBoundary(previous, node._fpItem, parent)) {
             var extra = omittedVerticalSectionSpacing(previous, node._fpItem)
                 - TAXI_LAYOUT_METRICS.compactRowGap;
-            /* Two wrappers already sit on the compact 3px row-gap. Subtracting
-             * it again would leave the row 3px above the reference. */
             if (previous && isContainer(previous.tag || '')
                 && isContainer(node._fpItem.tag || '')
                 && isTitledDecorationLeaf(previous) && isRadioLayoutLeaf(node._fpItem))
@@ -8127,17 +9824,11 @@ function automaticCompoundSelectorChildren(visibleKids, groupMode) {
     return selectors;
 }
 
-/* A pane the reference may put a splitter beside: more than one logical row high — a
- * multi-line element, or a group of several rows (the reference splitter rule;
- * whether it stretches is decided by the rendered fp-hstretch class). */
 var SPLITTER_MULTILINE_TAGS = {
     Table: 1, TextDocumentField: 1, SpreadSheetDocumentField: 1, FormattedDocumentField: 1,
     HTMLDocumentField: 1, GraphicalSchemaField: 1, PlannerField: 1, ChartField: 1,
     GanttChartField: 1, DendrogramField: 1, Pages: 1
 };
-/* Stretch of the element itself: ChildItemsWidth=Equal shares the row but
- * gives a column no stretch of its own (a group holding only fixed fields
- * gets no splitter beside it in the reference). */
 function ownHorizontalStretch(item, tag, parentMeta, ctx) {
     var plain = {};
     for (var key in parentMeta || {})
@@ -8146,9 +9837,6 @@ function ownHorizontalStretch(item, tag, parentMeta, ctx) {
     return wantsHStretch(item, tag, plain, ctx) || carriesWrappingText(item);
 }
 
-/* Wrapping text stretches its column: a dynamic-height LabelDecoration or an
- * extended tooltip painted on the form (two columns with ShowAuto hints get
- * a splitter between them in the reference). */
 function carriesWrappingText(item) {
     if (!item || isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))) return false;
     if (item.tag === 'LabelDecoration' && labelDecorationCanDynamicHeight(item)) return true;
@@ -8156,16 +9844,28 @@ function carriesWrappingText(item) {
     return isContainer(item.tag) && visibleLayoutChildren(item).some(carriesWrappingText);
 }
 
+/* AutoMaxWidth=false with a MaxWidth caps a value field without fixing it:
+ * its width is not min == max, which is what the splitter rule asks. */
+function cappedSplitterField(item, tag) {
+    return (tag === 'InputField' || tag === 'LabelField')
+        && !isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
+        && isFalse(prop(item, ['AutoMaxWidth']))
+        && !!charSize(prop(item, ['MaxWidth', 'МаксимальнаяШирина']))
+        && !charSize(prop(item, ['Width', 'Ширина']));
+}
+
 function splitterPane(child, ctx) {
     if (!child) return false;
-    /* A table grows only through a stretchable column: a table with one
-     * HorizontalStretch=false column gets no splitter between it and its
-     * neighbour in the reference. */
-    if (child.tag === 'Table') return (child.childItems || []).some(function (column) {
-        return column && !isFalse(prop(column, ['Visible', 'visible'])) && !isAdditionTag(column.tag)
-            && column.tag !== 'CheckBoxField'
-            && !isFalse(prop(column, ['HorizontalStretch', 'ГоризонтальноеРастягивание']));
-    });
+    if (child.tag === 'Table') {
+        var columns = (child.childItems || []).filter(function (column) {
+            return column && !isFalse(prop(column, ['Visible', 'visible'])) && !isAdditionTag(column.tag);
+        });
+        if (!columns.length) return true;
+        return columns.some(function (column) {
+            return column.tag !== 'CheckBoxField'
+                && !isFalse(prop(column, ['HorizontalStretch', 'ГоризонтальноеРастягивание']));
+        });
+    }
     if (SPLITTER_MULTILINE_TAGS[child.tag]) return true;
     if (child.tag === 'InputField' && isMultilineField(child, ctx)) return true;
     /* A title above its value is two logical rows. */
@@ -8204,6 +9904,8 @@ function layoutMeta(item) {
     var bare = (tag === 'UsualGroup' || tag === 'Group' || tag === 'CollapsibleGroup' || tag === 'Page' || tag === 'ButtonGroup')
         && groupPaintIsNone(item);
     var hints = ['container', 'container-' + orientation];
+    if (tag === 'Page' && /^center$/i.test(String(prop(item, ['HorizontalAlign', 'ГоризонтальноеВыравнивание']) || '')))
+        hints.push('page-child-center-horizontal');
     if (indent) hints.push('container-indent');
     if (bare) hints.push('container-bare');
     var noWrap = isBar || groupMode === 'horizontal' || groupMode === 'always-horizontal';
@@ -8297,27 +9999,13 @@ function layoutMeta(item) {
         && visibleKids.every(function (child) { return !isSpecialRowLayoutTag(child.tag); })
         && visibleKids.every(function (child) { return !isContainer(child.tag || ''); })
         && (decorationPair || (fixedOrdinaryAxis && !onlyDecorations));
-    /* An inline vertical PopUp is painted as an expanded information stack in
-     * The reference's designer. Its omitted VerticalSpacing therefore keeps the native
-     * Single cadence across every ordinary child, not only the compact
-     * two-control topology above. Keep data grids and other special layout
-     * owners out of this rule: they establish their own chrome cadence. */
     var inlinePopupVerticalCadence = isOrdinaryLayoutContainerTag(tag) && united
         && groupMode === 'vertical' && groupRepresentation === 'none'
-        && groupBehavior(item) === 'popup' && visibleKids.length > 1
+        && designerInlinePopUp(item) && visibleKids.length > 1
         && visibleKids.every(function (child) { return !isSpecialRowLayoutTag(child.tag); });
-    /* HorizontalIfPossible is selected after measurement; assigning its
-     * initial horizontal axis here shifts responsive label/value grids that
-     * The reference ultimately stacks vertically. Detached United=false groups are
-     * projected into their parent's grid and do not own a split gap. */
     defaultHs = compactOrdinaryRows
         && (groupMode === 'horizontal' || groupMode === 'always-horizontal')
         && !String(rawHs || '').trim();
-    /* Vertical Single 9px is same-control compact pairs: two InputFields
-     * (document header) or two CheckBoxFields. A checkbox stacked with its
-     * month field stays on omitted 3px — mixing those published 9px and
-     * shoved the next field below the reference.
-     * Chrome-drop via compactOrdinaryRows still applies. */
     var compactVerticalSingleCadence = compactOrdinaryRows && groupMode === 'vertical'
         && visibleKids.length === 2
         && visibleKids[0].tag === visibleKids[1].tag
@@ -8356,12 +10044,19 @@ function layoutMeta(item) {
                     return isFalse(prop(child, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
                         && charSize(prop(child, ['Width', 'Ширина']));
                 });
+            var followsSelectionControl = stretchIndex === visibleKids.length - 1
+                && stretchTag === 'InputField'
+                && candidateTitleLocation === 'none'
+                && !charSize(prop(stretchCandidate, ['Width', 'Ширина']))
+                && visibleKids.slice(0, stretchIndex).some(function (child) {
+                    return child.tag === 'CheckBoxField' || child.tag === 'RadioButtonField';
+                });
             var compoundSelectorRow = stretchIndex === 1 && visibleKids.length === 3
                 && visibleKids[0].tag === 'InputField'
                 && (visibleKids[2].tag === 'Button' || visibleKids[2].tag === 'Hyperlink')
                 && candidateTitleLocation === 'none';
             if ((stretchIndex === visibleKids.length - 1 && followsFixedAuthoredTrack)
-                || compoundSelectorRow) {
+                || followsSelectionControl || compoundSelectorRow) {
                 defaultStretchChild = stretchCandidate;
                 break;
             }
@@ -8383,12 +10078,20 @@ function layoutMeta(item) {
          * sibling columns into one text maximum is not that relationship. */
         thScope = thMode === 'use' ? 'across-columns' : 'linked-local';
     }
-    /* The reference enables splitters for a group whose spacing along its axis is
-     * Single or wider; the pairs themselves are marked fp-splitter-pane by
-     * createItem (both stretch, both more than one row high). One-line
-     * columns get none. */
     var automaticColumnSeparators = orientation === 'horizontal'
-        && hs !== 'none' && hs !== 'half' && visibleKids.length > 1;
+        && hs !== 'none' && hs !== 'half' && visibleKids.length > 1
+        && !isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']));
+    var separatedTrailingColumn = (groupMode === 'horizontal' || groupMode === 'always-horizontal')
+        && groupRepresentation === 'none' && !cw && visibleKids.length === 2
+        && visibleKids.every(function (child) {
+            return isContainer(child.tag || '')
+                && (normOrient(prop(child, ['Group', 'GroupOrientation', 'Orientation', 'Layout',
+                    'Группировка', 'Ориентация', 'Расположение']))
+                    || defaultContainerOrientation(child.tag)) === 'vertical';
+        })
+        && normGroupRepresentation(prop(visibleKids[1], ['Representation', 'Отображение']))
+            === 'normal-separation';
+    if (separatedTrailingColumn) hints.push('separated-column-gutter');
     return {
         tag: tag, orientation: orientation, groupMode: groupMode,
         authoredWidth: charSize(prop(item, ['Width', 'Ширина'])) || 0,
@@ -8407,11 +10110,14 @@ function layoutMeta(item) {
         flexJustifyContent: jc, flexAlignItems: ai,
         separated: separated, automaticColumnSeparators: automaticColumnSeparators,
         explicitWidth: charSize(prop(item, ['Width', 'Ширина'])),
+        fixedWidth: isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание'])),
+        fixedColumnLaneRow: !!(item && item._fpFixedColumnLaneRow),
         hasLargeFixedWidthChild: visibleKids.some(function (child) {
             return isFalse(prop(child, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
                 && (parseInt(prop(child, ['Width', 'Ширина']), 10) || 0) >= 45;
         }),
         singleInputChild: visibleKids.length === 1 && visibleKids[0].tag === 'InputField',
+        tooltipButton: /button|кнопка/i.test(String(prop(item, ['ToolTipRepresentation', 'ОтображениеПодсказки']) || '')),
         inputThenLabelField: orientation === 'horizontal' && visibleKids.length === 2
             && visibleKids[0].tag === 'InputField' && visibleKids[1].tag === 'LabelField'
             && !!prop(visibleKids[1], ['DataPath']),
@@ -8450,6 +10156,7 @@ function applyLayout(el, meta) {
         el.dataset.fpThroughAlignScope = meta.throughAlignScope || 'local';
         el.dataset.fpChildItemsWidth = meta.childItemsWidth || '';
         el.dataset.fpVerticalSpacingMode = meta.verticalSpacing || '';
+        el.dataset.fpHorizontalSpacingMode = meta.horizontalSpacing || '';
         if (meta.hasLargeFixedWidthChild) el.dataset.fpHasLargeFixedWidthChild = '1';
         else delete el.dataset.fpHasLargeFixedWidthChild;
         el.dataset.fpSelectedOrientation = meta.orientation || 'vertical';
@@ -8505,20 +10212,25 @@ function formattedTextParts(value) {
         /* <b>…</> is bold. */
         var bold = stack.indexOf('b') >= 0;
         var underline = stack.indexOf('u') >= 0;
-        /* <color #RRGGBB> or <colorstyle N:uuid>. The reference does not resolve a style
-         * reference inside a formatted string and paints it magenta. */
         var color = '';
-        for (var c = stack.length - 1; c >= 0 && !color; c--) {
-            if (stack[c] === 'colorstyle') color = '#ff00ff';
-            else if (stack[c] === 'color') color = absoluteColor(args[c]) || '';
+        var fontSize = 0;
+        for (var c = stack.length - 1; c >= 0; c--) {
+            if (!color && stack[c] === 'colorstyle') color = '#ff00ff';
+            else if (!color && stack[c] === 'color') color = absoluteColor(args[c]) || '';
+            if (!fontSize && stack[c] === 'fontsize') {
+                var points = Number(args[c]);
+                if (isFinite(points) && points > 0 && points <= 72)
+                    fontSize = Math.round(points * FONT_BASE_PX / FONT_BASE_PT);
+            }
         }
         var prev = parts.length ? parts[parts.length - 1] : null;
         if (prev && prev.link === link && !!prev.bold === bold && !!prev.underline === underline
-            && (prev.color || '') === color) { prev.text += text; return; }
+            && (prev.color || '') === color && (prev.fontSize || 0) === fontSize) { prev.text += text; return; }
         var part = { text: text, link: link };
         if (bold) part.bold = true;
         if (underline) part.underline = true;
         if (color) part.color = color;
+        if (fontSize) part.fontSize = fontSize;
         parts.push(part);
     }
     while (pos < source.length) {
@@ -8590,10 +10302,11 @@ function setFormattedText(node, value, forceLink, formatted) {
         } else {
             partNode = document.createTextNode(parts[i].text);
         }
-        if (parts[i].underline || parts[i].color) {
+        if (parts[i].underline || parts[i].color || parts[i].fontSize) {
             var styled = el('span', 'fp-rich-styled');
             if (parts[i].underline) styled.style.textDecoration = 'underline';
             if (parts[i].color) styled.style.color = parts[i].color;
+            if (parts[i].fontSize) styled.style.fontSize = parts[i].fontSize + 'px';
             styled.appendChild(partNode);
             partNode = styled;
         }
@@ -8615,9 +10328,6 @@ function fallbackWidget(label, tag) {
 }
 
 function chartWidget() {
-    /* A static stand-in for the platform line chart, laid out like the reference's:
-     * value axis captions end at x=120, the first grid line is
-     * 12px under the field top and the rows are 21px apart. */
     var chart = el('div', 'fp-chart-widget');
     var grid = '', labels = '', values = ['0,00002', '0,000018', '0,000016', '0,000014', '0,000012',
         '0,00001', '0,000008', '0,000006', '0,000004', '0,000002'];
@@ -8630,13 +10340,17 @@ function chartWidget() {
     chart.innerHTML = '<svg class="fp-chart-svg" viewBox="0 0 450 240" preserveAspectRatio="none" aria-hidden="true">'
         + '<path class="fp-chart-grid" d="' + grid + '"/>'
         + '<g class="fp-chart-labels">' + labels + '</g>'
-        + '<path class="fp-chart-line fp-chart-line-red" d="M170 240C190 -52 246 -52 266 240"/>'
-        + '<path class="fp-chart-line fp-chart-line-blue" d="M266 240C286 -52 342 -52 362 240"/>'
-        + '<path class="fp-chart-line fp-chart-line-yellow" d="M288 240C296 110 300 24 314 24C350 20 390 26 410 35"/>'
-        + '<rect class="fp-chart-marker-red" x="214" y="8" width="8" height="8"/>'
-        + '<path class="fp-chart-marker-blue" d="M314 7L319 12L314 17L309 12Z"/>'
-        + '<circle class="fp-chart-marker-yellow" cx="314" cy="24" r="4"/>'
-        + '<circle class="fp-chart-marker-yellow" cx="410" cy="35" r="4"/></svg>';
+        + '<path class="fp-chart-line fp-chart-line-blue" d="M124 37 C160 35 190 31 218 31 S286 55 314 78 S370 80 410 75"/>'
+        + '<path class="fp-chart-line fp-chart-line-red" d="M124 111 C160 120 190 122 218 119 S286 105 314 85 S370 49 410 47"/>'
+        + '<path class="fp-chart-line fp-chart-line-green" d="M124 92 C160 95 190 103 218 103 S286 110 314 108 S370 96 410 80"/>'
+        + '<path class="fp-chart-line fp-chart-line-yellow" d="M124 175 C165 169 198 150 218 125 S276 60 314 40 S372 75 410 130"/>'
+        + '<path class="fp-chart-marker-blue" d="M124 32L129 37L124 42L119 37Z"/>'
+        + '<path class="fp-chart-marker-blue" d="M218 26L223 31L218 36L213 31Z"/>'
+        + '<path class="fp-chart-marker-green" d="M124 87L129 92L124 97L119 92Z"/>'
+        + '<path class="fp-chart-marker-green" d="M218 98L223 103L218 108L213 103Z"/>'
+        + '<path class="fp-chart-marker-green" d="M410 75L415 80L410 85L405 80Z"/>'
+        + '<circle class="fp-chart-marker-yellow" cx="314" cy="40" r="4"/>'
+        + '<rect class="fp-chart-marker-red" x="406" y="43" width="8" height="8"/></svg>';
     return chart;
 }
 
@@ -8647,7 +10361,7 @@ function referenceTypeSupportsOpen(type) {
 
 function inputButtonKinds(item, ctx) {
     if (item && item.runtime && item.runtime.inputButtonKinds)
-        return item.runtime.inputButtonKinds.slice();
+        return inputButtonKindsForInterface(item, ctx, item.runtime.inputButtonKinds.slice());
     var info = typeInfoFromItem(item, ctx);
     var features = typeFeaturesOf(info.types, info.dateFraction, info.numberQ);
     if (!info.types.length) {
@@ -8660,7 +10374,7 @@ function inputButtonKinds(item, ctx) {
     var buttons = resolveInputFieldButtons(item, features, {
         multiValue: false
     });
-    return inputButtonKindsFromButtons(item, ctx, buttons);
+    return inputButtonKindsForInterface(item, ctx, inputButtonKindsFromButtons(item, ctx, buttons));
 }
 
 function appendInputButtons(field, item, ctx) {
@@ -8668,7 +10382,7 @@ function appendInputButtons(field, item, ctx) {
     for (var i = 0; i < kinds.length; i++) {
         var kind = kinds[i];
         if (kind === 'dots') {
-        var choiceBtn = iconBtn('dots');
+        var choiceBtn = iconBtn(isInterface85Context(ctx) ? 'dots-85' : 'dots');
         choiceBtn.classList.add('fp-choice-button');
         var runtime = item && item.runtime;
         if (runtime && runtime.choiceParameterLinks && runtime.choiceParameterLinks.length)
@@ -8676,32 +10390,61 @@ function appendInputButtons(field, item, ctx) {
         if (runtime && runtime.choiceParameters && runtime.choiceParameters.length)
             choiceBtn.dataset.choiceParameters = JSON.stringify(runtime.choiceParameters);
         field.appendChild(choiceBtn);
+        } else if (kind === 'calendar') {
+            var blankBtn = el('span', 'fp-input-btn fp-choice-button fp-choice-button-blank');
+            field.appendChild(blankBtn);
         } else if (kind === 'spin') {
             /* SpinButton stacks the up/down pair at the right edge. */
             var spin = el('span', 'fp-spin');
-            spin.appendChild(el('span', 'fp-spin-up', '▴'));
+            /* The clean 8.5 client puts «down» before «up». */
+            var spin85 = isInterface85Context(ctx);
+            if (!spin85) spin.appendChild(el('span', 'fp-spin-up', '▴'));
             spin.appendChild(el('span', 'fp-spin-down', '▾'));
+            if (spin85) spin.appendChild(el('span', 'fp-spin-up', '▴'));
             field.appendChild(spin);
         } else {
-            field.appendChild(iconBtn(kind));
+            var galleryIcon = kind;
+            if (isInterface85Context(ctx) && kind === 'open-1c') galleryIcon = 'open-85';
+            else if (isInterface85Context(ctx) && kind === 'caret-down') galleryIcon = 'caret-down-85';
+            var assets85 = isInterface85Context(ctx) ? platform85Assets() : null;
+            if (kind === 'x' && assets85 && assets85.editorButtons && assets85.editorButtons.x) {
+                /* 8.5 clears with its round cross, not the Taxi bitmap «x». */
+                var clearBtn = el('span', 'fp-input-btn fp-input-btn-x fp-input-btn-x-85');
+                var clearIcon = el('img', 'fp-btn-icon');
+                clearIcon.alt = '';
+                clearIcon.setAttribute('aria-hidden', 'true');
+                clearIcon.src = svgDataUrl(assets85.editorButtons.x);
+                clearBtn.appendChild(clearIcon);
+                field.appendChild(clearBtn);
+                continue;
+            }
+            field.appendChild(iconBtn(galleryIcon));
         }
     }
 }
 
-function withColon(label, loc) {
+function withColon(label, loc, interface85) {
     if (!label || (loc !== 'left' && loc !== 'top')) return label;
+    /* The clean 8.5 client paints top captions as plain labels; only a caption
+     * beside its control («Заголовок:», an authored Left) keeps the colon. */
+    if (interface85 && loc !== 'left') return label;
     if (/[:：]$/.test(label)) return label;
     return label + ':';
 }
 
-function radioOptionsLayout(item, optionCount) {
+function radioOptionsLayout(item, optionCount, interface85) {
     var columns = parseInt(prop(item, ['ColumnsCount']), 10) || 0;
     if (columns === 1)
         return { className: 'fp-radio-stack fp-radio-column', columns: 1 };
     if (columns > 1)
         return { className: 'fp-radio-stack fp-radio-grid', columns: columns };
+    var orientation = String(prop(item, ['Orientation', 'Ориентация']) || '')
+        .toLowerCase().replace(/[\s_-]+/g, '');
+    if (!orientation && !interface85)
+        return { className: 'fp-radio-stack' + (optionCount <= 4 ? ' fp-radio-row' : ''), columns: 0 };
+    var horizontal = orientation.indexOf('horizontal') >= 0 || orientation.indexOf('горизонт') >= 0;
     return {
-        className: 'fp-radio-stack' + (optionCount <= 4 ? ' fp-radio-row' : ''),
+        className: 'fp-radio-stack' + (horizontal ? ' fp-radio-row' : ' fp-radio-column'),
         columns: 0
     };
 }
@@ -8722,10 +10465,25 @@ function makeFieldInput(item, loc, label, ctx) {
     var wrap = el('div', 'fp-control-wrap fp-field-row fp-title-' + loc);
     if (!prop(item, ['TitleLocation', 'ПоложениеЗаголовка']))
         wrap.classList.add('fp-title-auto');
-    var shown = withColon(label, loc);
-    if (shown && loc !== 'none') wrap.appendChild(el('span', 'fp-field-label', shown));
+    if (isInterface85Context(ctx) && isTrue(prop(item, ['MarkRequiredComplete'])))
+        wrap.classList.add('fp-mark-required-85');
+    var shown = withColon(label, loc, isInterface85Context(ctx));
+    if (shown && loc !== 'none') {
+        var fieldLabel = el('span', 'fp-field-label');
+        if (isTrue(prop(item, ['MarkRequiredComplete', 'ОтмечатьЗаполнениеОбязательного']))) {
+            var requiredMarker = el('span', 'fp-required-marker', '*');
+            requiredMarker.setAttribute('aria-hidden', 'true');
+            fieldLabel.appendChild(requiredMarker);
+        }
+        fieldLabel.appendChild(document.createTextNode(shown));
+        wrap.appendChild(fieldLabel);
+    }
     if (shown && loc === 'left' && /\r?\n/.test(shown)) wrap.classList.add('fp-title-wrap');
     var field = el('div', 'fp-input-wrap');
+    if (isInterface85Context(ctx)) {
+        wrap.classList.add('fp-field-85');
+        field.classList.add('fp-input-85');
+    }
     /* AutoMaxWidth=false with a MaxWidth and no Width: the platform TextBox keeps
      * that width (MaxWidth·10 + 11: MaxWidth 15 → 161) and its side caption
      * wraps in the narrow column instead of squeezing the editor to 90 px. */
@@ -8740,19 +10498,17 @@ function makeFieldInput(item, loc, label, ctx) {
     if (!multiline) inp.type = 'text';
     else {
         var rows = parseInt(prop(item, ['Height', 'Высота']), 10);
-        /* Height=1 is still a real one-row multiline editor in 1C. The reference's
-         * generated height=2 maps to about 55 px; with the browser's textarea
-         * metrics the existing three-row fallback is the visual equivalent. */
-        /* An explicit MultiLine=true without Height is the reference's 2-row 55 px
-         * editor; a type-driven multiline keeps 3 rows = 85 px. */
-        var defaultRows = isTrue(prop(item, ['MultiLine'])) ? 2 : 3;
+        var interface85Multiline = isInterface85Context(ctx);
+        var defaultRows = isTrue(prop(item, ['MultiLine'])) && !interface85Multiline ? 2 : 3;
         var editorRows = rows > 0 ? rows : defaultRows;
         inp.rows = editorRows;
         wrap.classList.add('fp-multiline');
-        /* TextBox Height n is 25 + 30·(n−1) px; an omitted Height on
-         * a multiline editor is 3 rows = 85 px. The browser's rows=3
-         * textarea is only ~52 px. */
-        field.style.minHeight = (25 + 30 * (editorRows - 1)) + 'px';
+        var rowStep85 = /enlarged|увелич/i.test(String(prop(item, ['TextSize']) || '')) ? 69 : 57;
+        var editorHeight = !interface85Multiline ? 25 + 30 * (editorRows - 1)
+            : isCompactScale85(ctx) ? 32 + 51 * (editorRows - 1)
+            : 40 + rowStep85 * (editorRows - 1);
+        field.style.minHeight = editorHeight + 'px';
+        if (interface85Multiline) field.dataset.fpMultilineHeight = String(editorHeight);
     }
     inp.readOnly = true;
     inp.tabIndex = -1;
@@ -8761,10 +10517,13 @@ function makeFieldInput(item, loc, label, ctx) {
      * preview, so a fixed run of dots is what the field looks like when filled. */
     if (isTrue(prop(item, ['PasswordMode', 'РежимПароля']))) {
         inp.classList.add('fp-input-password');
-        ph = '••••••••';
+        /* The clean 8.5 designer paints an empty password editor. */
+        ph = isInterface85Context(ctx) ? '' : '••••••••';
     }
     if (ph) inp.value = ph;
-    if (isTrue(prop(item, ['ReadOnly'])) || isDefaultInactiveStandardField(item, ctx)) {
+    var tabularTotal85 = isInterface85Context(ctx)
+        && /\.(?:Total|Итог)[^.]+$/.test(String(prop(item, ['DataPath']) || ''));
+    if (isTrue(prop(item, ['ReadOnly'])) || isDefaultInactiveStandardField(item, ctx) || tabularTotal85) {
         inp.classList.add('fp-input-readonly');
         field.classList.add('fp-input-readonly-wrap');
     }
@@ -8774,11 +10533,40 @@ function makeFieldInput(item, loc, label, ctx) {
     if (marksIncomplete(item, ctx) && !isDefaultInactiveStandardField(item, ctx)) inp.classList.add('fp-input-incomplete');
     var ha = String(prop(item, ['HorizontalAlign']) || '').toLowerCase();
     if (ha.indexOf('right') >= 0 || ha.indexOf('прав') >= 0) inp.style.textAlign = 'right';
+    var leadingPicture = pictureRef(item);
+    if (leadingPicture && ctx && isPlatform85Model(ctx.model)) {
+        field.classList.add('fp-input-leading-picture-85');
+        appendPictureIcon(field, leadingPicture, ctx,
+            iconIdFromRef(leadingPicture) || 'search', 'fp-input-leading-icon-85');
+    }
     field.appendChild(inp);
-    if (!multiline) appendInputButtons(field, item, ctx);
-    wrap.appendChild(field);
-    /* A ReadOnly text area paints no side column in the reference, even with
-     * ExtendedEditMultipleValues. */
+    var external85Buttons = null;
+    if (!multiline) {
+        appendInputButtons(field, item, ctx);
+        var kinds85 = isInterface85Context(ctx) ? inputButtonKinds(item, ctx) : [];
+        if (loc === 'top' && kinds85.indexOf('spin') >= 0
+            && kinds85.indexOf('open-1c') >= 0) {
+            external85Buttons = el('div', 'fp-editor-actions-85');
+            var spinButtons = field.querySelector('.fp-spin');
+            if (spinButtons) {
+                var spinDown = spinButtons.querySelector('.fp-spin-down');
+                var spinUp = spinButtons.querySelector('.fp-spin-up');
+                if (spinDown) external85Buttons.appendChild(spinDown);
+                if (spinUp) external85Buttons.appendChild(spinUp);
+                spinButtons.remove();
+            }
+            var createButton = field.querySelector('.fp-input-btn-plus');
+            if (createButton) external85Buttons.appendChild(createButton);
+            var openButton = field.querySelector('.fp-input-btn-open-85');
+            if (openButton) external85Buttons.appendChild(openButton);
+        }
+    }
+    if (external85Buttons && external85Buttons.children.length) {
+        var editorRow85 = el('div', 'fp-editor-row-85');
+        editorRow85.appendChild(field);
+        editorRow85.appendChild(external85Buttons);
+        wrap.appendChild(editorRow85);
+    } else wrap.appendChild(field);
     if (multiline && !isTrue(prop(item, ['ReadOnly', 'ТолькоПросмотр']))) {
         var sideButtons = el('div', 'fp-multiline-buttons');
         appendInputButtons(sideButtons, item, ctx);
@@ -8793,22 +10581,12 @@ function makeFieldInput(item, loc, label, ctx) {
 function isDefaultInactiveStandardField(item, ctx) {
     var path = String(prop(item, ['DataPath']) || '');
     if (!/^(Объект|Object)\.(Code|Number|Код|Номер)$/i.test(path)) return false;
-    /* The designer greys an automatically numbered code only. Exchange
-     * plans, charts of accounts and of calculation types have no
-     * Autonumbering at all: their code is typed in (ordinary editors in
-     * the reference). */
+    if (isInterface85Context(ctx)) return false;
     var meta = ctx && ctx.model && ctx.model.objectMeta;
     if (meta && !/^true$/i.test(meta.autonumbering || '')) return false;
     return !prop(item, ['Enabled', 'Доступность', 'Доступен']) && !prop(item, ['ReadOnly']);
 }
 
-/* A text popup: the reference draws the caption at the ordinary 13px inset and pins
- * the arrow 6px before the right border. The widths the command-bar rules tune
- * to the reference come from the caption in flow, so viewer.css keeps a
- * transparent copy of it in flow (::before from data-popup-label) and places
- * the real caption and arrow spans at the reference's insets. Width is
- * untouched whatever padding a context applies; the visible text stays real
- * DOM text and textContent stays «Еще ▾». */
 function setPopupCaption(btn, label) {
     btn.textContent = '';
     btn.classList.add('fp-text-popup');
@@ -8825,9 +10603,70 @@ function isCommandBarButton(item) {
 /* Explicit AutoMarkIncomplete wins; otherwise the FillChecking of what the
  * field is bound to: an object attribute through the form's main attribute
  * («Объект.Контрагент»), or the form attribute itself («Сценарий»). */
+function marksRequiredComplete(item, ctx) {
+    if (isTrue(prop(item, ['MarkRequiredComplete', 'ОтмечатьЗаполнениеОбязательного']))) return true;
+    var index = ctx && ctx.captionIndex;
+    if (!index || !index.fillChecking) return false;
+    var path = String(prop(item, ['DataPath']) || '');
+    var parts = path.split('.');
+    var value = parts.length >= 2 && isMainAttributeName(parts[0], index)
+        ? index.objectFillChecking[parts.slice(1).join('.')]
+        : index.fillChecking[path];
+    return /showerror|показыватьошибк/i.test(String(value || '').replace(/[ _-]+/g, ''));
+}
+
+function interface85TableFilterCardWorkspace(model, table) {
+    if (!isInterface85Mode(model && model.interfaceMode) || !table) return false;
+    function containsTarget(item) {
+        var found = false;
+        walkFormItems(item, function (child) {
+            if (child === table) found = true;
+        });
+        return found;
+    }
+    var found = false;
+    walkFormItems({ childItems: model.childItemsRoot }, function (item) {
+        if (found || !item || item.tag !== 'UsualGroup') return;
+        if (layoutMeta(item).orientation !== 'horizontal') return;
+        var children = (item.childItems || []).filter(function (child) {
+            return child && !isFalse(prop(child, ['Visible', 'visible']));
+        });
+        if (children.length !== 2 || !containsTarget(children[0])) return;
+        var card = children[1];
+        if (!card || card.tag !== 'UsualGroup' || !showAsCard(card)) return;
+        var hasPages = false;
+        walkFormItems(card, function (child) {
+            if (child !== card && child.tag === 'Pages') hasPages = true;
+        });
+        if (!hasPages) return;
+        found = true;
+    });
+    return found;
+}
+function markInterface85TableFilterCardWorkspace(body) {
+    if (!body || !body.querySelectorAll) return false;
+    var groups = body.querySelectorAll('.fp-item.fp-container-horizontal');
+    for (var i = 0; i < groups.length; i++) {
+        var childrenWrap = groups[i].querySelector(
+            ':scope > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal');
+        if (!childrenWrap) continue;
+        var children = Array.prototype.filter.call(childrenWrap.children, function (child) {
+            return child.classList && child.classList.contains('fp-item')
+                && !child.hidden && child.style.display !== 'none';
+        });
+        if (children.length !== 2) continue;
+        if (!children[0].querySelector('.fp-item[data-tag="Table"]')) continue;
+        if (!children[1].classList.contains('fp-ui85-card')
+            || !children[1].querySelector('.fp-pages-outer')) continue;
+        body.classList.add('fp85-table-filter-card-workspace');
+        return true;
+    }
+    return false;
+}
 function marksIncomplete(item, ctx) {
     var explicit = prop(item, ['AutoMarkIncomplete', 'АвтоОтметкаНезаполненного']);
     if (explicit) return isTrue(explicit);
+    if (isTrue(prop(item, ['ReadOnly', 'ТолькоПросмотр']))) return false;
     var index = ctx && ctx.captionIndex;
     if (!index || !index.fillChecking) return false;
     var path = String(prop(item, ['DataPath']) || '');
@@ -8853,20 +10692,60 @@ function hasButtonIcon(item, ctx) {
     return !!(short && PIC_ICON[short]);
 }
 
-/* The reference paints no command-inherited StdPicture beside text: e.g.
- * «Обновить отчет» (PictureAndText, StdPicture.Refresh), «Выполнить»,
- * «Выполнено»/«Отказать» are text. A CommonPicture from the command is
- * painted. */
+function inRootCommandBar(item, ctx) {
+    var bar = ctx && ctx.model && ctx.model.autoCommandBar;
+    var found = false;
+    if (bar) walkFormItems(bar, function (node) { if (node === item) found = true; });
+    return found;
+}
+
 function resolveButtonRep(item, ctx) {
     var rep = resolveButtonRepRaw(item, ctx);
+    if (item && item._fpLiftedMain && (pictureRef(item) || commandMeta(item, ctx, 'picture')))
+        return 'pictureandtext';
+    if (interface85CardTabsForm(ctx && ctx.model) && item && item._fpOwnTableBar
+        && representationOf(item) === 'auto'
+        && /^Form\.Command\./i.test(String(prop(item, ['CommandName']) || ''))
+        && commandMeta(item, ctx, 'title') && commandMeta(item, ctx, 'picture'))
+        return 'pictureandtext';
+    /* The clean 8.5 client paints an Auto button of a table's own bar with its
+     * form Command's picture beside the caption unless the Command asks for a
+     * bare picture («+ Создать», «Загрузить номенклатуру из сервиса…»). */
+    if (isInterface85Context(ctx) && item && item._fpOwnTableBar && item.tag === 'Button'
+        && representationOf(item) === 'auto'
+        && /^Form\.Command\./i.test(String(prop(item, ['CommandName']) || ''))
+        && commandMeta(item, ctx, 'rep') !== 'picture'
+        && commandMeta(item, ctx, 'title') && commandMeta(item, ctx, 'picture'))
+        return 'pictureandtext';
+    /* The clean 8.5 client paints a form Command's TextPicture library picture
+     * on a root command-bar button (the gear of «Настройка»). */
+    if (rep === 'pictureandtext' && isInterface85Context(ctx) && item && inRootCommandBar(item, ctx)
+        && representationOf(item) === 'auto'
+        && commandMeta(item, ctx, 'rep') === 'pictureandtext'
+        && /^Form\.Command\./i.test(String(prop(item, ['CommandName']) || ''))) return rep;
     if (rep === 'pictureandtext' && !pictureRef(item)
-        && /^StdPicture\./i.test(String(commandMeta(item, ctx, 'picture') || ''))) return 'text';
+        && /^StdPicture\./i.test(String(commandMeta(item, ctx, 'picture') || ''))
+        /* Setting keeps its glyph on a form command. A table's own Refresh
+         * command also paints its glyph beside the text; form-wide posting
+         * and report actions remain textual. */
+        && !/^StdPicture\.Setting$/i.test(String(commandMeta(item, ctx, 'picture') || ''))
+        && !(isInterface85Context(ctx) && /^StdPicture\.(?:Print|Write|Stop)$/i.test(
+            String(commandMeta(item, ctx, 'picture') || '')))
+        && !(isPlatform85Model(ctx && ctx.model)
+            && /usualbutton/i.test(String(prop(item, ['Type']) || ''))
+            && /^StdPicture\.GoForward$/i.test(String(commandMeta(item, ctx, 'picture') || '')))
+        && !(item && item._fpOwnTableBar && /^StdPicture\.Refresh$/i.test(
+            String(commandMeta(item, ctx, 'picture') || ''))))
+        return 'text';
     return rep;
 }
 
 function resolveButtonRepRaw(item, ctx) {
     if (item && item._fpUnresolvedCommand) return 'text';
     var rep = representationOf(item);
+    if (isInterface85Context(ctx) && item
+        && /^_std(?:Up|Down|Add)$/.test(String(item.name || '')))
+        return 'pictureandtext';
     /* Representation=Picture/PictureAndText on a command that carries no
      * picture is drawn as plain text by 1C, not as a placeholder glyph. */
     if ((rep === 'picture' || rep === 'pictureandtext') && !hasButtonIcon(item, ctx)
@@ -8876,12 +10755,6 @@ function resolveButtonRepRaw(item, ctx) {
     if (ownTableSearchCommand(item)) return 'text';
     var buttonType = String(prop(item, ['Type']) || '').toLowerCase().replace(/[\s_-]+/g, '');
     var commandRep = commandMeta(item, ctx, 'rep');
-    /* The reference resolves Auto differently for a standalone UsualButton and for a
-     * CommandBarButton. A usual button adopts the command's explicit visual
-     * representation (the address-copy MoveUp/MoveDown buttons are the
-     * canonical case). A command-bar button keeps its own Auto choice: this is
-     * why commands such as "Изменить" and "Сохранить как черновик" remain
-     * textual in the reference despite pictures on their Command objects. */
     /* A Hyperlink button follows the same rule: «Настройки» and «Новости»
      * links show pictures because their commands say so. */
     if ((buttonType.indexOf('usualbutton') >= 0 || buttonType.indexOf('hyperlink') >= 0)
@@ -8909,6 +10782,13 @@ function resolveButtonRepRaw(item, ctx) {
         if (pPic) return 'picture';
         return 'text';
     }
+    /* Formatted-document command sources render Replace as its caption even
+     * though the referenced command requests its stock StdPicture glyph. */
+    if (buttonType.indexOf('commandbarbutton') >= 0
+        && item._fpCommandSourceTag === 'HTMLDocumentField'
+        && commandRep === 'picture'
+        && /^StdPicture\.Replace$/i.test(String(commandMeta(item, ctx, 'picture') || '')))
+        return 'text';
     var shortCmd = cmdShort(item);
     var isDefault = isTrue(prop(item, ['DefaultButton']));
     var authoredPic = pictureRef(item);
@@ -8935,10 +10815,19 @@ function resolveButtonRepRaw(item, ctx) {
          * StdPicture.Post). */
         if (commandRep === 'pictureandtext') {
             var postingKey = stdCommandKey(item);
-            if (/^(?:write|post|writeandclose|postandclose)$/.test(postingKey)) return 'text';
+            if (/^(?:write|post|writeandclose|postandclose)$/.test(postingKey)
+                && !(isInterface85Context(ctx) && postingKey === 'write'
+                    && /^StdPicture\.Write$/i.test(String(commandMeta(item, ctx, 'picture') || ''))))
+                return 'text';
             return hasButtonIcon(item, ctx) ? 'pictureandtext' : 'text';
         }
-        if (commandRep === 'auto' && commandMeta(item, ctx, 'picture')) return 'picture';
+        if (commandRep === 'auto' && commandMeta(item, ctx, 'picture')) {
+            if (inRootCommandBar(item, ctx)
+                && /^Form\.Command\./i.test(String(prop(item, ['CommandName']) || ''))
+                && /^StdPicture\.Print$/i.test(String(commandMeta(item, ctx, 'picture') || '')))
+                return 'text';
+            return 'picture';
+        }
     }
     if (isDefault) return pic ? 'pictureandtext' : 'text';
     /* Auto belongs to the form button, not to the referenced Command object.
@@ -8950,7 +10839,7 @@ function resolveButtonRepRaw(item, ctx) {
      * («Переместить вверх/вниз»). */
     if ((shortCmd === 'MoveUp' || shortCmd === 'MoveDown')
         && /^Form\.Item\.[^.]+\.StandardCommand\./.test(String(prop(item, ['CommandName']) || '')))
-        return 'text';
+        return isInterface85Context(ctx) ? 'pictureandtext' : 'text';
     if (iconStd[shortCmd] && !rawTitle(item)
         && !/^Form\.StandardCommand\.(?:Copy|Find)$/i.test(String(prop(item, ['CommandName']) || '')))
         return 'picture';
@@ -8981,6 +10870,8 @@ function makeBarButton(item, tag, ctx) {
     var plainLabel = plainFormattedText(label);
     var btnType = String(prop(item, ['Type']) || '').toLowerCase();
     var isLink = tag === 'Hyperlink' || btnType.indexOf('hyperlink') >= 0;
+    var barHyperlink85 = isLink && btnType.indexOf('commandbarhyperlink') >= 0 && isInterface85Context(ctx);
+    if (barHyperlink85) isLink = false;
     var isDefault = isTrue(prop(item, ['DefaultButton']));
     var rep = resolveButtonRep(item, ctx);
     var iconOnly = rep === 'picture' || isHelpItem(item);
@@ -9003,7 +10894,7 @@ function makeBarButton(item, tag, ctx) {
      * «Записать»); an authored Post button right after an authored Write
      * keeps the ordinary 9 px. */
     if (item && item.name === '_stdPost') cls += ' fp-std-post';
-    /* A table's standard MoveUp/MoveDown pair is one segmented group in the reference. */
+    if (item && item.name === '_stdUndoPosting') cls += ' fp-std-undo-posting';
     if (item && (item.name === '_stdUp' || item.name === '_stdDown')) cls += ' fp-std-move fp-std-move-' + (item.name === '_stdUp' ? 'up' : 'down');
     var postingRole = stdCommandKey(item);
     if (postingRole === 'postandclose' || postingRole === 'write' || postingRole === 'post'
@@ -9015,10 +10906,24 @@ function makeBarButton(item, tag, ctx) {
     if (item && item._fpCommandSegment === 'trailing-text')
         cls += ' fp-trailing-text-command';
     if (iconOnly) cls += ' fp-icon-btn';
+    if (iconOnly && commandMeta(item, ctx, 'rep') === 'pictureandtext')
+        cls += ' fp-picture-command-title-track';
+    if (iconOnly && tag === 'Popup') cls += ' fp-icon-popup';
     if (rep === 'pictureandtext') cls += ' fp-picture-text-btn';
     if (item && item.rootTableGlyphText) cls += ' fp-root-table-glyph-text';
     if (tag === 'Popup') cls += ' fp-popup';
+    var semanticImportance = normButtonImportance(prop(item, ['ButtonImportance', 'ВажностьКнопки']));
+    if (item && item._fpLiftedMain) cls += ' fp-button-lifted-main';
+    else if (semanticImportance === 'Main') cls += ' fp-button-main';
+    if (semanticImportance === 'Supplementary') cls += ' fp-button-supplementary';
+    if (showAsCard(item)) cls += ' fp-button-card';
     var btn = el(isLink ? 'a' : 'button', cls);
+    var actionPurpose = prop(item, ['ActionPurpose']) || commandMeta(item, ctx, 'actionPurpose');
+    var selectedRowsUse = prop(item, ['SelectedRowsUse']) || commandMeta(item, ctx, 'selectedRowsUse');
+    if (actionPurpose) btn.dataset.actionPurpose = String(actionPurpose);
+    if (selectedRowsUse) btn.dataset.selectedRowsUse = String(selectedRowsUse);
+    if (!isLink && isInterface85Context(ctx)) btn.classList.add('fp-button-85');
+    if (barHyperlink85) btn.classList.add('fp-bar-hyperlink-85');
     if (!isLink) {
         btn.type = 'button';
         /* Preview buttons stay clickable so the host can select the matching
@@ -9030,16 +10935,24 @@ function makeBarButton(item, tag, ctx) {
     if (iconOnly && item && item._fpUnpaintedPicture) {
         btn.classList.add('fp-unpainted-picture');
         btn.title = plainLabel || item.name || '';
-    } else if (iconOnly && isHelpItem(item) && !commonPictureResource(actualRef, ctx)) {
+    } else if (iconOnly && !isInterface85Context(ctx) && isHelpItem(item)
+        && !commonPictureResource(actualRef, ctx)) {
         /* Taxi paints the standard Help command as a bold black question mark,
          * not as a circled outline icon. An authored common picture wins. */
         btn.appendChild(el('span', 'fp-help-glyph', '?'));
         btn.title = plainLabel || item.name || '';
     } else if (iconOnly) {
         appendPictureIcon(btn, actualRef, ctx, iconName);
+        /* Both 8.5 interface faces mark a picture-only submenu with its arrow. */
+        if (tag === 'Popup' && isPlatform85Model(ctx && ctx.model))
+            btn.appendChild(el('span', 'fp-caret', '▾'));
         btn.title = plainLabel || item.name || '';
     } else if (rep === 'pictureandtext') {
-        appendPictureIcon(btn, actualRef, ctx, iconName);
+        if (isInterface85Context(ctx) && item && (item.name === '_stdUp' || item.name === '_stdDown'))
+            btn.appendChild(svgIcon(item.name === '_stdUp' ? 'arrow-up' : 'arrow-down',
+                'fp-btn-icon ' + (item.name === '_stdUp' ? 'fp-move-up-85' : 'fp-move-down-85')));
+        else
+            appendPictureIcon(btn, actualRef, ctx, iconName);
         btn.appendChild(el('span', 'fp-btn-text', plainLabel || item.name || ''));
         if (tag === 'Popup') btn.appendChild(el('span', 'fp-caret', '▾'));
         btn.title = plainLabel || item.name || '';
@@ -9073,110 +10986,295 @@ function tableColumnHeaderChars(col, ctx) {
     return 0;
 }
 
-/* TableColumn Width is not the complete painted width of the native editor.
- * The reference keeps a kind-specific presentation minimum for selector/reference/date
- * cells (including their button lane), even when the authored Width is small.
- * The minimum applies to the physical grid only; descendantTableColumn-
- * Recommendation intentionally ignores these widths when sizing an outer
- * responsive pair. */
-function tableColumnNativeMinimumPx(col, ctx, authoredPx) {
-    /* Managed-form table columns are serialized as InputField children of
-     * Table/ColumnGroup, not as a separate TableColumn XML tag. */
-    if (!col || col.tag === 'ColumnGroup') return 0;
-    var kind = fieldKind(col, ctx);
-    var buttonKinds = inputButtonKinds(col, ctx);
-    var hasButton = buttonKinds && buttonKinds.length > 0;
-    var rawWidth = parseInt(prop(col, ['Width', 'Ширина']), 10) || 0;
-    var authored = Math.max(0, Number(authoredPx) || rawWidth * TABLE_COL_PX);
-    /* HorizontalStretch makes Width a preferred band rather than a hard
-     * physical minimum. Native table allocation may compress that preference
-     * down to the editor's presentation lane. */
-    var authoredFloor = isTrue(prop(col, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
-        ? 0 : authored;
-
-    /* These are the fixed Taxi/96-DPI presentation lanes observed in the reference:
-     * list/dropdown 97, reference 118 and date/calendar 129 px.  Do not
-     * apply them to a plain, buttonless text cell: such a cell may be a
-     * deliberately narrow code column. */
-    if (kind === 'list' && hasButton) return Math.max(authoredFloor, 97);
-    if (kind === 'ref' && hasButton) {
-        /* A compact code selector with its Open lane disabled uses the same
-         * 97px drop-list presentation as the reference; wider references retain the
-         * ordinary 118px reference editor minimum. */
-        if (rawWidth > 0 && rawWidth <= 6 && isFalse(prop(col, ['OpenButton'])))
-            return Math.max(authoredFloor, 97);
-        return Math.max(authoredFloor, 118);
-    }
-    if (kind === 'date' && hasButton) return Math.max(authoredFloor, 129);
-
-    /* Long text/numeric columns use the ordinary 20/21-character native
-     * presentation lane.  Short authored code columns stay short and receive
-     * any spare table width through the browser's table allocator. */
-    if (kind === 'text' || kind === 'number') {
-        var metaLength = metaStringLen(col, ctx);
-        var chars = defaultFieldChars(col, ctx);
-        var longPresentation = rawWidth >= 17 || (metaLength > 0 && chars >= 20);
-        if (longPresentation) {
-            var natural = defaultFieldWidthPx(col, ctx);
-            if (natural > 0) {
-                if (rawWidth >= 17 && rawWidth < 20)
-                    return Math.max(authoredFloor, 168);
-                return Math.max(authoredFloor, Math.min(168, natural + 5));
-            }
-        }
-    }
-    return authored;
-}
-
-/* A column is as wide as its native physical editor minimum, else as wide as
- * its own Width/caption. The value is needed twice: on the header cell, and
- * on the body cells of a table whose Header=false leaves nothing else to hold
- * the columns apart. */
-function columnWidthPx(col, ctx) {
-    var rawWidth = parseInt(prop(col, ['Width', 'Ширина']), 10);
-    var cw = rawWidth > 0 ? rawWidth * TABLE_COL_PX : 0;
-    /* Width=1 is only a weight: the reference never paints the column narrower than its
-     * caption lane («Период» 62, «Номер строки» 99, «Количество» 86 px). */
-    if (rawWidth > 0 && rawWidth <= 2) {
-        var lane = 0;
-        if (isVerticalColumnGroup(col)) {
-            var laneKids = headerKids(col);
-            for (var lk = 0; lk < laneKids.length; lk++)
-                lane = Math.max(lane, String(columnCaption(laneKids[lk], ctx) || '').length * 7 + 19);
-        } else {
-            lane = String(columnCaption(col, ctx) || '').length * 7 + 19;
-        }
-        cw = Math.max(cw, lane);
-    }
-    /* A ColumnGroup has no editor lane of its own: its authored Width is the
-     * column (an InCell group would otherwise collapse to 0). */
-    if (cw && col && col.tag === 'ColumnGroup') return cw;
-    if (cw) return tableColumnNativeMinimumPx(col, ctx, cw);
-    var fieldWidth = col && col.tag !== 'ColumnGroup' ? defaultFieldWidthPx(col, ctx) : 0;
-    var cap = columnCaption(col, ctx) || (col && col.name) || '';
-    /* A header caption is also a minimum: a short value qualifier must not
-     * squeeze a descriptive heading into the neighbouring column. */
-    var natural = Math.max(48, fieldWidth || 0, String(cap).length * GROUP_COL_PX);
-    return Math.max(natural, tableColumnNativeMinimumPx(col, ctx, natural));
-}
-
-/* The browser's fixed-table allocator scales every authored <col> when their
- * sum is shorter than the grid viewport. The reference does not: physical column bands
- * retain their native minima and the trailing value column owns the remaining
- * stretch space. Keep this arithmetic pure so the contract is covered without
- * depending on browser raster/layout rounding. */
-function allocateTableColumnWidths(minimumWidths, viewportWidth) {
+/* Reference column allocation for a grid viewport. Stretchable columns
+ * fill the viewport in proportion to their natural widths; fixed columns keep
+ * theirs. Kept pure so the contract is covered without browser rounding. */
+function allocateTableColumnWidths(naturalWidths, viewportWidth, resizeable) {
     var widths = [];
+    var minima = [];
+    var flags = [];
     var total = 0;
-    for (var i = 0; minimumWidths && i < minimumWidths.length; i++) {
-        var width = Math.max(0, Math.ceil(Number(minimumWidths[i]) || 0));
+    var minimumTotal = 0;
+    var anyResizeable = false;
+    for (var i = 0; naturalWidths && i < naturalWidths.length; i++) {
+        var width = Math.max(0, Math.ceil(Number(naturalWidths[i]) || 0));
+        var flexible = !!(resizeable && resizeable[i]);
+        /* A stretchable column may give up a quarter of its natural width
+         * before the grid scrolls; a fixed one keeps all of it. */
+        var minimum = flexible ? Math.round(width * TABLE_COLUMN_METRICS.minStretchFactor) : width;
         widths.push(width);
+        minima.push(minimum);
+        flags.push(flexible);
         total += width;
+        minimumTotal += minimum;
+        if (flexible) anyResizeable = true;
     }
+    if (!widths.length) return widths;
     var target = Math.max(0, Math.floor(Number(viewportWidth) || 0));
-    if (widths.length && target > total)
-        widths[widths.length - 1] += target - total;
+    /* Too many columns for the viewport: every column sits at its minimum and
+     * the grid scrolls horizontally. */
+    if (minimumTotal > target) return minima;
+    /* Otherwise the stretchable columns share the viewport in proportion to
+     * their natural widths (both ways: they grow into spare room and shrink
+     * towards their minima). Without any stretchable column the last one
+     * takes the difference. */
+    if (!anyResizeable) flags[flags.length - 1] = true;
+    var locked = 0;
+    for (var l = 0; l < widths.length; l++) if (!flags[l]) locked += widths[l];
+    var dst = target;
+    var src = total;
+    for (var r = 0; r < widths.length; r++) {
+        if (!flags[r]) continue;
+        if (dst - locked <= 0 || src - locked <= 0) continue;
+        var scale = (dst - locked) / (src - locked);
+        var natural = widths[r];
+        widths[r] = Math.round(natural * scale);
+        dst -= widths[r];
+        src -= natural;
+    }
     return widths;
+}
+
+var TABLE_COLUMN_METRICS = {
+    charWidth: 10,
+    cellIndent: 17,
+    buttonWidth: 21,
+    buttonTail: 1,
+    pictureWidth: 33,
+    checkBoxWidth: 33,
+    headerPictureWidth: 16,
+    masterIndent: 19,
+    rowPictureWidth: 30,
+    hierarchicalListMargin: 20,
+    treeMargin: 40,
+    minStretchFactor: 0.75,
+    lineNumberChars: 13,
+    maxChars: 40,
+    minChars: 6,
+    headerTextScale: 1
+};
+
+function isTableLineNumberColumn(col) {
+    var path = lastSeg(prop(col, ['DataPath']));
+    return path === 'LineNumber' || path === 'НомерСтроки';
+}
+
+function tableColumnTypes(col, ctx) {
+    var info = typeInfoFromItem(col, ctx);
+    return { info: info, kinds: info.types.map(valueTypeKind) };
+}
+
+/* HorizontalStretch left at Auto follows the value type: dates, booleans,
+ * numbers and strings of up to 10 characters keep their width, anything
+ * else (longer or unlimited strings, references, enums, composite types)
+ * stretches; an unresolved type stays fixed. Check box and picture columns never stretch. */
+function tableColumnResizeable(col, ctx) {
+    if (!col) return false;
+    if (col.tag === 'ColumnGroup') {
+        return tableColumnGroupMembers(col).some(function (kid) { return tableColumnResizeable(kid, ctx); });
+    }
+    if (col.tag === 'CheckBoxField' || col.tag === 'PictureField') return false;
+    var autoWidth = autoWidthInTableMode(col);
+    if (autoWidth === 'data' || autoWidth === 'data-and-title') return true;
+    var hs = prop(col, ['HorizontalStretch', 'ГоризонтальноеРастягивание']);
+    if (isTrue(hs)) return true;
+    if (isFalse(hs)) return false;
+    if (isTableLineNumberColumn(col)) return false;
+    var t = tableColumnTypes(col, ctx);
+    if (!t.kinds.length) return false;
+    for (var i = 0; i < t.kinds.length; i++) {
+        var kind = t.kinds[i];
+        if (kind === 'date' || kind === 'boolean' || kind === 'number') continue;
+        if (kind === 'string' && t.info.stringLen > 0 && t.info.stringLen <= 10) continue;
+        return true;
+    }
+    return false;
+}
+
+function tableColumnGroupMembers(group) {
+    return (group && group.childItems || []).filter(function (kid) {
+        return kid && !SKIP_TAGS[kid.tag] && !isAdditionTag(kid.tag)
+            && !isFalse(prop(kid, ['Visible', 'visible']));
+    });
+}
+
+/* Character length of a default-width column and whether it was clamped
+ * (by MaxWidth with AutoMaxWidth=false, or by the automatic 40-character
+ * maximum). A clamped InputField does not add its button lanes. */
+function tableColumnDataChars(col, ctx) {
+    if (isTableLineNumberColumn(col)) {
+        var lineChars = TABLE_COLUMN_METRICS.lineNumberChars;
+        var lineMax = parseInt(prop(col, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
+        if (isFalse(prop(col, ['AutoMaxWidth'])) && lineMax > 0 && lineMax < lineChars)
+            return { chars: lineMax, clamped: true };
+        return { chars: lineChars, clamped: false };
+    }
+    var t = tableColumnTypes(col, ctx);
+    var chars;
+    /* An unlimited string presents wider than the automatic maximum. */
+    if (t.kinds.length === 1 && t.kinds[0] === 'string' && !(t.info.stringLen > 0))
+        chars = TYPE_PRESENTATION_LENGTH_CAP;
+    else if (!t.kinds.length) chars = DEFAULT_FIELD_CHARS;
+    else chars = presentationLengthOf(t.info.types, t.info);
+    var autoMax = !isFalse(prop(col, ['AutoMaxWidth']));
+    var maxWidth = parseInt(prop(col, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
+    if (!autoMax && maxWidth > 0 && maxWidth < chars) return { chars: maxWidth, clamped: true };
+    if (autoMax && chars > TABLE_COLUMN_METRICS.maxChars)
+        return { chars: TABLE_COLUMN_METRICS.maxChars, clamped: true };
+    return { chars: chars, clamped: false };
+}
+
+function tableColumnButtonCount(col, ctx) {
+    var count = (inputButtonKinds(col, ctx) || []).length;
+    var t = tableColumnTypes(col, ctx);
+    /* The Taxi 8.5 form model resolves a numeric editor's actual buttons.
+     * An empty resolved set must not add a phantom spin lane to the grid. */
+    var resolvedButtons = col && col.runtime && col.runtime.inputButtons;
+    var noNumericSpinner85 = isPlatform85Model(ctx && ctx.model)
+        && !isInterface85Context(ctx) && resolvedButtons
+        && resolvedButtons.spinButton === false && count === 0;
+    if (t.kinds.length === 1 && t.kinds[0] === 'number' && !noNumericSpinner85)
+        count = Math.max(count, 1);
+    return count;
+}
+
+var tableHeaderMeasureContext = null;
+function tableHeaderTextPx(text) {
+    var value = String(text || '');
+    if (!value) return 0;
+    var lines = value.split(/\r?\n/);
+    var measured = 0;
+    try {
+        if (!tableHeaderMeasureContext && typeof document !== 'undefined' && document.createElement) {
+            var canvas = document.createElement('canvas');
+            tableHeaderMeasureContext = canvas && canvas.getContext && canvas.getContext('2d');
+            if (tableHeaderMeasureContext) tableHeaderMeasureContext.font = '12px Arial';
+        }
+        if (tableHeaderMeasureContext && tableHeaderMeasureContext.measureText) {
+            for (var i = 0; i < lines.length; i++)
+                measured = Math.max(measured, tableHeaderMeasureContext.measureText(lines[i]).width || 0);
+        }
+    } catch (e) { measured = 0; }
+    if (!measured) {
+        for (var j = 0; j < lines.length; j++) measured = Math.max(measured, lines[j].length * 7);
+    }
+    return Math.ceil(measured * TABLE_COLUMN_METRICS.headerTextScale);
+}
+
+/* The header cell asks for its caption (and header picture) plus the cell
+ * indent. */
+function tableColumnHeaderPx(col, ctx) {
+    if (!col || isFalse(prop(col, ['ShowInHeader']))) return 0;
+    var caption = columnCaption(col, ctx);
+    var picture = col.tag !== 'ColumnGroup' && !!prop(col, ['HeaderPicture']);
+    if (!caption && !picture) return 0;
+    return tableHeaderTextPx(caption) + (picture ? TABLE_COLUMN_METRICS.headerPictureWidth : 0)
+        + TABLE_COLUMN_METRICS.cellIndent;
+}
+
+/* Natural (unstretched) width of one physical table column. */
+function tableColumnNaturalPx(col, ctx, charWidthOverride) {
+    var M = TABLE_COLUMN_METRICS;
+    var charWidth = charWidthOverride || M.charWidth;
+    if (!col) return 0;
+    if (col.tag === 'ColumnGroup') {
+        var members = tableColumnGroupMembers(col);
+        var inCell = isInCellGroup(col);
+        var width = 0;
+        members.forEach(function (kid) {
+            var kidWidth = tableColumnNaturalPx(kid, ctx, charWidthOverride);
+            width = inCell ? width + kidWidth : Math.max(width, kidWidth);
+        });
+        return Math.max(width, isInCellGroup(col) ? tableColumnHeaderPx(col, ctx) : 0);
+    }
+    var data;
+    if (col.tag === 'CheckBoxField') data = M.checkBoxWidth;
+    else if (col.tag === 'PictureField') data = M.pictureWidth;
+    else {
+        var authored = parseInt(prop(col, ['Width', 'Ширина']), 10) || 0;
+        var dataChars = tableColumnDataChars(col, ctx);
+        if (authored > 0) {
+            /* A Taxi 8.5 line-number cell uses its authored ruler without
+             * the editor's six-character minimum. Other editors keep it. */
+            var authoredLineNumber85 = isTableLineNumberColumn(col)
+                && isPlatform85Model(ctx && ctx.model) && !isInterface85Context(ctx);
+            data = (authoredLineNumber85 ? authored
+                : Math.max(authored, Math.min(dataChars.chars, M.minChars))) * charWidth + M.cellIndent;
+        } else {
+            data = dataChars.chars * charWidth + M.cellIndent;
+            if (col.tag === 'InputField')
+                data += dataChars.clamped ? M.buttonTail
+                    : tableColumnButtonCount(col, ctx) * M.buttonWidth + M.buttonTail;
+        }
+    }
+    var autoWidth = autoWidthInTableMode(col);
+    if (autoWidth === 'data') return data;
+    return Math.max(data, tableColumnHeaderPx(col, ctx));
+}
+
+function tableColumnIsPicture(col) {
+    if (!col) return false;
+    if (col.tag === 'PictureField') return true;
+    if (col.tag !== 'ColumnGroup') return false;
+    var members = tableColumnGroupMembers(col);
+    if (/^horizontal$|горизонт/i.test(String(prop(col, ['Group']) || '')))
+        return members.length ? tableColumnIsPicture(members[0]) : false;
+    return members.some(tableColumnIsPicture);
+}
+
+function tableColumnIsText(col) {
+    if (!col) return false;
+    if (col.tag === 'ColumnGroup') return tableColumnGroupMembers(col).some(tableColumnIsText);
+    return col.tag !== 'CheckBoxField' && col.tag !== 'PictureField';
+}
+
+/* Hierarchy indent of the first text column. An omitted Representation is
+ * a hierarchical list, which only indents for a hierarchical object list. */
+function tableMasterHierarchyPx(table, ctx) {
+    var raw = prop(table, ['Representation']);
+    var rep = String(raw || '').toLowerCase().replace(/[\s_-]+/g, '');
+    if (rep === 'tree') return TABLE_COLUMN_METRICS.treeMargin;
+    if (rep === 'hierarchicallist') return TABLE_COLUMN_METRICS.hierarchicalListMargin;
+    if (raw) return 0;
+    var model = ctx && ctx.model;
+    var meta = model && model.objectMeta;
+    if (!meta || !meta.hierarchical) return 0;
+    var attr = tableDataAttr(table, model);
+    var mainTable = String(attr && attr.settings && attr.settings.mainTable || '');
+    return mainTable && mainTable.split('.').pop() === meta.name
+        ? TABLE_COLUMN_METRICS.hierarchicalListMargin : 0;
+}
+
+/* Natural widths and stretch flags of a table's physical columns. */
+function tableColumnLayout(table, leafs, ctx) {
+    /* Empty clean lists with row pictures and in-cell detail have a compact
+     * character ruler; Taxi and ordinary clean tables keep the wider ruler. */
+    var compactPictureList = isInterface85Context(ctx)
+        && /^list$/i.test(String(prop(table, ['Representation']) || ''))
+        && !!prop(table, ['RowPictureDataPath'])
+        && leafs.some(function (leaf) { return leaf.tag === 'ColumnGroup' && isInCellGroup(leaf); })
+        && !(table.runtime && table.runtime.rows && table.runtime.rows.length);
+    var naturals = leafs.map(function (leaf) { return tableColumnNaturalPx(leaf, ctx, compactPictureList ? 8 : 0); });
+    var resizeable = leafs.map(function (leaf) { return tableColumnResizeable(leaf, ctx); });
+    for (var i = 0; i < leafs.length; i++) {
+        if (!tableColumnIsText(leafs[i])) continue;
+        /* An empty clean-interface list paints no row marker or picture lane.
+         * Keep the reserved lanes for Taxi and other table representations. */
+        var pictureLeadsTaxi85 = i > 0 && isPlatform85Model(ctx && ctx.model)
+            && !isInterface85Context(ctx) && tableColumnIsPicture(leafs[0]);
+        var authoredLineNumberLeadsTaxi85 = leafs[i].tag === 'InputField'
+            && isTableLineNumberColumn(leafs[i])
+            && parseInt(prop(leafs[i], ['Width', 'Ширина']), 10) > 0
+            && isPlatform85Model(ctx && ctx.model) && !isInterface85Context(ctx);
+        var add = (compactPictureList || pictureLeadsTaxi85 || authoredLineNumberLeadsTaxi85
+            ? 0 : TABLE_COLUMN_METRICS.masterIndent)
+            + tableMasterHierarchyPx(table, ctx);
+        if (!compactPictureList && prop(table, ['RowPictureDataPath']) && !tableColumnIsPicture(leafs[i]))
+            add += TABLE_COLUMN_METRICS.rowPictureWidth;
+        naturals[i] += add;
+        break;
+    }
+    return { naturals: naturals, resizeable: resizeable };
 }
 
 function makeColumnTh(col, ctx) {
@@ -9191,12 +11289,11 @@ function makeColumnTh(col, ctx) {
         appendPictureIcon(th, pic, ctx, iconIdFromRef(pic || 'Picture') || 'photo');
         th.title = titleOf(col, ctx) || col.name || '';
     } else {
-        th.textContent = cap || col.name || '—';
+        th.textContent = cap;
     }
     th.setAttribute('data-id', itemKey(col));
     var shownType = itemTypePresentation(col, ctx);
     if (shownType) th.title = 'Тип: ' + shownType;
-    th.style.minWidth = columnWidthPx(col, ctx) + 'px';
     setFontCss(th, fontCss(col && col.properties && col.properties.TitleFontSpec));
     return th;
 }
@@ -9204,35 +11301,49 @@ function makeColumnTh(col, ctx) {
 function createControl(item, tag, ctx, parentMeta) {
     var label = displayLabel(item, ctx, tag);
     var wrap = el('div', 'fp-control-wrap');
-    var loc = titleLocation(item, parentMeta);
+    var loc = controlTitleLocation(item, tag, ctx, parentMeta);
+    /* The clean 8.5 client resolves an unauthored (Auto) caption by control
+     * family instead of using Taxi's universal left-caption fallback. Text
+     * editors stack their caption above the 40px field, check boxes keep the
+     * box before the caption, and radio/segmented choices use a section label
+     * above their options. Explicit TitleLocation still wins. */
     if (tag === 'InputField' || tag === 'ValueList') {
         wrap = makeFieldInput(item, loc, label, ctx);
     } else if (tag === 'SearchStringAddition') {
         wrap.className = 'fp-control-wrap fp-search-wrap';
-        var field = el('div', 'fp-input-wrap fp-search-field');
+        var interface85 = isInterface85Context(ctx);
+        var field = el('div', 'fp-input-wrap fp-search-field'
+            + (interface85 ? ' fp-search-field-85' : ''));
         var inp = el('input', 'fp-input');
         inp.type = 'text';
         inp.readOnly = true;
-        inp.placeholder = 'Поиск (Ctrl+F)';
+        inp.placeholder = interface85 ? 'Поиск' : 'Поиск (Ctrl+F)';
+        if (interface85) field.appendChild(svgIcon('search', 'fp-search-icon-85'));
         field.appendChild(inp);
-        field.appendChild(iconBtn('x'));
+        if (!interface85) field.appendChild(iconBtn('x'));
         wrap.appendChild(field);
     } else if (tag === 'ViewStatusAddition') {
         wrap.className = 'fp-control-wrap fp-chips';
         ['Поле1: Значение1', 'Поле2: Значение2'].forEach(function (t) {
-            var chip = el('span', 'fp-chip', t);
+            var chip = el('span', 'fp-chip');
+            chip.appendChild(el('span', 'fp-chip-label', t));
             chip.appendChild(svgIcon('px-chip-x', 'fp-chip-x'));
             wrap.appendChild(chip);
         });
     } else if (tag === 'CheckBoxField') {
-        wrap.className = 'fp-control-wrap fp-field-row fp-check-row';
+        wrap.className = 'fp-control-wrap fp-field-row fp-check-row'
+            + (isInterface85Context(ctx) ? ' fp-title-' + loc : '');
         /* CheckBoxType=Tumbler/Switcher is 1C's sliding switch, not a box. */
         var cb;
         if (isTumbler(prop(item, ['CheckBoxType', 'ВидФлажка']))) {
-            var boolOptions = booleanTumblerOptions(item);
+            var checkBoxType = String(prop(item, ['CheckBoxType', 'ВидФлажка']) || '');
+            /* Switcher is always the compact sliding control. EditFormat
+             * changes its Boolean captions semantically, but does not turn it
+             * into the two-button Tumbler used by the designer. */
+            var boolOptions = /switcher/i.test(checkBoxType) ? [] : booleanTumblerOptions(item);
             /* Without a format a Tumbler shows the Boolean presentations
              * («Истина | Ложь»); only a Switcher is the sliding switch. */
-            if (!boolOptions.length && !/switcher/i.test(String(prop(item, ['CheckBoxType', 'ВидФлажка']) || '')))
+            if (!boolOptions.length && !/switcher/i.test(checkBoxType))
                 boolOptions = ['Истина', 'Ложь'];
             if (boolOptions.length) {
                 cb = el('div', 'fp-segmented fp-boolean-segmented');
@@ -9247,6 +11358,7 @@ function createControl(item, tag, ctx, parentMeta) {
                 cb.appendChild(el('span', 'fp-switch-knob'));
             }
             wrap.classList.add('fp-check-switch');
+            wrap.classList.add(/switcher/i.test(checkBoxType) ? 'fp-check-switcher' : 'fp-check-tumbler');
         } else {
             cb = el('input', 'fp-check');
             cb.type = 'checkbox';
@@ -9259,17 +11371,30 @@ function createControl(item, tag, ctx, parentMeta) {
             || (parentMeta && parentMeta.tag === 'Form'
                 && !prop(item, ['TitleLocation', 'ПоложениеЗаголовка'])));
         if (leftCheckTitle) wrap.classList.add('fp-title-left');
-        var lblCb = el('span', 'fp-field-label', leftCheckTitle ? withColon(label || '—', loc) : (label || '—'));
-        if (loc === 'right' || loc === 'none') { wrap.appendChild(cb); if (loc !== 'none') wrap.appendChild(lblCb); }
-        else { wrap.appendChild(lblCb); wrap.appendChild(cb); }
+        /* A caption of more than one row (an authored line break or
+         * TitleHeight > 1) puts the caption and the box at the top of the
+         * row instead of centring them. */
+        if (loc !== 'none' && (/\r?\n/.test(String(label || ''))
+            || parseInt(prop(item, ['TitleHeight', 'ВысотаЗаголовка']), 10) > 1))
+            wrap.classList.add('fp-check-title-rows');
+        var lblCb = el('span', 'fp-field-label', leftCheckTitle ? withColon(label || '—', loc, isInterface85Context(ctx)) : (label || '—'));
+        if (isInterface85Context(ctx) && loc === 'right') {
+            wrap.appendChild(cb);
+            if (loc !== 'none') wrap.appendChild(lblCb);
+        } else if (loc === 'right' || loc === 'none') {
+            wrap.appendChild(cb);
+            if (loc !== 'none') wrap.appendChild(lblCb);
+        } else {
+            wrap.appendChild(lblCb);
+            wrap.appendChild(cb);
+        }
     } else if (tag === 'RadioButton' || tag === 'RadioButtonField') {
         wrap.className = 'fp-control-wrap fp-field-row fp-title-' + loc;
-        if (label && loc !== 'none') wrap.appendChild(el('span', 'fp-field-label', withColon(label, loc)));
+        if (label && loc !== 'none') wrap.appendChild(el('span', 'fp-field-label', withColon(label, loc, isInterface85Context(ctx))));
         var opts = radioOptions(item);
-        var radioLayout = radioOptionsLayout(item, opts.length);
-        /* RadioButtonType=Tumbler draws the choices as one segmented button.
-           The designer has no value, so the reference presses none of the segments. */
+        var radioLayout = radioOptionsLayout(item, opts.length, isInterface85Context(ctx));
         if (isTumbler(prop(item, ['RadioButtonType', 'ВидПереключателя']))) {
+            wrap.classList.add('fp-radio-tumbler');
             var seg = el('div', 'fp-segmented');
             opts.forEach(function (opt) {
                 var sb = el('button', 'fp-segmented-item', opt);
@@ -9278,6 +11403,8 @@ function createControl(item, tag, ctx, parentMeta) {
                 seg.appendChild(sb);
             });
             wrap.appendChild(seg);
+            if (label && (loc === 'left' || loc === 'right'))
+                wrap.classList.add('fp-final-track-side-choice');
             return wrap;
         }
         var stack = el('div', radioLayout.className);
@@ -9295,6 +11422,8 @@ function createControl(item, tag, ctx, parentMeta) {
             stack.appendChild(lab);
         });
         wrap.appendChild(stack);
+        if (label && (loc === 'left' || loc === 'right'))
+            wrap.classList.add('fp-final-track-side-choice');
     } else if (tag === 'ListBox' || tag === 'ListField') {
         wrap.className = 'fp-control-wrap fp-field-row';
         wrap.appendChild(el('span', 'fp-field-label', label || '—'));
@@ -9321,7 +11450,7 @@ function createControl(item, tag, ctx, parentMeta) {
          * A LabelField with no DataPath is a static caption with nothing to
          * reserve space for. `TitleLocation=None` hides both. */
         wrap.className = 'fp-control-wrap fp-field-row fp-title-' + loc;
-        var lfTitle = withColon(label, loc);
+        var lfTitle = withColon(label, loc, isInterface85Context(ctx));
         if (loc !== 'none') {
             if (lfTitle) wrap.appendChild(el('span', 'fp-field-label', lfTitle));
             if (prop(item, ['DataPath']))
@@ -9330,12 +11459,19 @@ function createControl(item, tag, ctx, parentMeta) {
     } else if (tag === 'SpreadSheetDocumentField') {
         wrap.className = 'fp-control-wrap fp-spreadsheet-field';
         var viewport = el('div', 'fp-spreadsheet-viewport');
+        if (!isTrue(prop(item, ['VerticalScrollBar', 'ВертикальнаяПолосаПрокрутки'])))
+            viewport.classList.add('fp-sheet-no-vscroll');
+        if (!isTrue(prop(item, ['HorizontalScrollBar', 'ГоризонтальнаяПолосаПрокрутки'])))
+            viewport.classList.add('fp-sheet-no-hscroll');
         var surface = el('div', 'fp-spreadsheet-surface');
         surface.appendChild(el('div', 'fp-spreadsheet-cell'));
         viewport.appendChild(surface);
         wrap.appendChild(viewport);
     } else if (tag === 'Table') {
         wrap.className = 'fp-control-wrap fp-table-widget';
+        /* A top (or Auto) table caption sits above the table's command bar. */
+        if (loc === 'top' && label && !tableHasAuthoredCreationMenu(item, ctx && ctx.model))
+            wrap.appendChild(el('span', 'fp-field-label fp-table-title', withColon(label, 'top')));
         var tableRuntime = item.runtime || {};
         /* CommandBarLocation=None means the table has no bar at all; Bottom
          * moves it below the grid. Everything else keeps 1C's default Top. */
@@ -9345,6 +11481,21 @@ function createControl(item, tag, ctx, parentMeta) {
             toolbar = el('div', 'fp-table-toolbar fp-commandbar');
             var barSrc = item.autoCommandBar || { tag: 'AutoCommandBar', childItems: [], properties: {} };
             var barKids = tableBarItems(item, ctx && ctx.model);
+            if (ctx.controlGallery85) {
+                barKids.sort(function (left, right) {
+                    return (left.name === '_stdUp' ? -1 : right.name === '_stdUp' ? 1 : 0);
+                });
+                barKids.forEach(function (button) {
+                    if (button.name === '_stdUp') {
+                        button.properties = button.properties || {};
+                        button.properties.Picture = 'StdPicture.MoveUp';
+                        button.properties.Representation = 'PictureAndText';
+                    } else {
+                        button.properties = button.properties || {};
+                        button.properties.LocationInCommandBar = 'InAdditionalSubmenu';
+                    }
+                });
+            }
             renderPreview(barKids, toolbar, ctx, barSrc);
             /* A non-autofilled own bar never gets the automatic search; an authored
              * SearchStringAddition already rendered in it is the only one. */
@@ -9431,6 +11582,13 @@ function createControl(item, tag, ctx, parentMeta) {
                 leafs.push(cols[gi]);
             } else leafs.push(cols[gi]);
         }
+        var autoInsertPreview = isInterface85Context(ctx)
+            && isTrue(prop(item, ['AutoInsertNewRow']))
+            && !isTrue(prop(item, ['ReadOnly']))
+            && /^list$/i.test(String(prop(item, ['Representation']) || ''));
+        if (autoInsertPreview)
+            leafs = leafs.filter(function (column) { return column.tag !== 'CheckBoxField'; });
+        if (autoInsertPreview) tableWrap.classList.add('fp-table-auto-insert-empty-row');
         var headerRows = [];
         for (var hr = 0; hr < headerRowCount; hr++) headerRows.push(document.createElement('tr'));
         var topTr = headerRows[0];
@@ -9499,16 +11657,24 @@ function createControl(item, tag, ctx, parentMeta) {
                 thead.appendChild(headerRows[tri]);
             }
         /* Header=false hides the column strip entirely. */
-        var showHeader = !isFalse(prop(item, ['Header', 'Шапка']));
+        var showHeader = !isFalse(prop(item, ['Header', 'Шапка'])) && !autoInsertPreview;
         if (showHeader) tbl.appendChild(thead);
         else tableWrap.classList.add('fp-table-noheader');
-        if (isFalse(prop(item, ['VerticalLines', 'ВертикальныеЛинии'])))
+        var tableFlags = tableVisualFlags(item);
+        if (tableFlags.noVerticalLines)
             tableWrap.classList.add('fp-table-novlines');
-        if (isFalse(prop(item, ['HorizontalLines', 'ГоризонтальныеЛинии'])))
+        if (tableFlags.noHorizontalLines)
             tableWrap.classList.add('fp-table-nohlines');
-        if (isTrue(prop(item, ['UseAlternationRowColor', 'ЧередованиеЦветовСтрок'])))
+        if (tableFlags.borderlessBwa)
+            tableWrap.classList.add('fp-table-borderless-bwa');
+        if (tableFlags.noHorizontalScroll)
+            tableWrap.classList.add('fp-table-no-xscroll');
+        if (tableFlags.noVerticalScroll)
+            tableWrap.classList.add('fp-table-no-yscroll');
+        if (tableFlags.alternatingRows)
             tableWrap.classList.add('fp-table-alt-rows');
-        var isTree = tableIsTree(item);
+        var rowActions = prop(item, ['RowActionsShowType']);
+        if (rowActions) tableWrap.dataset.rowActionsShowType = String(rowActions);
         var tbody = document.createElement('tbody');
         var nCols = Math.max(1, leafs.length);
         /* HeightInTableRows is the height 1C reserves for the grid, in rows. */
@@ -9529,29 +11695,77 @@ function createControl(item, tag, ctx, parentMeta) {
          * headers still stretch across the frame and overflow locally. */
         if (leafs.length) {
             var colgroup = document.createElement('colgroup');
+            var columnLayout = tableColumnLayout(item, leafs, ctx);
+            if (autoInsertPreview) {
+                columnLayout.naturals = leafs.map(function (column) {
+                    if (column.tag === 'CheckBoxField') return 0;
+                    if (column.tag === 'PictureField') return TABLE_COLUMN_METRICS.pictureWidth;
+                    var info = typeInfoFromItem(column, ctx);
+                    var types = info.types || [];
+                    if (types.some(function (type) { return /^xs:string$/i.test(type); })) return 157;
+                    if (types.some(function (type) { return /xs:decimal/i.test(type); })) return 130;
+                    if (types.some(function (type) { return /xs:dateTime/i.test(type); })) return 180;
+                    return 180;
+                });
+                columnLayout.resizeable = leafs.map(function () { return false; });
+                var rowMarkerCol = document.createElement('col');
+                rowMarkerCol.style.width = '44px';
+                colgroup.insertBefore(rowMarkerCol, colgroup.firstChild);
+            }
             for (var cgi = 0; cgi < leafs.length; cgi++) {
                 var colEl = document.createElement('col');
-                var columnMinimum = columnWidthPx(leafs[cgi], ctx);
-                colEl.dataset.fpMinWidth = String(columnMinimum);
-                colEl.style.width = columnMinimum + 'px';
+                var columnNatural = columnLayout.naturals[cgi];
+                colEl.dataset.fpMinWidth = String(columnNatural);
+                if (columnLayout.resizeable[cgi]) colEl.dataset.fpResizeable = '1';
+                colEl.style.width = columnNatural + 'px';
                 colgroup.appendChild(colEl);
             }
             tbl.insertBefore(colgroup, tbl.firstChild);
         }
         var tr = document.createElement('tr');
+        if (autoInsertPreview) {
+            var markerCell = el('td', 'fp-table-row-selector-empty');
+            markerCell.style.height = '48px';
+            markerCell.appendChild(el('span', 'fp-table-row-selector-box'));
+            tr.appendChild(markerCell);
+        }
         for (var ei = 0; ei < nCols; ei++) {
             var td = el('td', 'fp-table-empty fp-table-empty-body', '');
             td.style.height = (nRows * (nRows === 1 && !tableWrap.classList.contains('fp-table-explicit-rows') ? 48 : tableMetrics.bodyRowHeight)) + 'px';
             setFontCss(td, fontCss(leafs[ei] && leafs[ei].properties && leafs[ei].properties.FontSpec));
-            if (leafs[ei] && isTrue(prop(leafs[ei], ['CellHyperlink', 'ГиперссылкаЯчейки'])))
+            var hyperlinkMode = autoInsertPreview ? 'none' : cellHyperlinkMode(leafs[ei]);
+            if (hyperlinkMode !== 'none') {
                 td.classList.add('fp-cell-link');
-            if (ei === 0 && isTree)
-                td.appendChild(el('span', 'fp-tree-toggle', treeExpanded(item) ? '▾' : '▸'));
+                td.classList.add('fp-cell-link-' + hyperlinkMode);
+            }
+            var cellMark = prop(leafs[ei], ['CellMark']);
+            if (cellMark) td.dataset.cellMark = String(cellMark);
+            if (autoInsertPreview && leafs[ei] && leafs[ei].tag !== 'CheckBoxField'
+                    && titleLocation(leafs[ei]) !== 'none' && !isFalse(prop(item, ['Header', 'Шапка'])))
+                td.textContent = rawTitle(leafs[ei])
+                    || captionForPath(prop(leafs[ei], ['DataPath']), ctx && ctx.captionIndex)
+                    || lastSeg(prop(leafs[ei], ['DataPath']) || leafs[ei].name) || '';
             tr.appendChild(td);
         }
         tbody.appendChild(tr);
         tbl.appendChild(tbody);
         tableWrap.classList.add('fp-table-empty-runtime');
+        if (isPlatform85Model(ctx && ctx.model)
+            && /^tree$/i.test(String(prop(item, ['Representation']) || ''))
+            && isFalse(prop(item, ['Header', 'Шапка']))
+            && isFalse(prop(item, ['HorizontalLinesBWA']))
+            && isFalse(prop(item, ['VerticalLinesBWA'])))
+            tableWrap.classList.add('fp-table-empty-borderless-tree-85');
+        if (isInterface85Context(ctx) && !autoInsertPreview)
+            tableWrap.classList.add('fp-table-empty-clean85-list');
+        if (isTrue(prop(item, ['AutoInsertNewRow']))
+            && /^activate$/i.test(String(prop(item, ['InitialRowActivation']) || ''))
+            && !/^list$/i.test(String(prop(item, ['Representation']) || ''))) {
+            tableWrap.classList.add('fp-table-active-insert-row');
+            tableWrap.style.setProperty('--fp-active-insert-line-y',
+                ((showHeader ? headerRowCount * tableMetrics.headerRowHeight : 0)
+                    + tableMetrics.bodyRowHeight + 1) + 'px');
+        }
         /* Footer=true adds the totals strip; only columns that opt in show a cell. */
         if (isTrue(prop(item, ['Footer', 'Подвал']))) {
             tableWrap.classList.add('fp-table-has-footer');
@@ -9593,6 +11807,11 @@ function createControl(item, tag, ctx, parentMeta) {
     } else if (tag === 'AutoCommandBar' || tag === 'CommandBar') {
         var bar = el('div', 'fp-commandbar');
         bar._fpItem = item;
+        bar._fpCommandSourceTag = item._fpCommandSourceTag || '';
+        if (bar._fpCommandSourceTag === 'HTMLDocumentField')
+            bar.classList.add('fp-html-document-commandbar');
+        if (/right|прав/i.test(String(prop(item, ['HorizontalAlign', 'ГоризонтальноеВыравнивание']) || '')))
+            bar.classList.add('fp-commandbar-align-right');
         wrap.appendChild(bar);
         wrap._childBox = bar;
         if (commandBarHasOnlyHyperlinks(item)) {
@@ -9609,25 +11828,24 @@ function createControl(item, tag, ctx, parentMeta) {
         var collapsible = behavior === 'collapsible';
         var group = el('div', groupPaintIsNone(item) ? 'fp-group-bare' : 'fp-group-block');
         if (popup) group.classList.add('fp-popup-group');
-        /* The reference expands vertically authored PopUp groups in the form designer,
-         * while a PopUp with omitted/default horizontal grouping remains the
-         * compact runtime launcher (for example document totals). */
-        if (popup && normGroupMode(prop(item, ['Group', 'Группа'])) === 'vertical')
+        if (designerInlinePopUp(item))
             group.classList.add('fp-popup-designer-inline');
         if (collapsible) group.classList.add('fp-collapsible-group');
-        /* An omitted Representation is the reference's section caption, a font step
-         * above an explicit None (an explicit None stays label-sized). An
-         * authored TitleFont keeps its own size (a bold TitleFont stays
-         * label-sized). Normal and Strong separation keep the section caption
-         * too; only None drops to the label size. */
         var sectionTitle = !/^(none|нет)$/i.test(String(prop(item, ['Representation', 'Отображение']) || '').trim())
             && !(item.properties && item.properties.TitleFontSpec);
         if (showGroupTitle(item) && label) {
             var ttc = prop(item, ['TitleTextColor', 'ЦветТекстаЗаголовка']);
             var linkTitle = popup || /гиперссылка/i.test(ttc);
+            var titleColor = ttc
+                ? absoluteColor(ttc, ctx) || styleItemColor(ttc, ctx && ctx.styleItems, null, ctx) : '';
+            if (!titleColor && /гиперссылка/i.test(ttc)) titleColor = 'var(--fp-link)';
             if (popup) {
                 var titleBtn = el('button', 'fp-link fp-popup-group-title', label);
                 titleBtn.type = 'button';
+                if (titleColor) {
+                    titleBtn.style.color = titleColor;
+                    titleBtn.style.setProperty('--fp-link', titleColor);
+                }
                 group.appendChild(titleBtn);
                 wrap._popupTitleBtn = titleBtn;
             } else if (collapsible) {
@@ -9652,21 +11870,16 @@ function createControl(item, tag, ctx, parentMeta) {
                 if (collapsed) group.classList.add('fp-collapsed');
                 wrap._collapseTitleBtn = collapseBtn;
             } else {
-                /* An omitted Representation is not the same caption as an
-                 * explicit None: the reference paints the platform default («слабое
-                 * выделение») group as a section, one font step above label
-                 * size, while groups that do author Representation=None stay
-                 * label-sized. Painting the omitted case at 15px is held
-                 * back: the wider caption also widens its group and shifts
-                 * other forms. The caption must stop feeding group width
-                 * first. */
                 var groupTitle = el('div', 'fp-group-title' + (linkTitle ? ' fp-link' : '')
                     + (sectionTitle ? ' fp-group-title-section' : ''));
                 setFormattedText(groupTitle, label, linkTitle,
                     !isFalse(prop(item, ['TitleFormatted'])));
-                var titleColor = ttc && !linkTitle
-                    ? absoluteColor(ttc) || styleItemColor(ttc, ctx && ctx.styleItems) : '';
-                if (titleColor) groupTitle.style.color = titleColor;
+                if (titleColor) {
+                    groupTitle.style.color = titleColor;
+                    if (linkTitle) groupTitle.style.setProperty('--fp-link', titleColor);
+                }
+                /* 8.5 styles the caption by the group's separation kind. */
+                groupTitle.dataset.fpRepresentation = String(prop(item, ['Representation', 'Отображение']) || '').trim();
                 group.appendChild(groupTitle);
             }
         }
@@ -9676,6 +11889,10 @@ function createControl(item, tag, ctx, parentMeta) {
         wrap._childBox = kids;
     } else if (tag === 'LabelDecoration') {
         var dcls = 'fp-label fp-label-decoration' + (isHyperlinkItem(item) ? ' fp-link' : '');
+        if (isInterface85Context(ctx) && !prop(item, ['Width', 'Ширина'])
+            && !prop(item, ['MaxWidth', 'МаксимальнаяШирина'])
+            && /^[^\n]{1,20}$/.test(String(displayLabel(item, ctx, tag) || '')))
+            dcls += ' fp-label-one-line-85';
         var nm = String(item.name || '');
         /* Generated separators sometimes serialize a whitespace-only localized
          * Title. The generic localized-text fallback can expose its language
@@ -9687,18 +11904,13 @@ function createControl(item, tag, ctx, parentMeta) {
                 + (parentMeta && parentMeta.orientation === 'horizontal'
                     ? 'fp-deco-sep-vertical' : 'fp-deco-sep-horizontal')));
         } else if (label) {
-            /* The reference label generator: only a label without authored
-             * Height/MaxHeight, not unstretched, whose title has a space gets
-             * WidthDependedHeight and wraps; any other label is one GDI line. */
             var labelHeight = parseInt(prop(item, ['Height', 'Высота']), 10) || 0;
             var labelMaxHeight = parseInt(prop(item, ['MaxHeight', 'МаксимальнаяВысота']), 10) || 0;
-            var canDynamicHeight = !isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
-                && !isFalse(prop(item, ['VerticalStretch', 'ВертикальноеРастягивание']))
-                && !labelHeight && !labelMaxHeight && /\s/.test(String(label).trim());
+            var canDynamicHeight = labelDecorationCanDynamicHeight(item)
+                && /\s/.test(String(label).trim());
             if (!canDynamicHeight) dcls += ' fp-label-one-line';
-            /* The reference pads a link label by 1 px on each side (18 px per
-             * line): Hyperlink, or a formatted title that is one whole <link>.
-             * A link inside ordinary text keeps the plain 16 px box. */
+            else if (isInterface85Context(ctx) && /\S[^\S\n]*\n[^\S\n]*\S/.test(String(label)))
+                dcls += ' fp-label-hard-break-85';
             var linkText = String(label).trim();
             if (/^<link\b[^>]*>[\s\S]*<\/>$/i.test(linkText) && linkText.split(/<link\b/i).length === 2)
                 dcls += ' fp-label-has-link';
@@ -9711,6 +11923,12 @@ function createControl(item, tag, ctx, parentMeta) {
                 ? String(prop(item, ['VerticalAlign', 'ВертикальноеВыравнивание']) || '').toLowerCase() : '';
             if (labelVerticalAlign === 'top' || labelVerticalAlign === 'верх') wrap.classList.add('fp-label-valign-top');
             else if (labelVerticalAlign === 'bottom' || labelVerticalAlign === 'низ') wrap.classList.add('fp-label-valign-bottom');
+            var labelTextAlign = String(prop(item, ['HorizontalAlign', 'ГоризонтальноеВыравнивание']) || '').toLowerCase();
+            if (!isInterface85Context(ctx)
+                && /^true$/i.test(String(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']) || ''))) {
+                if (/center|центр/.test(labelTextAlign)) wrap.classList.add('fp-label-halign-center');
+                else if (/right|прав/.test(labelTextAlign)) wrap.classList.add('fp-label-halign-right');
+            }
             setFormattedText(decoration, label, isHyperlinkItem(item),
                 !isFalse(prop(item, ['TitleFormatted'])));
             wrap.appendChild(decoration);
@@ -9725,11 +11943,15 @@ function createControl(item, tag, ctx, parentMeta) {
             }
         }
     } else if (tag === 'PictureDecoration' || tag === 'PictureField') {
-        /* The reference paints Image controls at the profile's intrinsic 24x24 px size.
-         * Keep the semantic class separate from command/input icons: those
-         * have their own, smaller chrome metrics. */
         var decorationPicture = pictureRef(item);
         var picWrap = el('span', 'fp-picture-icon fp-picture-decoration');
+        var itemPictureIntrinsic = tag === 'PictureDecoration'
+            ? itemLocalPictureIntrinsicSize(item, decorationPicture, ctx) : null;
+        if (itemPictureIntrinsic) {
+            picWrap.classList.add('fp-picture-intrinsic');
+            picWrap.style.width = itemPictureIntrinsic.width + 'px';
+            picWrap.style.height = itemPictureIntrinsic.height + 'px';
+        }
         if (/^StdPicture\./i.test(String(decorationPicture || '')))
             picWrap.classList.add('fp-standard-picture');
         if (/longoperation|длительнаяоперация/i.test(String(decorationPicture || '')))
@@ -9737,14 +11959,11 @@ function createControl(item, tag, ctx, parentMeta) {
         if (/^StdPicture\.Dialog/i.test(String(decorationPicture || '')))
             picWrap.classList.add('fp-picture-dialog');
         var decorationIcon = pictureDecorationIconId(decorationPicture);
-        /* A platform StdPicture on an unsized PictureDecoration with the
-         * default PictureSize is a 0x0 image in the reference, like the command
-         * hyperlinks above (e.g. CreateListItem, Delete are absent), while a
-         * Proportionally scaled picture or a sized one is painted. */
         /* The large Dialog* pictures are painted at their own size (e.g. the
          * DialogExclamation triangle). */
         if (/^StdPicture\./i.test(String(decorationPicture || ''))
             && !/^StdPicture\.Dialog/i.test(String(decorationPicture || ''))
+            && !/^showright$/i.test(String(prop(item, ['ToolTipRepresentation']) || ''))
             && !prop(item, ['Width', 'Ширина']) && !prop(item, ['Height', 'Высота'])
             && !prop(item, ['PictureSize', 'РазмерКартинки'])) {
             picWrap.classList.add('fp-unpainted-picture');
@@ -9761,15 +11980,31 @@ function createControl(item, tag, ctx, parentMeta) {
         if (picWrap.classList.contains('fp-unpainted-picture')) {
             /* nothing to paint */
         } else if (commonPictureResource(decorationPicture, ctx) || decorationIcon
-            || (/^StdPicture\.Dialog/i.test(String(decorationPicture || '')) && stdPictureUrl(decorationPicture)))
+            || stdPictureUrl(decorationPicture))
             appendPictureIcon(picWrap, decorationPicture, ctx, decorationIcon);
+        else if (!decorationPicture && prop(item, ['NonselectedPictureText', 'ТекстКартинкиНевыбранного'])) {
+            /* Image controls may deliberately have no Picture: the platform
+             * then paints NonselectedPictureText inside the authored image box.
+             * Treating this as an unresolved 24px icon erased large call-to-
+             * action tiles such as «Показать документ». */
+            picWrap.classList.add('fp-picture-text-decoration');
+            var pictureText = el('span', 'fp-picture-decoration-text');
+            setFormattedText(pictureText,
+                prop(item, ['NonselectedPictureText', 'ТекстКартинкиНевыбранного']),
+                false, false);
+            picWrap.appendChild(pictureText);
+        }
         else picWrap.classList.add('fp-picture-unresolved');
+        if (tag === 'PictureField') {
+            wrap.className = 'fp-control-wrap fp-field-row fp-title-' + loc;
+            if (label && loc !== 'none')
+                wrap.appendChild(el('span', 'fp-field-label', withColon(label, loc, isInterface85Context(ctx))));
+            if (label && loc === 'left' && picWrap.classList.contains('fp-unpainted-picture'))
+                wrap.classList.add('fp-picture-field-caption');
+        }
         wrap.appendChild(picWrap);
     } else if (tag === 'HTMLDocumentField' || tag === 'TextDocumentField'
         || tag === 'FormattedDocumentField') {
-        /* The reference paints document fields as a framed white surface filling the
-         * window. BorderColor (e.g. = FormBackColor) hides the frame. The
-         * caption is shown only for an explicit TitleLocation. */
         wrap.className = 'fp-control-wrap fp-document-field fp-title-' + loc;
         if (label && loc !== 'none' && prop(item, ['TitleLocation', 'ПоложениеЗаголовка']))
             wrap.appendChild(el('span', 'fp-field-label', withColon(label, loc)));
@@ -9778,6 +12013,9 @@ function createControl(item, tag, ctx, parentMeta) {
         wrap.appendChild(docSurface);
     } else if (tag === 'ChartField') {
         wrap.appendChild(chartWidget());
+    } else if ((tag === 'TrackBarField' || tag === 'ProgressBarField') && isInterface85Context(ctx)) {
+        wrap.classList.add('fp-bar-field-85');
+        wrap.appendChild(el('span', 'fp-field-label', plainFormattedText(label)));
     } else if (RARE_TAGS[tag]) {
         wrap.appendChild(fallbackWidget(plainFormattedText(label), tag));
     } else {
@@ -9804,15 +12042,24 @@ function isPaintlessLabelField(item, location, rendered, parentMeta) {
         && !(rendered.children && rendered.children.length);
 }
 
-function renderablePages(pagesNode) {
-    /* The platform drops structurally empty Page nodes from the visual tab set.
-     * Keep them in the parsed model/outline for diagnostics, but do not paint
-     * a tab which the reference itself never allocates. */
-    return (pagesNode && pagesNode.childItems || []).filter(function (it) {
-        return it && it.tag === 'Page' && it.childItems && it.childItems.length;
+function pageHasRenderableContent(items) {
+    return (items || []).some(function (item) {
+        if (!item || isFalse(prop(item, ['Visible', 'visible']))) return false;
+        var tag = item.tag || '';
+        /* Empty designer groups are insertion points: renderPreview skips them,
+         * so a page containing only those groups has no tab in the client. */
+        if (tag === 'UsualGroup' || tag === 'Group' || tag === 'CollapsibleGroup')
+            return pageHasRenderableContent(item.childItems);
+        return true;
     });
 }
 
+function renderablePages(pagesNode) {
+    /* Keep empty pages in the model/outline, but omit their visual tabs. */
+    return (pagesNode && pagesNode.childItems || []).filter(function (it) {
+        return it && it.tag === 'Page' && pageHasRenderableContent(it.childItems);
+    });
+}
 function isRootFlattenedPage(item, parentItem) {
     return !!(item && item.tag === 'Pages' && pagesRep(item) === 'none'
         && parentItem && parentItem.tag === 'Form');
@@ -9823,19 +12070,31 @@ function isFlattenedPageLeadingCaptionItem(item) {
         && groupBehavior(item) !== 'popup');
 }
 
-/* The reference starts a tab strip on the very top of the box the parent allocates to a
- * Pages: the strip's own 1px frame is the first painted row. The viewer's item
- * shell adds 1px padding plus a 1px selection border above it, so every level
- * of nested Pages pushed its content 2px down and the error accumulated with
- * the nesting depth (38px per level against the reference's 27px strip
- * plus 9px page inset). Only a Pages that really paints a strip is marked:
- * PagesRepresentation=None keeps the ordinary shell. */
 function markPagesTabbedShell(outerEl, tabbed) {
     var node = outerEl;
     while (node && node.classList && !node.classList.contains('fp-item')) node = node.parentNode;
     if (!node || !node.classList) return;
     if (tabbed) node.classList.add('fp-pages-tabbed');
     else node.classList.remove('fp-pages-tabbed');
+}
+
+/* A clean 8.5 page whose card has multiple authored fixed columns is a wide
+ * workspace. The ordinary one-column page width is only a control default;
+ * keeping it on this structure clips the card and its companion rail. */
+function pageHasClean85FixedCardColumns(page) {
+    if (!page || !page.childItems) return false;
+    var found = false;
+    walkFormItems(page, function (item) {
+        if (found || item.tag !== 'UsualGroup' || !showAsCard(item)) return;
+        var columns = (item.childItems || []).filter(function (child) {
+            return child && child.tag === 'UsualGroup'
+                && normGroupMode(prop(child, ['Group'])) === 'vertical'
+                && charSize(prop(child, ['Width', 'Ширина'])) > 0
+                && isFalse(prop(child, ['HorizontalStretch', 'ГоризонтальноеРастяжение']));
+        });
+        if (columns.length > 1) found = true;
+    });
+    return found;
 }
 
 function renderPages(pagesNode, outerEl, meta, ctx) {
@@ -9861,6 +12120,7 @@ function renderPages(pagesNode, outerEl, meta, ctx) {
     if (pagesRep(pagesNode) === 'none') {
         markPagesTabbedShell(outerEl, false);
         outerEl.className = layoutClass(meta);
+        if (isInterface85Context(ctx)) outerEl.classList.add('fp-pages-85');
         applyLayout(outerEl, meta);
         if (activePage && activePage.childItems && activePage.childItems.length) {
             var hiddenMeta = layoutMeta(activePage);
@@ -9875,22 +12135,38 @@ function renderPages(pagesNode, outerEl, meta, ctx) {
                 && leadingItem.querySelector(':scope > .fp-control-wrap > .fp-collapsible-group > .fp-collapsible-title, '
                     + ':scope > .fp-control-wrap > .fp-group-block > .fp-group-title, '
                     + ':scope > .fp-control-wrap > .fp-group-bare > .fp-group-title')) {
-                /* PagesRepresentation=None dissolves the Page shell in the reference.
-                 * Its first ordinary group caption therefore starts on the
-                 * Page content baseline instead of paying a second, nested
-                 * group-leading margin. */
                 leadingItem.classList.add('fp-flattened-page-leading-group');
             }
         }
         return;
     }
+    var rep = pagesRep(pagesNode);
+    var authoredBottom85 = rep === 'bottom' && isInterface85Context(ctx);
+    if (authoredBottom85) rep = 'top';
     outerEl.className = layoutClass(meta, { skipChildren: true, alias: 'fp-pages-outer' })
-        + (pagesRep(pagesNode) === 'bottom' ? ' TabsOnBottom' : ' TabsOnTop');
+        + (rep === 'bottom' ? ' TabsOnBottom'
+            : rep === 'left-horizontal' ? ' TabsOnLeftHorizontal' : ' TabsOnTop')
+        + (authoredBottom85 ? ' fp-pages-authored-bottom-85' : '');
+    if (isInterface85Context(ctx)) outerEl.classList.add('fp-pages-85');
     applyLayout(outerEl, meta);
     markPagesTabbedShell(outerEl, true);
     var tablist = el('div', 'fp-pages-tablist');
     tablist.setAttribute('role', 'tablist');
+    var overflowTabs85 = [];
+    var visibleTabIndex85 = 0;
+    var taxiEnable85 = /^taxienableversion8_5$/i.test(String(ctx && ctx.model && ctx.model.configInterfaceMode || ''));
+    var moreTabCutoff85 = taxiEnable85
+        ? (pages.length > 4 ? 3 : pages.length - 1)
+        : pages.length - 1;
+    var useMoreTab85 = isInterface85Context(ctx) && rep !== 'bottom'
+        && rep !== 'left-horizontal' && pages.length >= 4;
+    if (useMoreTab85) tablist.classList.add('fp-pages-tablist-85-more');
+    if (useMoreTab85 && !taxiEnable85) tablist.classList.add('fp-pages-tablist-85-measured');
     var panelWrap = el('div', 'fp-pages-panel-wrap');
+    var cardTabsOverflow = isInterface85Context(ctx) && rep === 'top'
+        && pages.filter(function (page) { return !isFalse(prop(page, ['Visible', 'visible'])); }).length > 4;
+    var visibleTabCount = 0;
+    var overflowTabs = [];
     pages.forEach(function (pageItem, idx) {
         var pid = itemKey(pageItem);
         if (!pid) return;
@@ -9929,9 +12205,58 @@ function renderPages(pagesNode, outerEl, meta, ctx) {
             selectIn(ctx.root, pid, ctx);
             if (ctx && ctx.onSelect) ctx.onSelect(pageItem);
         });
+        if (useMoreTab85 && visibleTabIndex85 >= moreTabCutoff85) {
+            tab.classList.add('fp-page-tab-overflow-85');
+            tab.style.setProperty('display', 'none', 'important');
+            overflowTabs85.push(tab);
+        }
+        visibleTabIndex85 += 1;
         tablist.appendChild(tab);
     });
+    if (overflowTabs85.length || tablist.classList.contains('fp-pages-tablist-85-measured')) {
+        var moreTab85 = el('button', 'fp-pages-tab fp-page-tab-more-85');
+        moreTab85.type = 'button';
+        moreTab85.setAttribute('role', 'tab');
+        moreTab85.setAttribute('aria-haspopup', 'menu');
+        moreTab85.setAttribute('aria-expanded', 'false');
+        moreTab85.setAttribute('aria-selected', overflowTabs85.some(function (tab) {
+            return tab.getAttribute('aria-selected') === 'true';
+        }) ? 'true' : 'false');
+        moreTab85.appendChild(el('span', 'fp-page-tab-title', 'Ещё'));
+        moreTab85.appendChild(el('span', 'fp-page-tab-caret-85', '▾'));
+        var moreMenu85 = el('div', 'fp-page-tab-overflow-menu-85');
+        moreMenu85.setAttribute('role', 'menu');
+        moreMenu85.hidden = true;
+        overflowTabs85.forEach(function (tab) {
+            var menuItem = el('button', 'fp-page-tab-overflow-item-85');
+            menuItem.type = 'button';
+            menuItem.setAttribute('role', 'menuitem');
+            menuItem.textContent = tab.textContent || '';
+            menuItem.addEventListener('click', function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                moreMenu85.hidden = true;
+                moreTab85.setAttribute('aria-expanded', 'false');
+                tab.click();
+            });
+            moreMenu85.appendChild(menuItem);
+        });
+        moreTab85.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            moreMenu85.hidden = !moreMenu85.hidden;
+            if (!moreMenu85.hidden) {
+                moreMenu85.style.left = moreTab85.offsetLeft + 'px';
+                moreMenu85.style.right = 'auto';
+            }
+            moreTab85.setAttribute('aria-expanded', moreMenu85.hidden ? 'false' : 'true');
+        });
+        tablist.appendChild(moreTab85);
+        tablist.appendChild(moreMenu85);
+    }
     var panel = el('div', 'fp-pages-active-panel');
+    if (activePage && isInterface85Context(ctx) && pageHasClean85FixedCardColumns(activePage))
+        panel.classList.add('fp-page-wide-workspace-85');
     panel.setAttribute('role', 'tabpanel');
     var inner = null;
     if (activePage && activePage.childItems && activePage.childItems.length) {
@@ -10001,6 +12326,43 @@ function locateItem(items, id, pageStack) {
     return null;
 }
 
+/* Standard commands addressed to Form.Item.<name> exist in XML even while
+ * that control lives on an inactive page. The native client contributes them
+ * only from the active page tree. */
+function activeFormItemNames(model) {
+    var names = Object.create(null);
+    function visit(items) {
+        for (var i = 0; items && i < items.length; i++) {
+            var item = items[i];
+            if (!item || isFalse(prop(item, ['Visible', 'visible']))) continue;
+            if (item.name) names[item.name] = true;
+            if (item.tag === 'Pages') {
+                var pages = renderablePages(item);
+                var active = activePageIdByPagesKey[itemKey(item)];
+                var page = null;
+                for (var p = 0; p < pages.length; p++) {
+                    if (active && itemKey(pages[p]) === active) { page = pages[p]; break; }
+                    if (!page && !isFalse(prop(pages[p], ['Visible', 'visible']))) page = pages[p];
+                }
+                if (page) visit(page.childItems);
+            } else visit(item.childItems);
+        }
+    }
+    visit(model && model.childItemsRoot);
+    return names;
+}
+
+function commandTargetsInactiveFormItem(item, model) {
+    var command = String(prop(item, ['CommandName', 'Command']) || '');
+    var match = /^Form\.Item\.([^.]+)\.StandardCommand\./i.exec(command);
+    if (!match || !/\.StandardCommand\.(?:Print|Preview)$/i.test(command)) return false;
+    var target = null;
+    walkFormItems({ childItems: model && model.childItemsRoot }, function (candidate) {
+        if (!target && candidate && candidate.name === match[1]) target = candidate;
+    });
+    return !!(target && target.tag === 'PlannerField' && !activeFormItemNames(model)[match[1]]);
+}
+
 function activatePagesForId(model, id) {
     var loc = locateItem(displayItems(model), id, []);
     if (!loc || !loc.pages || !loc.pages.length) return false;
@@ -10031,9 +12393,6 @@ function selectIn(root, id, ctx) {
     return hit || th || entry || null;
 }
 
-/* A data field whose DataPath the reference dropped (the attribute no longer exists,
- * e.g. Code with CodeLength=0 or Parent of a flat catalog) is not drawn by the
- * designer; neither is a group left with only such fields. */
 var ORPHAN_DATA_FIELD_TAGS = {
     InputField: 1, CheckBoxField: 1, LabelField: 1, RadioButtonField: 1,
     TextDocumentField: 1, SpreadSheetDocumentField: 1, HTMLDocumentField: 1
@@ -10067,9 +12426,96 @@ function isOrphanOnlyGroup(item) {
     return sawOrphan;
 }
 
+/* A narrow, fixed List used as the first column of a two-column Pages
+ * wizard leaves a six-unit navigation gutter in the native Taxi canvas.
+ * The list itself retains its authored Width; only its transparent rail grows. */
+function taxiWizardNavigationRailWidth(item, parentItem, ctx) {
+    if (!item || !parentItem || !ctx || !isPlatform85Model(ctx.model)
+        || isInterface85Context(ctx) || item.tag !== 'UsualGroup'
+        || parentItem.tag !== 'UsualGroup') return 0;
+    var siblings = (parentItem.childItems || []).filter(function (child) {
+        return child && !isFalse(prop(child, ['Visible', 'visible']));
+    });
+    if (siblings.length !== 2 || siblings[0] !== item) return 0;
+    var first = (item.childItems || []).filter(function (child) {
+        return child && !isFalse(prop(child, ['Visible', 'visible']));
+    })[0];
+    if (!first || first.tag !== 'Table' || !isFalse(prop(first, ['HorizontalStretch']))
+        || !isFalse(prop(first, ['Header']))
+        || !/^list$/i.test(String(prop(first, ['Representation']) || ''))) return 0;
+    var width = parseInt(prop(first, ['Width']), 10) || 0;
+    if (!width || width > 24) return 0;
+    var other = siblings[1];
+    if (!(other.childItems || []).some(function (child) { return child && child.tag === 'Pages'; })) return 0;
+    return (width + 6) * REF_AUTHORED_CHAR_PX;
+}
+
+/* A folder catalog's main list keeps its creation actions on the form bar
+ * when the table's own bar is visible and the authored root popup contains
+ * the primary Create action. The table can exclude CreateFolder from its own
+ * commands without suppressing that form-level action. */
+function rootFolderListActions(model) {
+    var main = mainAttribute(model);
+    var meta = model && model.objectMeta;
+    if (!main || !meta || !meta.hasFolders || !meta.name
+        || !/DynamicList|ДинамическийСписок/i.test(String(prop(main, ['Type']) || ''))
+        || String((main.settings && main.settings.mainTable) || '').split('.').pop() !== meta.name)
+        return [];
+    var table = null;
+    walkFormItems({ childItems: model.childItemsRoot }, function (item) {
+        if (!table && item && item.tag === 'Table'
+            && String(prop(item, ['DataPath']) || '') === main.name) table = item;
+    });
+    if (!table || commandBarLocation(table) === 'none') return [];
+    var root = model.autoCommandBar;
+    var primaryPopup = (root && root.childItems || []).some(function (item) {
+        return item && item.tag === 'Popup' && (item.childItems || []).some(function (child) {
+            return isTrue(prop(child, ['DefaultButton']))
+                && /^create$/i.test(String(commandMeta(child, { commands: commandIndex(model.commands) }, 'actionPurpose') || ''));
+        });
+    });
+    if (!primaryPopup) return [];
+    return [syntheticBtn('_rootListCreateFolder', 'Создать группу', '', 'Text', {
+        CommandName: 'Form.StandardCommand.CreateFolder'
+    }), syntheticBtn('_rootListCreate', 'Создать', 'StdPicture.CloneListItem', 'Picture', {
+        CommandName: 'Form.StandardCommand.Create'
+    })];
+}
+
+/* A titled, authored-width vertical column of equally wide editors keeps
+ * those editors inside its own band. Their captions use a compact shared
+ * lane, allowing a long caption to wrap as it does on the native form. */
+function authoredVerticalEditorColumn(item) {
+    if (!item || item.tag !== 'UsualGroup' || !isTrue(prop(item, ['ShowTitle']))
+        || normGroupMode(prop(item, ['Group'])) !== 'vertical') return 0;
+    var width = parseInt(prop(item, ['Width']), 10) || 0;
+    if (width < 40) return 0;
+    var fields = (item.childItems || []).filter(function (child) {
+        return child && child.tag === 'InputField'
+            && !isFalse(prop(child, ['Visible', 'visible']))
+            && (parseInt(prop(child, ['Width']), 10) || 0) >= width;
+    });
+    return fields.length >= 3 ? width * GROUP_COL_PX : 0;
+}
+
+function pictureTintMatchesParent(item, parentItem, ctx) {
+    if (!parentItem) return false;
+    var pictureTint = prop(item, ['PictureColor', 'ЦветКартинки']);
+    var parentPaint = prop(parentItem, ['BackColor', 'ЦветФона']);
+    var tintAbs = absoluteColor(pictureTint, ctx)
+        || styleItemColor(pictureTint, ctx && ctx.styleItems, null, ctx);
+    var paintAbs = absoluteColor(parentPaint, ctx)
+        || styleItemColor(parentPaint, ctx && ctx.styleItems, null, ctx);
+    return !!(tintAbs && paintAbs && tintAbs.toLowerCase() === paintAbs.toLowerCase());
+}
 function renderPreview(items, parentEl, ctx, parentItem) {
     parentEl.innerHTML = '';
-    if (!items || !items.length) {
+    var emptyAutofilledRootBar = (!items || !items.length)
+        && parentItem && parentItem.tag === 'AutoCommandBar' && String(parentItem.id) === '-1'
+        && parentItem._fp85CommandBand === 'top' && !parentItem._fp85EmptyTop
+        && ctx && ctx.model && ctx.model.autoCommandBar
+        && !isFalse(prop(ctx.model.autoCommandBar, ['Autofill']));
+    if ((!items || !items.length) && !emptyAutofilledRootBar) {
         parentEl.classList.remove('fp-mockup');
         parentEl.textContent = 'Нет элементов';
         return;
@@ -10090,24 +12536,75 @@ function renderPreview(items, parentEl, ctx, parentItem) {
         }))
         parentEl.classList.add('fp-document-posting-commandbar');
     var parentMeta = parentItem ? layoutMeta(parentItem) : null;
+    /* Rows of a 2.21 fixed-width column carry the column's value lane. */
+    var fixedColumnLane = !!(parentMeta && parentMeta.orientation === 'vertical'
+        && parentMeta.explicitWidth && parentMeta.fixedWidth
+        && formVersionAtLeast(parentItem, '2.21'));
     var extraBar = [];
-    items.forEach(function (item) {
+    items.forEach(function (item, itemIndex) {
         if (isFalse(prop(item, ['Visible', 'visible']))) return;
+        if (fixedColumnLane && item && item.tag === 'UsualGroup') item._fpFixedColumnLaneRow = true;
         if (!inBar && orphanFieldsHidden(ctx) && (isOrphanDataField(item) || isOrphanOnlyGroup(item))) return;
         if (isDeadCommand(item)) return;
+        if (inBar && commandTargetsInactiveFormItem(item, ctx && ctx.model)) return;
+        if (inBar && interface85CardTabsForm(ctx && ctx.model)
+            && parentEl.classList.contains('fp-table-toolbar')
+            && ((item.tag === 'Popup' && /^supplementary$/i.test(String(prop(item, ['Importance']) || '')))
+                || (item._fpOwnTableBar && /\.StandardCommand\.Refresh$/i.test(String(
+                    prop(item, ['CommandName']) || ''))))) {
+            extraBar.push(item);
+            return;
+        }
+        if (inBar && isInterface85Context(ctx)
+            && parentEl.classList.contains('fp-table-toolbar')
+            && interface85UnplacedTableCommand(item)) {
+            extraBar.push(item);
+            return;
+        }
+        if (inBar && isInterface85Context(ctx)
+            && parentEl.classList.contains('fp-table-toolbar')
+            && item.tag === 'ButtonGroup' && interface85UnplacedTableGroup(item)) {
+            collectInterface85UnplacedCommands(item, extraBar);
+            return;
+        }
         /* Standard command availability depends on runtime document state,
          * which Form.xml does not contain. The deterministic preview models a
          * new/unposted document, so UndoPosting is unavailable regardless of
          * how an author grouped or named the neighbouring Post command. */
-        if (inBar && /StandardCommand\.UndoPosting$/i.test(String(
-            prop(item, ['CommandName', 'Command']) || ''))) return;
+        if (inBar && item.name !== '_stdUndoPosting' && /StandardCommand\.UndoPosting$/i.test(String(
+            prop(item, ['CommandName', 'Command']) || ''))) {
+            /* Not important either: it still asks for «Еще». */
+            extraBar.push(item);
+            return;
+        }
         if (inBar && inAdditionalBar(item)) { extraBar.push(item); return; }
         var tag = item.tag || '';
-        /* Empty generated groups are extension insertion points, not visible
-         * designer sections. 1C suppresses them until a child is inserted. */
+        /* A root group of empty insertion points still reserves its place
+         * before a tabbed Pages section. It has no painted contents, but the
+         * form's normal row gap separates the command strip and tabs. */
+        var nextRootItem = parentItem && parentItem.tag === 'Form'
+            ? items.slice(itemIndex + 1).find(function (next) {
+                return !isFalse(prop(next, ['Visible', 'visible']));
+            }) : null;
+        var emptyRootPrelude = isInterface85Context(ctx)
+            && parentItem && parentItem.tag === 'Form'
+            && (tag === 'UsualGroup' || tag === 'Group')
+            && representationOf(item) === 'none'
+            && item.childItems && item.childItems.length
+            && nextRootItem && nextRootItem.tag === 'Pages'
+            && pagesRep(nextRootItem) !== 'none';
+        /* Other empty generated groups are extension insertion points, not
+         * visible designer sections until a child is inserted. */
         if ((tag === 'UsualGroup' || tag === 'Group' || tag === 'CollapsibleGroup'
-            || tag === 'Pages')
-            && (!item.childItems || !item.childItems.length)) return;
+            || tag === 'Pages') && isEmptyInsertionGroup(item)) {
+            if (emptyRootPrelude) {
+                /* Keep the row gap without laying out the group's empty subtree. */
+                var spacer = el('div', 'fp-empty-root-prelude');
+                spacer.style.cssText = 'height:0;min-height:0;flex:0 0 0;overflow:hidden';
+                parentEl.appendChild(spacer);
+            }
+            return;
+        }
         if (inBar && tag === 'Popup' && !popupHasCommands(item) && !isCreateBasedOnPopup(item)) {
             extraBar.push(item);
             return;
@@ -10121,6 +12618,76 @@ function renderPreview(items, parentEl, ctx, parentItem) {
         var meta = isContainer(tag) && tag !== 'Popup' ? layoutMeta(item) : null;
         var div = el('div', 'fp-item ' + (container || tag === 'Table' ? 'fp-container' : 'fp-control'));
         div._fpItem = item;
+        if ((tag === 'InputField' || tag === 'LabelField') && isInterface85Context(ctx))
+            div.dataset.fp85WidthChars = String(interface85RefWidthChars(item, ctx, tag));
+        var editorColumnWidth = authoredVerticalEditorColumn(item);
+        if (editorColumnWidth) {
+            div.classList.add('fp-authored-editor-column');
+            div.style.setProperty('--fp-editor-caption-track', Math.round(editorColumnWidth * 0.1) + 'px');
+        }
+        if (interface85AdaptivePageDetailStack(item, ctx)) div.classList.add('fp85-page-detail-stack');
+        if (item && item.interface85AddedCommand) div.classList.add('fp-interface85-added-command');
+        if (inBar && /^right$/i.test(String(prop(item, ['GroupHorizontalAlign']) || '')))
+            div.classList.add('fp-bar-align-right');
+        var sizeClass = textSizeClass(item);
+        if (sizeClass) div.classList.add(sizeClass);
+        if (showAsCard(item)) {
+            div.classList.add(tag === 'Button' ? 'fp-button-card-item' : 'fp-ui85-card');
+            ['AppearanceInCard', 'WidthInCard', 'CardRepresentationType', 'ShowTitleInCard', 'AutoMaxCardHeight']
+                .forEach(function (key) {
+                    var value = prop(item, [key]);
+                    if (value != null && value !== '') div.dataset[key.charAt(0).toLowerCase() + key.slice(1)] = String(value);
+                });
+        }
+        var collapsedItem = prop(item, ['CollapsedRepresentationItem']);
+        if (collapsedItem) div.dataset.collapsedRepresentationItem = String(collapsedItem.name || collapsedItem.ref || collapsedItem);
+        if (isInterface85Context(ctx) && tag === 'UsualGroup'
+            && /collapsible|сворачиваем/i.test(String(prop(item, ['Behavior', 'Поведение']) || ''))
+            && /buttoninparent|кнопкавродител/i.test(String(prop(item, ['ControlRepresentation', 'ОтображениеУправления']) || '').replace(/\s+/g, '')))
+            div.classList.add('fp-collapse-in-parent-85');
+        var appearanceMode = prop(item, ['AppearanceMode']);
+        if (appearanceMode) div.dataset.appearanceMode = String(appearanceMode);
+        if (isInterface85Context(ctx)) {
+            if (interface85CardTabsWorkspace(item, ctx)) div.classList.add('fp85-card-tabs-workspace');
+            if (interface85LegendFooter(item, ctx)) div.classList.add('fp85-legend-footer');
+            var rootSplit85 = interface85RootSplitSpec(item, parentItem, ctx);
+            if (rootSplit85) {
+                div.classList.add('fp85-root-split');
+                if (rootSplit85.adaptive) div.classList.add('fp85-root-split-adaptive');
+                div.style.setProperty('--fp-85-rail-track', rootSplit85.railTrack);
+            }
+            if (tag === 'InputField') {
+                div.classList.add('fp-field-item-85');
+                var numberMeta85 = ctx && ctx.model && ctx.model.objectMeta;
+                if (/^(Объект|Object)\.(Number|Номер|Code|Код)$/i.test(String(prop(item, ['DataPath']) || ''))
+                    && (!numberMeta85 || /^true$/i.test(numberMeta85.autonumbering || ''))
+                    && !prop(item, ['ReadOnly']))
+                    div.classList.add('fp-autonumber-85');
+                if (/\r?\n/.test(String(displayLabel(item, ctx, tag) || ''))
+                    || parseInt(prop(item, ['TitleHeight', 'ВысотаЗаголовка']), 10) > 1)
+                    div.classList.add('fp-title-multiline');
+                var type85 = typeInfoFromItem(item, ctx);
+                var typeNames85 = (type85.types || []).join(' ');
+                if (/EnumRef\./i.test(typeNames85)) div.classList.add('fp-field-enum-85');
+                if (inputButtonKinds(item, ctx).indexOf('spin') >= 0)
+                    div.classList.add('fp-field-spin-85');
+                if (isTrue(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
+                    && isFalse(prop(item, ['AutoMaxWidth'])))
+                    div.classList.add('fp-field-wide-85');
+                var tooltip85 = tooltipPlacement(item, ctx);
+                if (tooltip85 === 'top' || tooltip85 === 'bottom')
+                    div.classList.add('fp-field-tooltip-85');
+            }
+            if (tag === 'AutoCommandBar' || tag === 'CommandBar')
+                div.classList.add('fp-commandbar-item-85');
+                if (/^top$/i.test(String(prop(item, ['GroupVerticalAlign']) || '')))
+                    div.classList.add('fp-commandbar-top-85');
+            if (tag === 'AutoCommandBar' && String(item.id) === '-1') {
+                div.classList.add('fp-root-commandbar-item-85');
+                div.classList.add('fp-root-commandbar-'
+                    + (item._fp85CommandBand || interface85RootCommandBarPlacement(ctx && ctx.model)));
+            }
+        }
         if (emptyDecorationIsCompactInParent(item, parentMeta))
             div.classList.add('fp-empty-no-spacing-decoration');
         if (inBar) div.classList.add('fp-bar-item');
@@ -10143,15 +12710,24 @@ function renderPreview(items, parentEl, ctx, parentItem) {
         if (tag === 'Button'
             && String(prop(item, ['ShapeRepresentation']) || '').toLowerCase() === 'none')
             div.classList.add('fp-shape-none-button');
+        /* A popup group with a whitespace-only authored title has no visible
+         * launcher in the designer. Keep its narrow layout slot between the
+         * adjacent commands instead of treating it as a stretchable column. */
+        if (tag === 'UsualGroup' && groupBehavior(item) === 'popup'
+            && !String(rawTitle(item) || '').trim()
+            && isTrue(prop(item, ['ShowTitle', 'ПоказыватьЗаголовок']))
+            && representationOf(item) === 'none')
+            div.classList.add('fp-empty-popup-launcher');
         if (meta) {
             div.classList.add('fp-container-' + meta.orientation);
+            if ((tag === 'UsualGroup' || tag === 'Group' || tag === 'CollapsibleGroup')
+                && item.childItems && item.childItems.length
+                && !hasVisibleLayoutChild(item))
+                div.classList.add('fp-hidden-children-only');
             if ((meta.containerClassHints || []).indexOf('container-bare') >= 0) div.classList.add('fp-bare');
             var directVisibleChildren = (item.childItems || []).filter(function (child) {
                 return child && !isFalse(prop(child, ['Visible', 'visible'])) && !isAdditionTag(child.tag);
             });
-            /* Runtime-backed decorations can all be empty while their authored
-             * vertical wrapper still owns one Taxi logical row. The reference keeps that
-             * row, but does not stack the individual empty decoration heights. */
             if (meta.orientation === 'vertical'
                 && directVisibleChildren.length > 0
                 && directVisibleChildren.every(isEmptyLabelDecoration))
@@ -10176,6 +12752,12 @@ function renderPreview(items, parentEl, ctx, parentItem) {
         div.dataset.id = id;
         div.dataset.tag = tag;
         if (item && item.name) div.dataset.name = String(item.name);
+        /* The clean 8.5 client lets a through-aligned group reserve the top
+         * caption slot for its captionless children (CSS profile). */
+        if (tag === 'UsualGroup' && isInterface85Context(ctx)) {
+            var throughAlign85 = String(prop(item, ['ThroughAlign', 'СквозноеВыравнивание']) || '').trim();
+            if (throughAlign85) div.dataset.fpThroughAlign = throughAlign85;
+        }
         /* A body CommandBar right above a table stands where the table's own
          * toolbar would (the filter chips sit 10px below the buttons, as
          * under a table toolbar). */
@@ -10189,18 +12771,20 @@ function renderPreview(items, parentEl, ctx, parentItem) {
                 nextItem = nextItem.childItems[0];
             if (nextItem && nextItem.tag === 'Table') div.classList.add('fp-table-source-bar');
         }
-        if (tag === 'InputField') div.dataset.fieldKind = fieldKind(item, ctx);
+        if (tag === 'InputField') {
+            div.dataset.fieldKind = fieldKind(item, ctx);
+            if (marksRequiredComplete(item, ctx)) div.dataset.markRequiredComplete = 'true';
+        }
         var shownType = itemTypePresentation(item, ctx);
         if (shownType) div.title = 'Тип: ' + shownType;
         var control = createControl(item, tag, ctx, parentMeta);
         div.appendChild(control);
+        if (control.classList && control.classList.contains('fp-final-track-side-choice'))
+            div.classList.add('fp-final-track-side-choice');
         if (isPaintlessLabelField(item, titleLocation(item, parentMeta), control, parentMeta))
             div.classList.add('fp-paintless-label-field');
         if (tag === 'LabelDecoration' && control.querySelector('.fp-label-decoration'))
             div.classList.add('fp-native-label-decoration');
-        /* AutoMaxWidth=false without Width/MaxWidth leaves the caption width
-         * to its container: the reference wraps it there instead of widening the form
-         * (one long hint could otherwise grow a 1600px canvas). */
         if (tag === 'LabelDecoration'
             && !prop(item, ['Width', 'Ширина']) && !prop(item, ['MaxWidth', 'МаксимальнаяШирина'])
             && labelDecorationCanDynamicHeight(item))
@@ -10212,12 +12796,6 @@ function renderPreview(items, parentEl, ctx, parentItem) {
         var rootSurface = !!(parentMeta && parentMeta.tag === 'Form');
         var neutralNestedSurface = /^#(?:fff(?:fff)?|f0f0f0)$/i.test(surfaceBackColor)
             || /(?:form|field|window).*backcolor|цветфон(?:а)?формы/i.test(surfaceBackColor);
-        /* One card of a stack whose spacing is the separator between the cards
-         * does stand on another colour, so the reference gives it the vertical half of the
-         * painted-surface inset (the first glyph row sits 8px below the card
-         * top, not 5px). Only the vertical half: the 5px
-         * horizontal one belongs to a band that also owns its width, and adding
-         * it here re-measures every column. */
         if (isContainer(tag) && representationOf(item) === 'none'
             && /^#(?:fff(?:fff)?|f0f0f0)$/i.test(surfaceBackColor)
             && isNativeCardStack(parentItem))
@@ -10227,10 +12805,6 @@ function renderPreview(items, parentEl, ctx, parentItem) {
             div.classList.add('fp-neutral-surface');
         if (isContainer(tag) && representationOf(item) === 'none'
             && surfaceBackColor && (rootSurface || !neutralNestedSurface)) {
-            /* Representation=None suppresses the group frame, but the reference keeps
-             * a small content inset for every painted surface. It is not only
-             * a root-form rule: nested green/red/grey status bands use the
-             * same inset and otherwise collapse by roughly ten pixels. */
             div.classList.add('fp-color-surface');
             /* A surface of plain fields (a totals panel) centres its row. */
             if (!(item.childItems || []).some(function (child) { return child && isContainer(child.tag); }))
@@ -10244,9 +12818,23 @@ function renderPreview(items, parentEl, ctx, parentItem) {
                 div.classList.add('fp-root-color-surface');
         }
         applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem);
+        /* A tinted picture with the same authored colour as its painted parent
+         * is invisible in the platform, but it still reserves its layout lane.
+         * StdPicture assets are bitmap fallbacks here, so their dark source
+         * pixels must not leak through a PictureColor that blends into the band. */
+        if (tag === 'PictureDecoration' && pictureTintMatchesParent(item, parentItem, ctx)) {
+            var matchingPicture = div.querySelector('.fp-picture-icon');
+            if (matchingPicture) matchingPicture.style.visibility = 'hidden';
+        }
+        var navigationRailWidth = taxiWizardNavigationRailWidth(item, parentItem, ctx);
+        if (navigationRailWidth) {
+            div.classList.add('fp-taxi-wizard-navigation-rail');
+            div.style.setProperty('--fp-taxi-wizard-navigation-rail-width', navigationRailWidth + 'px');
+        }
         if (tag === 'Table' && control._minimumHeight) {
             div.style.minHeight = control._minimumHeight + 'px';
             var tableSizing = tableHeightMetrics(item);
+            if (tableSizing.mode === 'content') div.classList.add('fp-table-content-height');
             var tableHeight = tableSizing.preferred;
             if (tableHeight) {
                 div.dataset.fpTableNormalHeight = String(tableHeight);
@@ -10254,7 +12842,7 @@ function renderPreview(items, parentEl, ctx, parentItem) {
                 div.classList.add('fp-table-authored-height');
             }
         }
-        applyTooltip(div, item, inBar);
+        applyTooltip(div, item, inBar, ctx);
         bindSelect(div, item, ctx);
         if (tag === 'Popup' && control._popupBtn) bindPopupToggle(control, control._popupBtn, ctx, item);
         if (isPopUpGroup(item) && control._popupTitleBtn)
@@ -10280,7 +12868,11 @@ function renderPreview(items, parentEl, ctx, parentItem) {
                     });
                 })(ths[ti]);
             }
-        } else if (container && control._childBox && ((item.childItems && item.childItems.length) || tag === 'Pages')) {
+        } else if (container && control._childBox && ((item.childItems && item.childItems.length) || tag === 'Pages'
+            || (tag === 'AutoCommandBar' && String(item.id) === '-1'
+                && item._fp85CommandBand === 'top' && !item._fp85EmptyTop
+                && ctx && ctx.model && ctx.model.autoCommandBar
+                && !isFalse(prop(ctx.model.autoCommandBar, ['Autofill']))))) {
             var box = control._childBox;
             if (tag === 'Pages') {
                 renderPages(item, box, meta, ctx);
@@ -10303,26 +12895,19 @@ function renderPreview(items, parentEl, ctx, parentItem) {
             }
         }
     });
-    /* The form's own AutoCommandBar owns the platform More affordance even
-     * while its menu is empty: standard runtime actions remain available
-     * there whatever the form's object kind, so a DataProcessor bar keeps
-     * «Еще» exactly as a catalog or document bar does. Table bars get the same
-     * permanent button on their own path. An authored CommandBar group is
-     * NOT a form bar: the reference has no «Еще» for most of them, so
-     * such a group still earns More only through real additional items or
-     * width overflow. */
-    /* A form bar placed at the bottom (CommandBarLocation=Bottom) is a dialog
-     * button row: the reference packs it to the right edge and draws no empty «Еще»
-     * (e.g. Продолжить/Отмена). */
     var formBottomBar = inBar && parentItem && parentItem.tag === 'AutoCommandBar'
         && String(parentItem.id) === '-1' && ctx && ctx.model
-        && commandBarLocation(ctx.model) === 'bottom';
+        && (parentItem._fp85CommandBand === 'bottom'
+            || (!parentItem._fp85CommandBand && interface85RootCommandBarPlacement(ctx.model) === 'bottom'));
     if (formBottomBar && parentEl.classList) parentEl.classList.add('fp-form-bar-bottom');
     /* The permanent More belongs to the form's own bar; a table bar decides it
      * in createControl. */
     var tableToolbar = parentEl.classList && parentEl.classList.contains('fp-table-toolbar');
     if (inBar && parentItem && parentItem.tag !== 'ButtonGroup'
-        && (extraBar.length || (parentItem.tag === 'AutoCommandBar' && !formBottomBar && !tableToolbar))) {
+        && (extraBar.length || (parentItem.tag === 'AutoCommandBar' && !formBottomBar && !tableToolbar
+            && !parentItem._fp85EmptyTop
+            && (!(String(parentItem.id) === '-1' && !rootBarImplicitMore(ctx && ctx.model))
+                || (String(parentItem.id) === '-1' && !items.length))))) {
         var more = el('button', 'fp-button fp-popup');
         more.type = 'button';
         setPopupCaption(more, 'Еще');
@@ -10375,9 +12960,6 @@ function renderPreview(items, parentEl, ctx, parentItem) {
 }
 
 function compactCatalogRefEditorPaintWidth() {
-    /* CatalogRef without Width is a compact presentation editor, not the
-     * leftover of a later Width=55 sibling. The reference paints ~26 form units plus
-     * the 10px editor inset; choice/open glyphs live inside that box. */
     return 26 * REF_AUTHORED_CHAR_PX + TAXI_LAYOUT_METRICS.authoredEditorInsetWidth;
 }
 
@@ -10414,10 +12996,6 @@ function fitCompactTitledHorizontalPairCaptions(box, item) {
 
 function fitLeadingCaptionBeforeTitledPagesNone(box) {
     if (!box || !box.classList || !box.classList.contains('fp-children-horizontal')) return 0;
-    /* Outer ThroughAlign must not absorb the caption of a titled Pages=None
-     * sibling. The leading caption still owns a local Taxi text track, or
-     * the TextBox starts ~6px left of the reference and the next field
-     * shifts with it. */
     var firstField = null;
     var titledPages = false;
     for (var i = 0; i < box.children.length; i++) {
@@ -10510,10 +13088,6 @@ function isCompactInlineButtonAffordance(sibling, fieldNode) {
     return maxWidth > 0 && maxWidth <= 4 && isFalse(prop(buttonItem, ['AutoMaxWidth']));
 }
 
-/* A no-stretch Width field beside a titled stretch sibling is two
- * independent editors on one row. Pulling its caption into the parent
- * ThroughAlign track pads it 28px past the reference. INN/KPP-style rows
- * keep joining: those leading fields are not HorizontalStretch=false. */
 var COMPACT_PAIR_SHARED_CAPTION_MIN_BODY = 700;
 
 /* Caption tracks are published once; a later window resize only re-runs the
@@ -10552,9 +13126,6 @@ function compactTitledHorizontalPairKeepsLocalCaptions(item, node) {
     if (!charSize(prop(kids[0], ['Width', 'Ширина']))) return false;
     if (!isFalse(prop(kids[0], ['HorizontalStretch', 'ГоризонтальноеРастягивание']))) return false;
     if (charSize(prop(kids[1], ['Width', 'Ширина']))) return false;
-    /* The pair stays local only inside a column of authored Width. Without
-     * it the reference aligns the pair's caption with the other captions on
-     * the parent caption track. */
     var rowNode = node && node.closest ? node.closest('.fp-item') : null;
     var ownerNode = rowNode && rowNode.parentElement && rowNode.parentElement.closest
         ? rowNode.parentElement.closest('.fp-item') : null;
@@ -10628,7 +13199,12 @@ function firstFieldLabel(box) {
                      * stays local. Two or more value fields form a compound
                      * row even when an optional trailing action button exists
                      * (for example Planned / Completed / Cancelled totals). */
-                    if (hasActionSibling && !extraFieldCount) return null;
+                    /* In a 2.21 fixed-width column the row shares the column's
+                     * caption track even with a trailing action or note. */
+                    var laneRowNode = box.closest ? box.closest('.fp-item') : null;
+                    var laneRow = !!(laneRowNode && laneRowNode._fpItem
+                        && laneRowNode._fpItem._fpFixedColumnLaneRow);
+                    if (hasActionSibling && !extraFieldCount && !laneRow) return null;
                     return lab;
                 }
             }
@@ -10654,11 +13230,6 @@ function firstFieldLabel(box) {
     return null;
 }
 
-/* The value an external caption decoration labels: a title-less editor, a
- * title-less check box, a hyperlink in a sized caption row, or a bare
- * horizontal wrapper that opens with one of them. The reference paints such
- * check boxes, check-box pairs and button+picture wrappers on the same track
- * as the title-less editors. */
 function titleLessValueNode(n, box) {
     if (!n || !n.classList) return false;
     var tag = n.dataset && n.dataset.tag;
@@ -10683,13 +13254,6 @@ function titleLessValueNode(n, box) {
     return false;
 }
 
-/* A generated explicit-title row models the caption as a leading non-empty
- * LabelDecoration followed by the title-less control it labels. United=false
- * resolves that wrapper to ThroughAlign=dontuse, which detaches its own column
- * chrome — but the decoration is still this row's field title, and the reference puts
- * every such row of one vertical scope on a single track. Only rows
- * firstFieldLabel already recognises qualify, so an explanatory decoration
- * or a separator row stays local. */
 function captionLedHorizontalRow(inner, item) {
     if (!inner || !inner.classList
         || !inner.classList.contains('fp-children-horizontal')) return false;
@@ -10699,17 +13263,6 @@ function captionLedHorizontalRow(inner, item) {
     return !!firstFieldLabel(inner);
 }
 
-/* A horizontal band of through-aligned columns is still one caption scope. The reference
- * keeps a single caption track per vertical ThroughAlign scope and sees through
- * the dissolved Representation=None wrappers, so the leading column's captions
- * are measured together with the surrounding stack's (a header band shares
- * the track of the totals and comment rows below it).
- * A lone column is the opposite case — an ordinary wrapper around one vertical
- * stack, whose captions stay on their own track.
- * Requiring a second Use column keeps those wrappers, and rows pairing a Use
- * column with an explicit DontUse one, on the established local behaviour.
- * Only the leading column is projected: the later columns keep their own
- * narrow tracks rather than inheriting the scope maximum. */
 function leadingThroughAlignColumnBox(inner) {
     if (!inner || !inner.children) return null;
     var column = null;
@@ -10750,14 +13303,6 @@ function collectFieldLabels(box, deep) {
          * Its local rows align with one another, but must not inherit a wider
          * caption column from the surrounding page. */
         if (n.classList.contains('fp-tooltip-bg')) continue;
-        /* A tabbed Pages item's own subtree reuses the .fp-children class on
-         * the active page's panel (deep inside .fp-pages-outer). querySelector()
-         * would reach right through to it and pull that page's field labels
-         * into this equalization pass, so root-level label widths would shift
-         * with whichever tab happened to be open. Tabbed Pages already
-         * equalizes its own panel separately. PagesRepresentation=None hides
-         * the tabs but keeps the panel: the reference gives fields inside such
-         * a Pages their own narrow caption track instead of the outer one. */
         if (n.dataset && n.dataset.tag === 'Pages') continue;
         var inner = n.querySelector('.fp-children');
         if (!inner) continue;
@@ -10834,9 +13379,6 @@ function labelHasAuthoredWrap(label) {
 
 function labelMetric(label) {
     if (!label) return 0;
-    /* A canvas/offsetWidth pass of the whole string treats "Публичное\\nнаименование"
-     * as one line and inflates the column by ~30px. Longest-line
-     * intrinsic is the reference caption track for authored wraps. */
     if (labelHasAuthoredWrap(label)) return intrinsicLabelTextMetric(label);
     /* offsetWidth is integral and keeps the long-standing browser measurement
      * stable. Rect/canvas are fallbacks for inline or detached labels, not a
@@ -10867,9 +13409,6 @@ function labelMetric(label) {
             }
         } catch (e) { /* A DOM shim may not implement canvas; use Taxi fallback. */ }
     }
-    /* Authored line breaks are layout constraints. Measuring the whole string
-     * as one line defeats the reference's compact caption column even when CSS preserves
-     * the newline. Use the longest authored line as the intrinsic width. */
     var longestLine = text.split(/\r?\n/).reduce(function (max, line) {
         return Math.max(max, line.length);
     }, 0);
@@ -11186,9 +13725,6 @@ function applyLabelWidth(labels, forceAcrossColumns, ownerBox) {
         directMultiline: directMultiline
     });
     for (var j = 0; j < labels.length; j++) {
-        /* A detached pair of titled logical columns publishes a native text
-         * track, not the conservative 7px-per-character browser fallback.
-         * Four pixels are the reference caption chrome beside that painted text. */
         var w = softWrapTitleTrack(labels[j], labels.length)
             || (anyWrappedCaption
             ? wrappedSideCaptionTrackWidth(labels[j])
@@ -11232,8 +13768,6 @@ function applyLabelWidth(labels, forceAcrossColumns, ownerBox) {
                     * TAXI_LAYOUT_METRICS.averageCharacterWidth * TAXI_BROWSER_METRICS.averageCharacterScale));
         if (transparentGlyphs >= 40) max = transparentGlyphs;
     }
-    /* Short captions of sibling rows still share one track: the reference starts the
-     * «Дни:» and «Часы:» editors at the same x. */
     var shortSiblingRows = max > 0 && max < 40 && labels.length >= 2 && labels.every(function (label) {
         var row = label.closest && label.closest('.fp-item.fp-control');
         var rowBox = row && row.parentElement;
@@ -11259,10 +13793,6 @@ function applyLabelWidth(labels, forceAcrossColumns, ownerBox) {
         }
     }
     if (compactHorizontalColumn && max > 100) max = 100;
-    /* Stretchable authored totals (HorizontalStretch=true) do not wrap their
-     * captions into the compressed lane: the reference publishes the caption
-     * glyph track and gives the rest of the column to the editors (caption
-     * 88 + 5 gap, editor 110). */
     var stretchingNumericColumn = compactHorizontalColumn && labels.every(function (label) {
         var owner = label.closest && label.closest('.fp-item.fp-control');
         return !!(owner && owner.dataset.fpWidthStretchPriority === '1');
@@ -11287,9 +13817,6 @@ function applyLabelWidth(labels, forceAcrossColumns, ownerBox) {
         var glyphMax = 0;
         for (var g = 0; g < labels.length; g++)
             glyphMax = Math.max(glyphMax, wrappedSideCaptionTrackWidth(labels[g]));
-        /* Compact FIO/contact columns: offsetWidth overshoots the reference by ~6px,
-         * glyph+sideTitleGap undershoots by ~6px. pagePadding on the glyph
-         * track is the Taxi side-title band. */
         if (glyphMax >= 40)
             max = glyphMax + (TAXI_LAYOUT_METRICS.pagePadding.horizontal
                 - TAXI_LAYOUT_METRICS.sideTitleGap);
@@ -11385,10 +13912,6 @@ function applyLabelWidth(labels, forceAcrossColumns, ownerBox) {
             targetData.fpLocalLabelWidth = String(targetWidth);
         targets[k].style.minWidth = targetWidth + 'px';
         if (freezeHorizontalChildTrack) {
-            /* Pin flex-basis to the shared minWidth. Do not set `width` to
-             * that number: glyph/early offsetWidth is often 5–6px short of
-             * the painted caption box, and an explicit width then
-             * shifts every FIO TextBox 6px left of the reference. */
             targets[k].style.flex = '0 0 ' + targetWidth + 'px';
         }
         if (compactHorizontalColumn) {
@@ -11464,6 +13987,10 @@ function revertPromotedAutoTitles(root) {
         if (label) {
             label.style.minWidth = label.dataset.fpTitleMinWidth || '';
             delete label.dataset.fpTitleMinWidth;
+            if (label.dataset.fpTitleLabelFlex != null) {
+                label.style.flex = label.dataset.fpTitleLabelFlex;
+                delete label.dataset.fpTitleLabelFlex;
+            }
         }
         var input = row.querySelector('.fp-input-wrap, .fp-labelfield-value');
         if (input) {
@@ -11480,6 +14007,26 @@ function revertPromotedAutoTitles(root) {
         delete owner.dataset.fpOverflowMinWidth;
         delete owner.dataset.fpOverflowFlex;
         owner.classList.remove('fp-auto-title-overflow');
+    }
+}
+
+function promoteAutoTitleRow(row) {
+    row.classList.remove('fp-title-left');
+    row.classList.add('fp-title-top');
+    row.dataset.fpPromoted = '1';
+    var label = row.querySelector('.fp-field-label');
+    if (label) {
+        label.dataset.fpTitleMinWidth = label.style.minWidth || '';
+        label.style.minWidth = '';
+        /* A caption on top is one text line; it must not take the height of
+         * an item stretched to its column. */
+        label.dataset.fpTitleLabelFlex = label.style.flex || '';
+        label.style.flex = '0 0 auto';
+    }
+    var input = row.querySelector('.fp-input-wrap, .fp-labelfield-value');
+    if (input) {
+        input.dataset.fpTitleFlex = input.style.flex || '';
+        input.style.flex = '0 0 auto';
     }
 }
 
@@ -11541,20 +14088,8 @@ function promoteOverflowingAutoTitles(root) {
          * example the dismissal date beside wider reason groups). */
         if (rows.length < 2 && !(ownOverflow && directControls > 1)) continue;
         for (var r = 0; r < rows.length; r++) {
-            rows[r].classList.remove('fp-title-left');
-            rows[r].classList.add('fp-title-top');
-            rows[r].dataset.fpPromoted = '1';
+            promoteAutoTitleRow(rows[r]);
             promoted++;
-            var label = rows[r].querySelector('.fp-field-label');
-            if (label) {
-                label.dataset.fpTitleMinWidth = label.style.minWidth || '';
-                label.style.minWidth = '';
-            }
-            var input = rows[r].querySelector('.fp-input-wrap, .fp-labelfield-value');
-            if (input) {
-                input.dataset.fpTitleFlex = input.style.flex || '';
-                input.style.flex = '0 0 auto';
-            }
         }
         /* The compact group was already shrunk by its outer flex row. Once
          * labels move above fields, preserve the recalculated content width so
@@ -11610,7 +14145,18 @@ function horizontalRowMetrics(row) {
             var style = typeof getComputedStyle === 'function' ? getComputedStyle(descendant) : null;
             if (style && (style.display === 'none' || style.visibility === 'hidden')) continue;
             var descendantRect = descendant.getBoundingClientRect();
-            if (descendantRect.width > 0) right = Math.max(right, descendantRect.right);
+            /* Columns clipped by the table's own horizontal scrollport do
+             * not paint into the sibling track of the outer page row. */
+            var tableScrollport = descendant.closest
+                ? descendant.closest('.fp-table-overflow-x') : null;
+            var paintedEdge = descendantRect.right;
+            if (tableScrollport && item.contains(tableScrollport)
+                && item.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) {
+                var scrollportRight = tableScrollport.getBoundingClientRect().right;
+                if (descendantRect.left >= scrollportRight) continue;
+                paintedEdge = Math.min(paintedEdge, scrollportRight);
+            }
+            if (descendantRect.width > 0) right = Math.max(right, paintedEdge);
         }
         /* The bar still publishes its preferred row, less the table's row
          * moves (e.g. a 525px lane of Добавить + Заполнить… + Еще). */
@@ -11687,10 +14233,6 @@ function horizontalRowMetrics(row) {
         required += visualWidth;
         if (collidesNext) {
             result.collision = true;
-            /* Structural collisions remain useful to the reference strategy pass,
-             * but every visual collision is a hard layout violation. The
-             * viewport pass below reserves the measured width for either
-             * kind, including ordinary field-to-field collisions. */
             /* A nested helper group among ordinary fields does not establish
              * a new logical column: 1C may deliberately keep that authored
              * row wider than its parent. Reserve separate horizontal space
@@ -11831,14 +14373,6 @@ function restoreNoOverlapContained(node) {
     delete node.dataset.fpNoOverlapBaseMaxWidth;
 }
 
-/* A logical column should first offer its assigned width to an overflowing
- * nested horizontal row. This lets compressible fields yield to their local
- * buttons, as the reference does, instead of moving every following outer column.
- * Containment is only an offer: an editor fixed at its authored width cannot
- * yield, so squeezing its row paints the editor under its own trailing
- * button. Such a row keeps its intrinsic width and the outer track is
- * widened by the ordinary reservation instead, which is also what the
- * reference shows. */
 function containHorizontalTrackRows(item) {
     if (!item || !item.querySelectorAll || !item.getBoundingClientRect) return 0;
     var itemRect = item.getBoundingClientRect();
@@ -12011,16 +14545,6 @@ function fitRootPagesPreferredHeights(body) {
     return changed;
 }
 
-/* 1C never wraps a page tab strip. Once the captions stop fitting the row, the
- * platform hands every tab the same slice of the strip and cuts the caption
- * with an ellipsis - the tabs keep filling exactly the width the Pages item
- * was given, which on a horizontally scrolled form is the widened canvas and
- * not the window. In the reference: 9 tabs/106px, 10/95, 11/87. A full-width
- * strip does not keep shrinking past that 87px floor: extra tabs keep intrinsic
- * width capped at 87px and overflow:hidden clips them (e.g. 16 tabs,
- * ~11 visible, last caption cut at the window edge). Equal-slice remains only
- * while the shared width stays at or above 87px. Narrow nested strips still
- * use the 46px emergency floor. */
 var MIN_PAGE_TAB_PX = 46;
 /* Reference at 992×992: an overflowing wide strip equal-slices tabs at 92px;
  * extras are clipped, short captions stay padded. */
@@ -12031,7 +14555,8 @@ function pageTabsOf(list) {
     var tabs = [];
     for (var i = 0; i < list.children.length; i++) {
         var node = list.children[i];
-        if (node.classList && node.classList.contains('fp-pages-tab')) tabs.push(node);
+        if (node.classList && node.classList.contains('fp-pages-tab')
+            && !node.classList.contains('fp-page-tab-overflow-85')) tabs.push(node);
     }
     return tabs;
 }
@@ -12049,6 +14574,59 @@ function fitPageTabWidth(clientWidth, tabCount) {
     return uniform;
 }
 
+function tabStripVisibleRight85(list) {
+    var right = list.getBoundingClientRect().right;
+    for (var up = list.parentElement; up && up.classList && !up.classList.contains('fp-body'); up = up.parentElement)
+        right = Math.min(right, up.getBoundingClientRect().right);
+    return right;
+}
+
+function fitCompactMoreTabs85(list) {
+    if (!list.closest || !(list.closest('.fp-clean85.fp-scale-compact')
+        || list.classList.contains('fp-pages-tablist-85-measured'))) return;
+    var more = list.querySelector(':scope > .fp-page-tab-more-85');
+    var menu = list.querySelector(':scope > .fp-page-tab-overflow-menu-85');
+    if (!more || !menu || !list.clientWidth) return;
+    /* Every pass starts from the authored cut: tabs folded by an earlier,
+     * narrower pass come back first. */
+    [].forEach.call(list.querySelectorAll(':scope > .fp-page-tab-fit-85'), function (tab) {
+        tab.classList.remove('fp-page-tab-fit-85', 'fp-page-tab-overflow-85');
+        tab.style.removeProperty('display');
+    });
+    [].forEach.call(menu.querySelectorAll('.fp-page-tab-fit-item-85'), function (item) {
+        item.parentNode.removeChild(item);
+    });
+    /* The strip may be wider than its pane: «Ещё» must end inside it. */
+    var stripOverflows = function () {
+        if (list.scrollWidth > list.clientWidth + 1) return true;
+        return more.getBoundingClientRect().right > tabStripVisibleRight85(list) + 1;
+    };
+    for (var guard = 0; guard < 50 && stripOverflows(); guard++) {
+        var visible = [].filter.call(list.children, function (node) {
+            return node.classList && node.classList.contains('fp-pages-tab')
+                && !node.classList.contains('fp-page-tab-more-85')
+                && !node.classList.contains('fp-page-tab-overflow-85');
+        });
+        if (visible.length < 2) break;
+        var tab = visible[visible.length - 1];
+        tab.classList.add('fp-page-tab-overflow-85', 'fp-page-tab-fit-85');
+        tab.style.setProperty('display', 'none', 'important');
+        var item = el('button', 'fp-page-tab-overflow-item-85 fp-page-tab-fit-item-85');
+        item.type = 'button';
+        item.setAttribute('role', 'menuitem');
+        item.textContent = tab.textContent || '';
+        item.addEventListener('click', (function (target) {
+            return function (ev) {
+                ev.preventDefault();
+                ev.stopPropagation();
+                menu.hidden = true;
+                target.click();
+            };
+        })(tab));
+        menu.insertBefore(item, menu.firstChild);
+    }
+}
+
 function fitPageTabs(body) {
     if (!body) return;
     var lists = body.querySelectorAll('.fp-pages-tablist');
@@ -12059,6 +14637,28 @@ function fitPageTabs(body) {
             tabs[r].style.removeProperty('width');
             tabs[r].style.removeProperty('max-width');
         }
+        if (list.classList.contains('fp-pages-tablist-85-more')) {
+            var folded85 = list.querySelectorAll(':scope > .fp-pages-tab.fp-page-tab-overflow-85');
+            list.classList.add('fp-pages-tablist-85-all');
+            [].forEach.call(folded85, function (tab) { tab.style.removeProperty('display'); });
+            void list.offsetWidth;
+            var stripRight85 = tabStripVisibleRight85(list);
+            var shownTabs85 = [].filter.call(list.children, function (node) {
+                return node.classList && node.classList.contains('fp-pages-tab') && node.offsetParent;
+            });
+            var lastTab85 = shownTabs85[shownTabs85.length - 1];
+            if (list.clientWidth && list.scrollWidth <= list.clientWidth + 1
+                && lastTab85 && lastTab85.getBoundingClientRect().right <= stripRight85 + 1) continue;
+            list.classList.remove('fp-pages-tablist-85-all');
+            [].forEach.call(folded85, function (tab) { tab.style.setProperty('display', 'none', 'important'); });
+            fitCompactMoreTabs85(list);
+            continue;
+        }
+        /* Left-side tabs are a vertical navigation rail. Horizontal equal-slice
+         * fitting would divide its 100px width by the number of pages and
+         * truncate every caption to the 46px minimum. */
+        if (list.parentNode && list.parentNode.classList
+            && list.parentNode.classList.contains('TabsOnLeftHorizontal')) continue;
         if (tabs.length < 2 || !list.clientWidth) continue;
         /* Equal-slice only when intrinsic captions overflow. Compact tabs such as
          * «13%» / «Личные данные» keep their width; a wizard with many tabs
@@ -12076,8 +14676,6 @@ function fitPageTabs(body) {
         var uniform = fitPageTabWidth(list.clientWidth, tabs.length);
         if (!uniform) continue;
         for (var u = 0; u < tabs.length; u++) tabs[u].style.width = uniform + 'px';
-        /* The reference: the last tab takes what the equal slices leave, so the
-         * strip ends exactly at its edge: W - (n-1)(w-1). */
         var rest = list.clientWidth - (tabs.length - 1) * (uniform - 1);
         if (rest > uniform) tabs[tabs.length - 1].style.width = rest + 'px';
     }
@@ -12131,8 +14729,413 @@ function fitChartFields(body) {
     }
 }
 
+/* In 2.21 an outer responsive group keeps its container columns on one row
+ * when their painted tracks fit. Overflow inside a nested responsive group is
+ * resolved by that nested group; it must not make the outer group stack and
+ * move a following column below the whole header. */
+/* Width a 2.21 fixed column (authored Width, HorizontalStretch=false) needs:
+ * the authored band, widened by an AlwaysHorizontal row that cannot wrap. */
+function platform85FixedColumnWidth(column, compressFlexibleRows) {
+    var authored = parseFloat(column.style.getPropertyValue('--fp-authored-group-width')) || 0;
+    var required = authored;
+    delete column.dataset.fpNumberDatePair;
+    var rows = column.querySelectorAll('.fp-children-nowrap');
+    for (var r = 0; r < rows.length; r++) {
+        var cells = directFpItems(rows[r]);
+        if (cells.length < 2) continue;
+        var rowStyle = getComputedStyle(rows[r]);
+        var total = (parseFloat(rowStyle.columnGap) || 0) * (cells.length - 1);
+        if (compressFlexibleRows && authored > 0
+            && cells.every(function (cell) {
+                return cell.dataset.tag === 'InputField' || cell.dataset.tag === 'CheckBoxField';
+            }) && cells.some(function (cell) {
+                return cell.dataset.tag === 'InputField'
+                    && cell.dataset.fpAuthoredWidthPresent !== '1';
+            })) {
+            var fixedRowWidth = total;
+            for (var fc = 0; fc < cells.length; fc++) {
+                if (cells[fc].dataset.fpAuthoredWidthPresent === '1'
+                    || cells[fc].dataset.tag === 'CheckBoxField')
+                    fixedRowWidth += cells[fc].getBoundingClientRect().width;
+                else fixedRowWidth += TAXI_LAYOUT_METRICS.compressedFieldMinimumWidth;
+            }
+            if (fixedRowWidth <= authored) continue;
+        }
+        /* A number/date pair owns two separate caption lanes. The surrounding
+         * column's ThroughAlign track may match a longer following caption,
+         * but it must not give that track to the short date titles or make a
+         * number field shrink to its minimum. The trailing date pane is
+         * content-sized; the number pane takes the remaining authored width. */
+        if (authored > 0 && cells.length === 2
+            && rows[r].dataset.fpGroupMode === 'always-horizontal') {
+            var leadingBox = directLayoutChildren(cells[0]);
+            var trailingBox = directLayoutChildren(cells[1]);
+            var leadingFields = leadingBox && directFpItems(leadingBox);
+            var trailingFields = trailingBox && directFpItems(trailingBox);
+            var numberDatePair = leadingBox && trailingBox
+                && leadingBox.classList.contains('fp-children-vertical')
+                && trailingBox.classList.contains('fp-children-vertical')
+                && leadingFields.length > 0 && trailingFields.length > 0
+                && leadingFields.every(function (field) {
+                    return field.dataset.tag === 'InputField'
+                        && field.dataset.fieldKind === 'text'
+                        && field.dataset.fpAuthoredWidthPresent !== '1';
+                })
+                && trailingFields.every(function (field) {
+                    return field.dataset.tag === 'InputField'
+                        && field.dataset.fieldKind === 'date'
+                        && field.dataset.fpAuthoredWidthPresent === '1'
+                        && field.dataset.fpWidthStretch === '0';
+                });
+            if (numberDatePair) {
+                [leadingFields, trailingFields].forEach(function (fields) {
+                    var track = 0;
+                    fields.forEach(function (field) {
+                        var label = field.querySelector('.fp-field-label');
+                        if (label) track = Math.max(track,
+                            Math.ceil(longestWordLabelMetric(label) + 4));
+                    });
+                    fields.forEach(function (field) {
+                        var label = field.querySelector('.fp-field-label');
+                        if (!label) return;
+                        label.style.minWidth = track + 'px';
+                        label.style.maxWidth = track + 'px';
+                        label.style.flex = '0 0 ' + track + 'px';
+                        label.style.whiteSpace = 'normal';
+                    });
+                });
+                var trailingWidth = Math.ceil(trailingFields.reduce(function (width, field) {
+                    return Math.max(width, field.getBoundingClientRect().width);
+                }, 0));
+                var leadingWidth = Math.floor(authored - total - trailingWidth);
+                if (leadingWidth >= TAXI_LAYOUT_METRICS.compressedFieldMinimumWidth + 48) {
+                    column.dataset.fpNumberDatePair = '1';
+                    var pairWidths = [leadingWidth, trailingWidth];
+                    for (var pairIndex = 0; pairIndex < cells.length; pairIndex++) {
+                        var pairWidth = pairWidths[pairIndex] + 'px';
+                        cells[pairIndex].style.flex = '0 0 ' + pairWidth;
+                        cells[pairIndex].style.width = pairWidth;
+                        cells[pairIndex].style.minWidth = pairWidth;
+                        cells[pairIndex].style.maxWidth = pairWidth;
+                        cells[pairIndex].dataset.fpHorizontalPublishedWidth = String(pairWidths[pairIndex]);
+                    }
+                    required = Math.max(required, authored);
+                    continue;
+                }
+            }
+        }
+        /* An allocated vertical wrapper can inherit a stale row surplus even
+         * though its vertically stacked fields need only their widest lane.
+         * Keep the fixed authored column when those lanes fit together. */
+        var verticalLanes = cells.map(function (cell) {
+            var inner = directLayoutChildren(cell);
+            if (!inner || !inner.classList.contains('fp-children-vertical')) return 0;
+            var leaves = directFpItems(inner);
+            if (!leaves.length) return 0;
+            return Math.ceil(leaves.reduce(function (width, leaf) {
+                return Math.max(width, leaf.getBoundingClientRect().width);
+            }, 0));
+        });
+        var compactTotal = total + verticalLanes.reduce(function (sum, width) {
+            return sum + width;
+        }, 0);
+        if (authored > 0 && verticalLanes.every(function (width) { return width > 0; })
+            && compactTotal <= authored + 1) {
+            for (var v = 0; v < cells.length; v++) {
+                var lane = verticalLanes[v] + 'px';
+                cells[v].style.flex = '0 0 ' + lane;
+                cells[v].style.width = lane;
+                cells[v].style.minWidth = lane;
+                cells[v].style.maxWidth = lane;
+                cells[v].dataset.fpHorizontalPublishedWidth = String(verticalLanes[v]);
+            }
+            total = compactTotal;
+            required = Math.max(required, Math.ceil(total));
+            continue;
+        }
+        /* A cell's published min-width is its floor; only an unconstrained
+         * cell contributes its painted width. */
+        for (var c = 0; c < cells.length; c++)
+            total += parseFloat(cells[c].style.minWidth) || cells[c].getBoundingClientRect().width;
+        required = Math.max(required, Math.ceil(total));
+    }
+    return required;
+}
+
+function platform85FixedColumns(child) {
+    var inner = child && directLayoutChildren(child);
+    if (!inner || !formVersionAtLeast(child._fpItem, '2.21')) return null;
+    var columns = directFpItems(inner);
+    if (columns.length < 2 || !columns.every(function (column) {
+        return column.classList.contains('fp-sized-width') && column.classList.contains('fp-no-hstretch');
+    })) return null;
+    return columns;
+}
+
+/* Floor of an owner whose row is made of fixed 2.21 columns. */
+function platform85FixedColumnsFloor(child) {
+    var columns = platform85FixedColumns(child);
+    if (!columns) return 0;
+    var inner = directLayoutChildren(child);
+    var total = (parseFloat(getComputedStyle(inner).columnGap) || 0) * (columns.length - 1);
+    for (var i = 0; i < columns.length; i++) total += platform85FixedColumnWidth(columns[i]);
+    return total;
+}
+
+function platform85NestedContainerRowFits(box, children, availableWidth) {
+    var owner = box && box.closest ? box.closest('.fp-item') : null;
+    if (!owner || !formVersionAtLeast(owner._fpItem, '2.21')
+        || !children || children.length < 2 || !(availableWidth > 0)) return false;
+    var containerPair = children.length === 2 && children.every(function (child) {
+        return child && child.classList && child.classList.contains('fp-container')
+            && !!directLayoutChildren(child);
+    });
+    /* Two closed PopUp groups publish only their title links. Treating the
+     * first as a workspace pane assigns almost the whole page to an invisible
+     * body and pushes the second title past the viewport. */
+    if (containerPair && box.closest && box.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+        && children.every(function (child) {
+        var body = child.querySelector && child.querySelector(
+            ':scope > .fp-control-wrap > .fp-popup-group > .fp-popup-group-body');
+        return body && typeof getComputedStyle === 'function'
+            && getComputedStyle(body).display === 'none';
+    })) {
+        box.dataset.fpPlatform85NestedRow = '1';
+        return true;
+    }
+    var compactWidgetRow = children.length >= 3 && !directLayoutChildren(children[0])
+        && children.slice(1).every(function (child) {
+            var nested = directLayoutChildren(child);
+            return child && child.classList && child.classList.contains('fp-container')
+                && nested && nested.dataset && nested.dataset.fpGroupMode === 'always-horizontal';
+        });
+    if (!containerPair && !compactWidgetRow) return false;
+    var style = typeof getComputedStyle === 'function' ? getComputedStyle(box) : null;
+    var gap = style ? (parseFloat(style.columnGap || style.gap || '') || 0) : 0;
+    var bands = children.map(responsiveWrapperAllocationBand);
+    /* Nested vertical panes have no authored width and browser flex initially
+     * gives them half the row. The platform instead gives the trailing pane
+     * its compact content lane and lends the rest to the primary workspace. */
+    var sizes;
+    /* When the leading column is fixed and both columns carry Width, each
+     * keeps at least its authored band. The trailing column may stretch beyond
+     * that band; it is still not the unsized 30% detail pane. */
+    var fixedAuthored = containerPair && children.every(function (child) {
+        return child.classList.contains('fp-sized-width');
+    }) && children[0].classList.contains('fp-no-hstretch');
+    /* Two content-sized groups (neither stretches) are not a workspace and a
+     * side pane: they keep their own widths and the owner's HorizontalAlign
+     * places them, e.g. right-aligned footer totals. */
+    var ownerAlign = String(prop(owner._fpItem, ['HorizontalAlign', 'ГоризонтальноеПоложениеПодчиненных']) || '')
+        .toLowerCase();
+    var leadingHintFields = containerPair
+        ? children[0].querySelectorAll('.fp-item[data-tag="InputField"]') : [];
+    var hasCompactHint = false;
+    for (var hf = 0; hf < leadingHintFields.length; hf++) {
+        if (prop(leadingHintFields[hf]._fpItem, ['InputHint'])) hasCompactHint = true;
+    }
+    var trailingRow = containerPair ? directLayoutChildren(children[1]) : null;
+    var trailingItems = trailingRow ? directFpItems(trailingRow) : [];
+    var compactFieldPair = containerPair && hasCompactHint
+        && box.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+        && normGroupMode(prop(owner._fpItem, ['Group'])) === 'auto-screen-sensitive'
+        && trailingItems.length === 2
+        && trailingItems[0].classList.contains('fp-container')
+        && directLayoutChildren(trailingItems[0])
+        && directLayoutChildren(trailingItems[0]).dataset.fpGroupMode === 'always-horizontal'
+        && trailingItems[1].dataset.tag === 'InputField'
+        && children.every(function (child) {
+            return child.querySelector('.fp-item[data-tag="InputField"]')
+                && !child.querySelector('.fp-item[data-tag="Table"], .fp-item[data-tag="Pages"]');
+        });
+    if (compactFieldPair) {
+        /* The side title shares a finite lane with its editor and trailing
+         * action. Let its words use two lines before the editor is squeezed. */
+        var sideTitle = trailingItems[0].querySelector(
+            '.fp-field-row.fp-title-left > .fp-field-label');
+        if (sideTitle) {
+            var sideTitleWidth = twoLineLabelMetric(sideTitle);
+            if (sideTitleWidth > 0) {
+                sideTitle.style.flex = '0 0 ' + sideTitleWidth + 'px';
+                sideTitle.style.maxWidth = sideTitleWidth + 'px';
+                sideTitle.style.whiteSpace = 'normal';
+            }
+        }
+    }
+    var contentSizedPair = containerPair && !fixedAuthored
+        && (/right|center|прав|центр/.test(ownerAlign) || compactFieldPair)
+        && children.every(function (child) {
+            return child.classList.contains('fp-no-hstretch');
+        });
+    if (contentSizedPair) {
+        var natural = children.reduce(function (sum, child) {
+            return sum + Math.ceil(child.getBoundingClientRect().width);
+        }, gap);
+        if (natural > availableWidth) return false;
+        box.dataset.fpPlatform85NestedRow = '1';
+        return true;
+    }
+    var rootBody = owner.parentElement && owner.parentElement.classList
+        && owner.parentElement.classList.contains('fp-body') ? owner.parentElement : null;
+    var cardWithLinkPane = containerPair
+        && box.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+        && children[0].classList.contains('fp-ui85-card')
+        && platform85FixedColumns(children[0])
+        && children[1].querySelector('.fp-item[data-tag="InputField"]')
+        && children[1].querySelectorAll('.fp-link').length >= 3;
+    var rootList = rootBody && containerPair && children[0].querySelector('.fp-item[data-tag="Table"]');
+    var rootPanel = rootBody && containerPair && children[1].querySelector('.fp-item.fp-sized-width');
+    var listBand = rootList && rootList.offsetHeight > 0
+        ? parseFloat(rootList.dataset.fpAuthoredRecommendedWidth) || 0 : 0;
+    var panelBand = rootPanel && rootPanel.offsetHeight > 0
+        ? parseFloat(rootPanel.style.getPropertyValue('--fp-authored-group-width')) || 0 : 0;
+    if (rootBody && rootBody.closest('.fp-platform-85.fp-taxi')
+        && listBand > 0 && panelBand > 0
+        && listBand + panelBand + gap > availableWidth + 1) {
+        sizes = [Math.round(listBand), Math.round(panelBand)];
+        owner.style.minWidth = (sizes[0] + gap + sizes[1]) + 'px';
+        /* The root row already reserves a gap between the list and its side
+         * pane. Paint the divider there without adding an interior inset. */
+        box.classList.add('fp-splitter-in-gap');
+    } else if (fixedAuthored) {
+        var cardSidePane = owner.classList.contains('fp-ui85-card')
+            && box.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+            && owner.nextElementSibling && owner.nextElementSibling.classList.contains('fp-container')
+            && owner.nextElementSibling.querySelector('.fp-item[data-tag="InputField"]')
+            && owner.nextElementSibling.querySelectorAll('.fp-link').length >= 3;
+        if (cardSidePane && parseFloat(owner.style.width) > 0)
+            availableWidth = Math.min(availableWidth, parseFloat(owner.style.width));
+        if (cardSidePane) {
+            var popupLinkRows = owner.nextElementSibling.querySelectorAll('.fp-children-horizontal');
+            for (var pr = 0; pr < popupLinkRows.length; pr++) {
+                var popupLinkItems = directFpItems(popupLinkRows[pr]);
+                if (popupLinkItems.length === 2
+                    && popupLinkItems[0].classList.contains('fp-container')
+                    && popupLinkItems.every(function (item) { return !!item.querySelector('.fp-link'); }))
+                    popupLinkRows[pr].classList.add('fp-card-popup-link-pair');
+            }
+        }
+        sizes = children.map(function (child, index) {
+            var authored = parseFloat(child.style.getPropertyValue('--fp-authored-group-width')) || 0;
+            /* scrollWidth is the laid-out content of the column, including an
+             * AlwaysHorizontal row that cannot wrap below the authored band. */
+            return Math.ceil(Math.max(authored,
+                cardSidePane ? 0 : (bands[index].min || bands[index].minNormal || 0),
+                platform85FixedColumnWidth(child, cardSidePane)));
+        });
+        /* The fixed tracks are the owner's floor: a shrinkable owner row
+         * yields the width from its other columns instead of stacking. */
+        var fixedTotal = sizes[0] + gap + sizes[1];
+        if (owner.classList.contains('fp-ui85-card')
+            && box.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+            && availableWidth > fixedTotal + 1)
+            sizes[1] = Math.floor(availableWidth - gap - sizes[0]);
+        fixedTotal = sizes[0] + gap + sizes[1];
+        if (fixedTotal > availableWidth) {
+            if (!owner.style || owner.classList.contains('fp-sized-width')) return false;
+            owner.style.minWidth = fixedTotal + 'px';
+        }
+    } else if (cardWithLinkPane) {
+        var sideInput = children[1].querySelector('.fp-item[data-tag="InputField"]');
+        var sideInputWidth = sideInput ? sideInput.getBoundingClientRect().width : 0;
+        var linkPaneWidth = Math.round(Math.max(170, Math.min(320,
+            Math.max(availableWidth * 0.15, sideInputWidth + 20))));
+        var cardWidth = Math.floor(availableWidth - gap - linkPaneWidth);
+        if (cardWidth < platform85FixedColumnsFloor(children[0])) return false;
+        sizes = [cardWidth, linkPaneWidth];
+        var linkRows = children[1].querySelectorAll('.fp-children-horizontal');
+        for (var lr = 0; lr < linkRows.length; lr++) {
+            var rowItems = Array.prototype.filter.call(linkRows[lr].children, function (item) {
+                return item.classList && item.classList.contains('fp-item');
+            });
+            if (rowItems.length === 2 && rowItems.every(function (item) {
+                return item.dataset.tag === 'Button' && !!item.querySelector('.fp-link');
+            })) linkRows[lr].classList.add('fp-card-link-pair');
+        }
+    } else if (containerPair) {
+        var trailingMinimum = bands[1].min || bands[1].minNormal || 0;
+        if (owner.dataset && owner.dataset.fpSidePaneCanvas) {
+            delete owner.dataset.fpSidePaneCanvas;
+            owner.style.minWidth = '';
+        }
+        var authoredTrailingFloor = 0;
+        var trailingSized = children[1].querySelectorAll('.fp-item.fp-sized-width');
+        for (var ts = 0; ts < trailingSized.length; ts++)
+            authoredTrailingFloor = Math.max(authoredTrailingFloor,
+                parseFloat(trailingSized[ts].style && trailingSized[ts].style.minWidth) || 0);
+        if (authoredTrailingFloor > Math.max(96, Math.min(availableWidth * 0.3, trailingMinimum)) + 0.5
+            && normGroupMode(prop(owner._fpItem, ['Group'])) === 'auto-screen-sensitive'
+            && box.closest && box.closest('.fp-clean85')) {
+            var paneBody = box.closest ? box.closest('.fp-body') : null;
+            var laneWidth = availableWidth;
+            if (paneBody) {
+                laneWidth = paneBody.offsetWidth
+                    - Math.max(0, box.getBoundingClientRect().left - paneBody.getBoundingClientRect().left);
+            }
+            var paneTrailing = Math.ceil(authoredTrailingFloor);
+            var paneLeading = Math.floor(Math.max(96, bands[0].min || bands[0].minNormal || 0, laneWidth));
+            sizes = [paneLeading, paneTrailing];
+            owner.style.minWidth = (paneLeading + gap + paneTrailing) + 'px';
+            if (owner.dataset) owner.dataset.fpSidePaneCanvas = String(paneLeading + gap + paneTrailing);
+        } else
+        /* The side pane lane is compact, not compressible below its own
+         * content minimum. A pane that needs more than the lane (a document
+         * preview beside a list) makes the pair stack instead of clipping. */
+        if (trailingMinimum > availableWidth * 0.3) return false;
+        if (!sizes) {
+            var trailing = Math.ceil(Math.max(96, Math.min(availableWidth * 0.3,
+                trailingMinimum)));
+            var leadingMinimum = Math.ceil(Math.max(96, bands[0].min || bands[0].minNormal || 0));
+            var leading = Math.floor(availableWidth - gap - trailing);
+            /* A leading row of fixed 2.21 columns cannot use surplus width: it
+             * takes exactly its floor and the trailing pane takes the remainder. */
+            var fixedLeadingFloor = platform85FixedColumnsFloor(children[0]);
+            if (fixedLeadingFloor > 0) {
+                leading = fixedLeadingFloor;
+                trailing = Math.floor(availableWidth - gap - leading);
+                if (trailing < 96) return false;
+            }
+            if (leading < leadingMinimum) return false;
+            sizes = [leading, trailing];
+        }
+    } else {
+        var toggle = Math.ceil(Math.max(18, Math.min(32,
+            bands[0].min || bands[0].minNormal || 18)));
+        var widgetWidth = Math.floor((availableWidth - gap * (children.length - 1) - toggle)
+            / (children.length - 1));
+        if (widgetWidth < 96) return false;
+        sizes = [toggle];
+        while (sizes.length < children.length) sizes.push(widgetWidth);
+        sizes[sizes.length - 1] += Math.max(0, Math.floor(availableWidth
+            - gap * (children.length - 1)
+            - sizes.reduce(function (sum, size) { return sum + size; }, 0)));
+    }
+    for (var i = 0; i < children.length; i++) {
+        var child = children[i];
+        if (!child.style || !child.dataset) continue;
+        if (!Object.prototype.hasOwnProperty.call(child.dataset, 'fpHorizontalBaseFlex')) {
+            child.dataset.fpHorizontalBaseFlex = child.style.flex || '__empty__';
+            child.dataset.fpHorizontalBaseWidth = child.style.width || '__empty__';
+            child.dataset.fpHorizontalBaseMinWidth = child.style.minWidth || '__empty__';
+            child.dataset.fpHorizontalBaseMaxWidth = child.style.maxWidth || '__empty__';
+        }
+        child.style.flex = '0 0 ' + sizes[i] + 'px';
+        child.style.width = sizes[i] + 'px';
+        child.style.minWidth = sizes[i] + 'px';
+        child.style.maxWidth = sizes[i] + 'px';
+        if (!Object.prototype.hasOwnProperty.call(child.dataset, 'fpPlatform85BaseOverflow'))
+            child.dataset.fpPlatform85BaseOverflow = child.style.overflow || '__empty__';
+        child.style.overflow = 'hidden';
+        child.dataset.fpHorizontalAllocated = '1';
+        child.dataset.fpHorizontalPublishedWidth = String(sizes[i]);
+    }
+    box.dataset.fpPlatform85NestedRow = '1';
+    return true;
+}
+
 function responsiveGroupNeedsVertical(box, finiteParentTrack) {
     if (!box || !box.clientWidth) return false;
+    var finalSideChoiceAllocated = allocateFinalSideChoiceTrack(box) > 0;
     var metrics = horizontalRowMetrics(box);
     var preferred = horizontalPreferredWidth(box);
     /* Projected logical rows must decide against the finite track allocated by
@@ -12157,10 +15160,19 @@ function responsiveGroupNeedsVertical(box, finiteParentTrack) {
      * established reference contract: the containing form may lend them its usable
      * width. Only the late projected rerun opts into the finite owner track. */
     var formBody = box.closest ? box.closest('.fp-body') : null;
-    /* A finite track owned by a shrink-to-content group (HorizontalStretch
-     * false, no authored Width) is not a limit: that group grows to the row
-     * (806px for three header columns in the reference) instead of stacking
-     * them once a W14 field paints its 171px. */
+    /* An authored Width is already a finite native track. It cannot borrow
+     * the whole form width merely to keep its children on one line. */
+    var authoredOwnerTrack = !!(owner && owner.classList
+        && (owner.classList.contains('fp-sized-width')
+            || (owner.dataset && owner.dataset.fpAuthoredWidthPresent === '1')));
+    var authoredTrackWidth = 0;
+    if (authoredOwnerTrack) {
+        authoredTrackWidth = Math.min(
+            box.clientWidth || Infinity,
+            owner.clientWidth || Infinity,
+            containerWidth || Infinity);
+        if (!isFinite(authoredTrackWidth)) authoredTrackWidth = 0;
+    }
     var shrinkWrapOwner = false;
     if (finiteParentTrack && owner) {
         for (var up = owner.parentElement && owner.parentElement.closest('.fp-item'); up;
@@ -12177,13 +15189,26 @@ function responsiveGroupNeedsVertical(box, finiteParentTrack) {
     if (pageColumnWidth > 0) availableWidth = pageColumnWidth;
     var precedingCapped = precedingCappedPageColumnWidth(box);
     if (precedingCapped > 0) availableWidth = Math.min(availableWidth, precedingCapped);
+    var children = directFpItems(box);
+    var authoredSearchListLane = children.length === 2
+        && children[0].dataset && children[0].dataset.tag === 'InputField'
+        && children[1].dataset && children[1].dataset.tag === 'Table';
+    var authoredChildFillsTrack = authoredOwnerTrack && authoredTrackWidth > 0
+        && authoredSearchListLane
+        && children.some(function (child) {
+            var width = child && child.dataset
+                ? parseFloat(child.dataset.fpAuthoredDecisionWidth
+                    || child.dataset.fpAuthoredNormalWidth || '') || 0 : 0;
+            return width > 0 && width >= authoredTrackWidth - 1;
+        });
+    if (finalSideChoiceAllocated && preferred <= availableWidth + 1 && !authoredChildFillsTrack)
+        return false;
+    if (!authoredChildFillsTrack
+        && platform85NestedContainerRowFits(box, children, availableWidth)) return false;
     return box.scrollWidth > availableWidth + 1 || metrics.structuralCollision
-        || preferred > availableWidth + 1;
+        || preferred > availableWidth + 1 || authoredChildFillsTrack;
 }
 
-/* HIP group that is a direct Page child after a MaxWidth-capped column
- * (field + long checkbox). The reference decides against that column,
- * not the full page canvas. */
 function precedingCappedPageColumnWidth(box) {
     var owner = box && box.closest ? box.closest('.fp-item') : null;
     var parentBox = owner && owner.parentNode;
@@ -12281,7 +15306,7 @@ function inheritPageFollowingThroughAlignTracks(body) {
                 var painted = labels[L].offsetWidth || 0;
                 if (current === track && painted <= track + 1
                     && labels[L].style.maxWidth === track + 'px') continue;
-                labels[L].style.minWidth = track + 'px';
+                setAllocatedLabelMinWidth(labels[L], track);
                 labels[L].style.maxWidth = track + 'px';
                 labels[L].style.whiteSpace = 'normal';
                 changed++;
@@ -12464,7 +15489,7 @@ function capWideSideTitleBands(root, maximum) {
     for (var i = 0; i < labels.length; i++) {
         var width = parseFloat(labels[i].style.minWidth || '') || labelMetric(labels[i]);
         if (width <= maximum) continue;
-        labels[i].style.minWidth = maximum + 'px';
+        setAllocatedLabelMinWidth(labels[i], maximum);
         changed++;
     }
     return changed;
@@ -12472,6 +15497,9 @@ function capWideSideTitleBands(root, maximum) {
 
 function restoreHorizontalWidthAllocations(body) {
     if (!body || !body.querySelectorAll) return;
+    var finalChoiceRows = body.querySelectorAll('[data-fp-final-side-choice-track="1"]');
+    for (var fcr = 0; fcr < finalChoiceRows.length; fcr++)
+        delete finalChoiceRows[fcr].dataset.fpFinalSideChoiceTrack;
     var generatedCompoundChoices = body.querySelectorAll('.fp-generated-compound-choice');
     for (var gc = 0; gc < generatedCompoundChoices.length; gc++)
         generatedCompoundChoices[gc].remove();
@@ -12510,6 +15538,11 @@ function restoreHorizontalWidthAllocations(body) {
     var tablePairs = body.querySelectorAll('.fp-table-column-responsive-pair');
     for (var p = 0; p < tablePairs.length; p++)
         tablePairs[p].classList.remove('fp-table-column-responsive-pair');
+    var toolbarLeadingPairs = body.querySelectorAll('.fp-table-toolbar-leading-pair');
+    for (var tlp = 0; tlp < toolbarLeadingPairs.length; tlp++) {
+        toolbarLeadingPairs[tlp].classList.remove('fp-table-toolbar-leading-pair');
+        toolbarLeadingPairs[tlp].style.removeProperty('--fp-table-toolbar-trailing-width');
+    }
     var managedLeftWide = body.querySelectorAll('.fp-managed-compressed-leftwide');
     for (var lw = 0; lw < managedLeftWide.length; lw++) {
         managedLeftWide[lw].classList.remove('fp-managed-compressed-leftwide');
@@ -12566,11 +15599,6 @@ function semanticEditorAllocationBand(band, options) {
         if (isFinite(result.max)) result.max += appended + tooltip;
     } else if (options.reference) {
         var chrome = 11 + buttons * 21 + tooltip;
-        /* AutoMaxWidth=false + MaxWidth fixes the editor at its maximum
-         * (normal == max): the reference default must not recommend a lane
-         * narrower than that painted editor. A 290px fixed editor with a
-         * 150px recommendation overflows its allocation by 40px into the
-         * next column. */
         var fixedEditor = options.fixedRecommendsNormal
             && isFinite(result.max) && result.normal > 0 && result.normal >= result.max;
         result.recommended = fixedEditor ? Math.max(result.normal, 150 + chrome) : 150 + chrome;
@@ -12579,10 +15607,6 @@ function semanticEditorAllocationBand(band, options) {
     return result;
 }
 
-/* Resolve the painted editor lane from the same semantic units used by the
- * responsive allocator. MaxWidth is authored on the reference's 10px ruler; using the
- * browser's legacy 8px charSize here made a rich tooltip group's allocated
- * slot and its visible editor disagree. */
 function semanticEditorPaintBand(options) {
     options = options || {};
     var maximum = Math.max(0, Number(options.maximum) || 0);
@@ -12733,12 +15757,6 @@ function fitProjectedCompoundLogicalTracks(body) {
     return changed;
 }
 
-/* A fixed outer Horizontal row can project nested AlwaysHorizontal children
- * before the source renderer has materialised the reference's generated choice button.
- * Keep the responsive allocation immutable, then paint the finite generated
- * value+button band and its ordinary following-row cadence. This is deliberately
- * narrower than changing every omitted-width numeric input: the outer projected
- * owner shows that the leaf belongs to a reference compound grid. */
 function fitProjectedCompoundEditorBands(body) {
     if (!body || !body.querySelectorAll) return 0;
     var items = body.querySelectorAll('.fp-item.fp-control[data-tag="InputField"]');
@@ -12760,7 +15778,7 @@ function fitProjectedCompoundEditorBands(body) {
             || outerBox.dataset.fpLogicalRowAllocated !== '1'
             || !outerOwner || !outerOwner.classList.contains('fp-no-hstretch')) continue;
         if (!editor.querySelector('.fp-input-btn')) {
-            var generatedChoice = iconBtn('dots');
+            var generatedChoice = iconBtn(body.closest && body.closest('.fp-clean85') ? 'dots-85' : 'dots');
             generatedChoice.classList.add('fp-choice-button', 'fp-generated-compound-choice');
             editor.insertBefore(generatedChoice, editor.querySelector('.fp-spin'));
         }
@@ -12785,9 +15803,6 @@ function fitProjectedCompoundEditorBands(body) {
     }
     return changed;
 }
-/* A multi-word label decoration wraps in the reference; its one-line width is a
- * preference, not a floor (an unwrapped hint could push the form into a
- * 1600px canvas). */
 function wrappableTextItem(item) {
     if (!item || !item.classList || (item.style && item.style.width)) return false;
     if (!item.classList.contains('fp-native-label-decoration')) {
@@ -12801,6 +15816,250 @@ function wrappableTextItem(item) {
         return false;
     }
     return /\S\s+\S/.test(String(item.textContent || '').trim());
+}
+
+function sideChoiceTrackAllocation(captionNormal, captionMinimum, optionWidth, gap) {
+    var options = Math.max(0, Number(optionWidth) || 0);
+    var titleNormal = Math.max(0, Number(captionNormal) || 0);
+    var titleMinimum = Math.min(titleNormal, Math.max(0, Number(captionMinimum) || 0));
+    var spacing = Math.max(0, Number(gap) || 0);
+    return {
+        min: Math.ceil(options + spacing + titleMinimum),
+        normal: Math.ceil(options + spacing + titleNormal)
+    };
+}
+
+function finalSideChoiceRowSizes(available, gap, leadingWidths, finalMinimum) {
+    var track = Math.max(0, Math.floor(Number(available) || 0));
+    var spacing = Math.max(0, Number(gap) || 0);
+    var leading = (leadingWidths || []).map(function (width) {
+        return Math.max(0, Math.ceil(Number(width) || 0));
+    });
+    var used = leading.reduce(function (sum, width) { return sum + width; }, 0);
+    var finalWidth = Math.ceil(Math.max(0, Number(finalMinimum) || 0));
+    var surplus = Math.floor(track - spacing * leading.length - used - finalWidth);
+    if (surplus < 0) return null;
+    /* The final track is resolved first: its width is the caption's wrapping
+     * minimum plus the fixed option lane. Any remaining width belongs to the
+     * leading content, rather than making the caption intrinsic again. */
+    if (leading.length) leading[leading.length - 1] += surplus;
+    else finalWidth += surplus;
+    return leading.concat(finalWidth);
+}
+
+function sideChoiceAllocationBand(item) {
+    if (!item || !item.classList || !item.classList.contains('fp-final-track-side-choice')
+        || !item.querySelector) return null;
+    var row = item.querySelector(':scope > .fp-control-wrap.fp-final-track-side-choice');
+    var label = row && row.querySelector(':scope > .fp-field-label');
+    var options = row && row.querySelector(':scope > .fp-segmented, :scope > .fp-radio-stack');
+    if (!row || !label || !options) return null;
+    var style = typeof getComputedStyle === 'function' ? getComputedStyle(row) : null;
+    var gap = style ? (parseFloat(style.columnGap || style.gap || '') || 0) : 0;
+    var optionRect = options.getBoundingClientRect ? options.getBoundingClientRect() : { width: 0 };
+    var widths = sideChoiceTrackAllocation(
+        intrinsicLabelTextMetric(label), longestWordLabelMetric(label),
+        Math.max(options.scrollWidth || 0, optionRect.width || 0), gap);
+    return {
+        standard: 0, min: widths.min, minNormal: widths.min,
+        normal: widths.normal, recommended: widths.normal, max: widths.normal,
+        stretch: false, stretchPriority: false, compressPriority: false,
+        compress: true, explicit: false
+    };
+}
+
+function finalSideChoiceAllocationBand(item) {
+    if (!item || !item.querySelector) return null;
+    var choiceItem = item.classList && item.classList.contains('fp-final-track-side-choice')
+        ? item : item.querySelector('.fp-item.fp-final-track-side-choice');
+    return sideChoiceAllocationBand(choiceItem);
+}
+
+function fitCappedFieldAfterCheckboxInCard(card) {
+    if (!card || !card.querySelectorAll) return;
+    var rows = card.querySelectorAll('.fp-children-horizontal');
+    for (var r = 0; r < rows.length; r++) {
+        var items = directFpItems(rows[r]);
+        if (items.length !== 2 || items[0].dataset.tag !== 'CheckBoxField'
+            || items[1].dataset.tag !== 'InputField') continue;
+        var column = items[1].closest('.fp-item.fp-container-vertical.fp-sized-width');
+        if (!column || !card.contains(column)) continue;
+        var source = items[1]._fpItem;
+        var maxChars = parseInt(prop(source, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
+        if (!maxChars || !isFalse(prop(source, ['AutoMaxWidth']))
+            || charSize(prop(source, ['Width', 'Ширина']))) continue;
+        var label = items[0].querySelector('.fp-field-label');
+        var editor = items[1].querySelector('.fp-input-wrap');
+        if (!label || !editor) continue;
+        var labels = column.querySelectorAll('.fp-field-row.fp-title-left > .fp-field-label');
+        var labelWidths = [];
+        for (var l = 0; l < labels.length; l++) labelWidths.push(throughAlignGlyphMetric(labels[l]));
+        var titleTrack = throughAlignTitleTrackWidth(labelWidths);
+        var checkboxWidth = Math.ceil(items[0].getBoundingClientRect().width
+            - label.getBoundingClientRect().width + titleTrack);
+        var fieldWidth = authoredFieldWidthPx(maxChars, 'InputField');
+        var editorChrome = parseFloat(items[1].dataset.fpCardCappedEditorChrome);
+        if (!isFinite(editorChrome)) {
+            editorChrome = Math.max(0, items[1].getBoundingClientRect().width
+                - editor.getBoundingClientRect().width);
+            items[1].dataset.fpCardCappedEditorChrome = String(editorChrome);
+        }
+        var editorWidth = Math.max(TAXI_LAYOUT_METRICS.compressedFieldMinimumWidth,
+            Math.round(fieldWidth - editorChrome));
+        var gap = parseFloat(getComputedStyle(rows[r]).columnGap) || 0;
+        if (checkboxWidth + gap + fieldWidth > column.clientWidth + 1) continue;
+        label.style.flex = '0 0 ' + titleTrack + 'px';
+        label.style.minWidth = titleTrack + 'px';
+        label.style.maxWidth = titleTrack + 'px';
+        items[0].style.flex = '0 0 ' + checkboxWidth + 'px';
+        items[0].style.width = checkboxWidth + 'px';
+        items[0].style.minWidth = checkboxWidth + 'px';
+        items[0].style.maxWidth = checkboxWidth + 'px';
+        items[1].style.flex = '0 0 ' + fieldWidth + 'px';
+        items[1].style.width = fieldWidth + 'px';
+        items[1].style.minWidth = fieldWidth + 'px';
+        items[1].style.maxWidth = fieldWidth + 'px';
+        editor.style.flex = '0 0 ' + editorWidth + 'px';
+        editor.style.width = editorWidth + 'px';
+        editor.style.minWidth = editorWidth + 'px';
+        editor.style.maxWidth = editorWidth + 'px';
+    }
+}
+
+function fitCardSideChoiceSpacing(body) {
+    if (!body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) return;
+    var cards = body.querySelectorAll('.fp-ui85-card');
+    for (var c = 0; c < cards.length; c++) {
+        var side = cards[c].nextElementSibling;
+        if (!side || !side.querySelector('.fp-item[data-tag="InputField"]')
+            || side.querySelectorAll('.fp-link').length < 3) continue;
+        var box = directLayoutChildren(side);
+        var groups = box ? directFpItems(box) : [];
+        for (var g = 0; g + 1 < groups.length; g++) {
+            var radio = groups[g].querySelector(
+                '.fp-item.fp-final-track-side-choice[data-tag="RadioButtonField"]');
+            var following = groups[g + 1];
+            if (!radio || !following.querySelector('.fp-item[data-tag="CheckBoxField"]')
+                || !following.querySelector('.fp-link')) continue;
+            var row = radio.querySelector(':scope > .fp-field-row');
+            var label = row && row.querySelector(':scope > .fp-field-label');
+            var options = row && row.querySelector(':scope > .fp-segmented, :scope > .fp-radio-stack');
+            if (!label || !options) continue;
+            var gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+            var lane = Math.floor(options.getBoundingClientRect().left
+                - label.getBoundingClientRect().left - gap);
+            if (lane < 65) continue;
+            var labelWidth = lane - 2;
+            label.style.flex = '0 0 ' + labelWidth + 'px';
+            label.style.width = labelWidth + 'px';
+            label.style.maxWidth = labelWidth + 'px';
+            label.style.marginRight = '2px';
+            if (!Object.prototype.hasOwnProperty.call(following.dataset, 'fpCardChoiceFollowingBaseMargin'))
+                following.dataset.fpCardChoiceFollowingBaseMargin = String(
+                    parseFloat(getComputedStyle(following).marginTop) || 0);
+            following.style.marginTop = (parseFloat(following.dataset.fpCardChoiceFollowingBaseMargin)
+                + TAXI_LAYOUT_METRICS.pagePadding.horizontal) + 'px';
+        }
+    }
+}
+
+/* Taxi 8.5 keeps a compact empty price/list table below its separate action
+ * bar. The serialized Height on a UseContentHeight table otherwise expands
+ * the blank table and crowds the following group in a narrow splitter rail. */
+function fitCompactSideContentTable(body) {
+    if (!body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) return;
+    var groups = body.querySelectorAll('.fp-splitter-pane .fp-item.fp-container-vertical');
+    for (var i = 0; i < groups.length; i++) {
+        var group = groups[i];
+        if (prop(group._fpItem, ['ControlRepresentation']) !== 'Button') continue;
+        var box = directLayoutChildren(group);
+        var children = directFpItems(box);
+        if (children.length !== 3 || !children[0].querySelector('.fp-item[data-tag="InputField"]')
+            || children[1].dataset.tag !== 'CommandBar' || children[2].dataset.tag !== 'Table') continue;
+        var table = children[2];
+        if (!table.classList.contains('fp-table-content-height')
+            || !table.querySelector('.fp-table-noheader.fp-table-empty-runtime')
+            || !table.querySelector('.fp-chips')) continue;
+        box.style.rowGap = '16px';
+        box.style.minHeight = '0px';
+        table.style.height = '162px';
+        table.style.minHeight = '162px';
+        table.style.maxHeight = '162px';
+    }
+}
+
+/* A narrow vertical card holding a list has a wider clear lane before the
+ * adjacent pages workspace in Taxi 8.5. It keeps the list's fixed width while
+ * giving the pages the remaining window width. */
+function fitListCardPagesGutter(body) {
+    if (!body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) return;
+    var groups = body.querySelectorAll('.fp-item.fp-container-horizontal');
+    for (var i = 0; i < groups.length; i++) {
+        var box = directLayoutChildren(groups[i]);
+        var children = directFpItems(box);
+        if (children.length !== 2 || children[1].dataset.tag !== 'Pages') continue;
+        if (prop(groups[i]._fpItem, ['HorizontalSpacing']) !== 'Double') continue;
+        var cardTable = children[0].querySelector('.fp-ui85-card .fp-item[data-tag="Table"]');
+        if (cardTable) {
+            box.style.columnGap = isFalse(prop(cardTable._fpItem, ['HorizontalStretch']))
+                && parseInt(prop(cardTable._fpItem, ['Width']), 10) > 0 ? '52px' : '32px';
+            continue;
+        }
+        var table = children[0].querySelector('.fp-item[data-tag="Table"]');
+        if (table && isFalse(prop(table._fpItem, ['HorizontalStretch']))
+            && parseInt(prop(table._fpItem, ['Width']), 10) > 0)
+            box.style.columnGap = '40px';
+    }
+}
+
+/* Two fixed reference fields in a narrow, collapsible horizontal group share
+ * its authored width. A through-aligned caption from another part of the
+ * form must not consume the first field's editor lane. */
+function fitFixedFieldPairInCollapsedGroup(body) {
+    if (!body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) return;
+    var groups = body.querySelectorAll('.fp-item.fp-container-horizontal.fp-sized-width');
+    for (var i = 0; i < groups.length; i++) {
+        var source = groups[i]._fpItem;
+        if (!isTrue(prop(source, ['Collapsed']))
+            || prop(source, ['ControlRepresentation']) !== 'Button') continue;
+        var box = directLayoutChildren(groups[i]);
+        var fields = directFpItems(box);
+        if (fields.length !== 2 || fields[0].dataset.tag !== 'InputField'
+            || fields[1].dataset.tag !== 'InputField') continue;
+        var firstWidth = parseInt(prop(fields[0]._fpItem, ['Width']), 10) || 0;
+        var secondWidth = parseInt(prop(fields[1]._fpItem, ['Width']), 10) || 0;
+        if (!firstWidth || firstWidth !== secondWidth
+            || !isFalse(prop(fields[0]._fpItem, ['AutoMaxWidth']))
+            || !isFalse(prop(fields[1]._fpItem, ['AutoMaxWidth']))
+            || !fields[0].classList.contains('fp-has-tooltip-link')
+            || !fields[1].classList.contains('fp-has-tooltip-link')) continue;
+        var gap = parseFloat(getComputedStyle(box).columnGap) || 0;
+        var slot = Math.floor((groups[i].clientWidth - gap) / 2) - 1;
+        if (slot < 100) continue;
+        for (var f = 0; f < fields.length; f++) {
+            var row = fields[f].querySelector(':scope > .fp-field-row');
+            var label = row && row.querySelector(':scope > .fp-field-label');
+            var editor = row && row.querySelector(':scope > .fp-input-wrap');
+            if (!label || !editor) continue;
+            var labelWidth = Math.ceil(throughAlignGlyphMetric(label)) + 4;
+            var rowGap = parseFloat(getComputedStyle(row).columnGap) || 5;
+            var editorWidth = Math.min(authoredFieldWidthPx(firstWidth, 'InputField'),
+                slot - labelWidth - rowGap - 18);
+            if (editorWidth < TAXI_LAYOUT_METRICS.compressedFieldMinimumWidth) continue;
+            fields[f].style.flex = '0 0 ' + slot + 'px';
+            fields[f].style.width = slot + 'px';
+            fields[f].style.minWidth = slot + 'px';
+            fields[f].style.maxWidth = slot + 'px';
+            label.style.flex = '0 0 ' + labelWidth + 'px';
+            label.style.width = labelWidth + 'px';
+            label.style.minWidth = labelWidth + 'px';
+            label.style.maxWidth = labelWidth + 'px';
+            editor.style.flex = '0 0 ' + editorWidth + 'px';
+            editor.style.width = editorWidth + 'px';
+            editor.style.minWidth = editorWidth + 'px';
+            editor.style.maxWidth = editorWidth + 'px';
+        }
+    }
 }
 
 function itemHorizontalAllocationBand(item, semanticLeaf, responsiveLeaf) {
@@ -12904,6 +16163,8 @@ function itemHorizontalAllocationBand(item, semanticLeaf, responsiveLeaf) {
         if (checkLabel && item.dataset && item.dataset.tag === 'CheckBoxField') {
             var checkIntrinsic = Math.ceil(intrinsicLabelTextMetric(checkLabel)) + 30;
             if (checkIntrinsic < minimum) minimum = checkIntrinsic;
+            var checkWrapped = Math.ceil(longestWordLabelMetric(checkLabel)) + 30;
+            if (checkWrapped < minimum) minimum = checkWrapped;
         }
         /* An empty decoration is a spacer: its painted width follows the
          * column, it never forces one. */
@@ -12969,6 +16230,14 @@ function isBareAutomaticColumnTreeItem(item) {
 function isRecursiveAutomaticColumnTree(box, children) {
     if (!box || !box.classList || !box.classList.contains('fp-children-horizontal')
         || !children || children.length < 2 || !children.every(isBareAutomaticColumnTreeItem)) return false;
+    /* 2.21: a nested row of authored fixed-width columns is not an automatic
+     * tree; those columns keep their authored HorizontalSpacing gutter. */
+    var fixedNestedColumns = children.some(function (child) {
+        var childBox = directLayoutChildren(child);
+        return childBox && formVersionAtLeast(child._fpItem, '2.21')
+            && childBox.querySelector(':scope > .fp-item.fp-sized-width.fp-no-hstretch');
+    });
+    if (fixedNestedColumns) return false;
     return children.some(function (child) {
         var childBox = directLayoutChildren(child);
         return childBox && childBox.classList.contains('fp-children-horizontal');
@@ -13027,6 +16296,14 @@ function combineLogicalSubgridBands(entries, orientation, gap) {
 function logicalSubgridAllocationBand(item, semanticLeaves) {
     var box = directLayoutChildren(item);
     if (!box) return itemHorizontalAllocationBand(item);
+    if (box.classList && box.classList.contains('fp-popup-group-body')
+        && typeof getComputedStyle === 'function'
+        && getComputedStyle(box).display === 'none') {
+        var popupTitle = item.querySelector
+            ? item.querySelector('.fp-popup-group-title') : null;
+        var popupBand = popupTitleAllocationBand(item, popupTitle);
+        if (popupBand) return popupBand;
+    }
     var children = directFpItems(box);
     if (!children.length) return itemHorizontalAllocationBand(item);
     var entries = children.map(function (child) {
@@ -13054,8 +16331,25 @@ function logicalSubgridAllocationBand(item, semanticLeaves) {
      * may go down to 530), which widens the owner and makes the Form scroll
      * on that canvas. */
     if (canvasDecisionPass && item._fpItem && isContainer(item._fpItem.tag)
-        && isFalse(prop(item._fpItem, ['HorizontalStretch', 'РастягиватьПоГоризонтали'])))
-        combined.min = Math.max(combined.min || 0, combined.normal || 0);
+        && isFalse(prop(item._fpItem, ['HorizontalStretch', 'РастягиватьПоГоризонтали']))) {
+        var authoredFixedWidth = parseFloat(item.style.getPropertyValue('--fp-authored-group-width')) || 0;
+        var fixedPairOwner = item.parentElement && item.parentElement.closest
+            ? item.parentElement.closest('.fp-item') : null;
+        var fixedPairColumns = platform85FixedColumns(fixedPairOwner);
+        /* A fixed vertical column whose painted children already fit its
+         * authored track has no larger minimum to publish to the Form. A
+         * descendant's uncompressed normal band is only a recommendation. */
+        if (authoredFixedWidth > 0 && fixedPairColumns
+            && fixedPairColumns.indexOf(item) >= 0
+            && fixedPairColumns.every(function (column) {
+                var width = parseFloat(column.style.getPropertyValue('--fp-authored-group-width')) || 0;
+                return width > 0 && column.scrollWidth <= width + 1;
+            })
+            && box.classList.contains('fp-children-vertical')
+            && item.scrollWidth <= authoredFixedWidth + 1) {
+            combined.min = authoredFixedWidth;
+        } else combined.min = Math.max(combined.min || 0, combined.normal || 0);
+    }
     var title = item.querySelector ? item.querySelector(':scope > .fp-control-wrap .fp-group-title') : null;
     if (title) {
         /* .fp-group-title is a block and its border box fills the already
@@ -13111,11 +16405,6 @@ function isDecorationOnlyLogicalSubgrid(item) {
     return true;
 }
 
-/* The reference keeps an ordinary leading field column at its published normal band,
- * lets a later value column consume the remaining row, and gives a trailing
- * decoration column the standard 20-character presentation band.  Browser
- * flex instead compressed both field columns equally and kept the unwrapped
- * warning text, reversing all three source-order tracks. */
 function projectFieldColumnsWithDecorationTail(children, entries) {
     if (!children || children.length < 3 || !entries || entries.length !== children.length)
         return null;
@@ -13138,10 +16427,6 @@ function projectFieldColumnsWithDecorationTail(children, entries) {
     projected[0].stretch = false;
     projected[0].compress = false;
     var trailingIndex = projected.length - 1;
-    /* Picture and text are paint lanes inside the same decoration column.
-     * Summing them as independent wrapper tracks preserves an unwrapped DOM
-     * rectangle; the reference publishes the standard field-presentation band and
-     * overlays the compact picture lane within that width. */
     var standardPresentation = authoredFieldWidthPx(DEFAULT_FIELD_CHARS, 'LabelField');
     var trailing = Math.min(projected[trailingIndex].normal || standardPresentation,
         standardPresentation);
@@ -13151,6 +16436,28 @@ function projectFieldColumnsWithDecorationTail(children, entries) {
     projected[trailingIndex].compress = false;
     projected[flexible[0]].compressPriority = true;
     return projected;
+}
+
+function popupTitleAllocationBand(item, title) {
+    if (!item || !title) return null;
+    var titleNormal = Math.ceil(intrinsicLabelTextMetric(title));
+    var titleMinimum = Math.ceil(longestWordLabelMetric(title));
+    var titleStretch = item.dataset && item.dataset.fpWidthStretch
+        ? item.dataset.fpWidthStretch === '1'
+        : item.classList.contains('fp-hstretch');
+    return {
+        standard: 0,
+        min: Math.min(titleNormal, titleMinimum),
+        minNormal: Math.min(titleNormal, titleMinimum),
+        normal: titleNormal,
+        recommended: titleNormal,
+        max: titleStretch ? Infinity : titleNormal,
+        stretch: titleStretch,
+        stretchPriority: item.dataset && item.dataset.fpWidthStretchPriority === '1',
+        compressPriority: item.dataset && item.dataset.fpWidthCompressPriority === '1',
+        compress: true,
+        explicit: false
+    };
 }
 
 function fitDecorationTailRows(item) {
@@ -13177,9 +16484,6 @@ function fitDecorationTailRows(item) {
 function fitLeadingFieldColumn(item) {
     if (!item || !item.querySelectorAll) return;
     var labels = item.querySelectorAll('.fp-field-row.fp-title-left > .fp-field-label');
-    /* Glyph widths, not offsetWidth: an earlier applyLabelWidth pass already
-     * published min-width on these labels, and reading it back added the
-     * chrome twice (90 instead of the reference 84). */
     var glyphWidths = [];
     for (var l = 0; l < labels.length; l++) glyphWidths.push(throughAlignGlyphMetric(labels[l]));
     if (glyphWidths.length) {
@@ -13206,9 +16510,6 @@ function fitLeadingFieldColumn(item) {
         editor.style.width = nativeMaximum + 'px';
         editor.style.maxWidth = nativeMaximum + 'px';
         editor.style.flex = '0 0 auto';
-        /* Beside a trailing command the fixed band still gives way inside
-         * its column (290 → 242px), which keeps the trailing button inside
-         * the column, as in the reference. */
         var editorRow = controls[i].parentElement;
         if (editorRow && editorRow.classList.contains('fp-children-horizontal')
             && directFpItems(editorRow).length > 1) {
@@ -13224,6 +16525,17 @@ function fitLeadingFieldColumn(item) {
 function responsiveWrapperAllocationBand(item) {
     var box = directLayoutChildren(item);
     if (!box) return itemHorizontalAllocationBand(item, true, true);
+    /* A closed horizontal PopUp paints only its launcher.  Its body remains
+     * in the DOM for interaction but display:none must not publish the
+     * authored widths of the hidden editors into the form canvas. */
+    if (box.classList && box.classList.contains('fp-popup-group-body')
+        && typeof getComputedStyle === 'function'
+        && getComputedStyle(box).display === 'none') {
+        var title = item.querySelector
+            ? item.querySelector('.fp-popup-group-title') : null;
+        var popupBand = popupTitleAllocationBand(item, title);
+        if (popupBand) return popupBand;
+    }
     var children = directFpItems(box);
     if (!children.length) return itemHorizontalAllocationBand(item, true, true);
     var entries = children.map(responsiveWrapperAllocationBand);
@@ -13262,10 +16574,6 @@ function responsiveWrapperAllocationBand(item) {
     return combined;
 }
 
-/* A colliding authored row inside a Page is resolved by widening that Page's
- * scroll canvas. Its preferred width must be calculated before flex pressure:
- * current DOM rectangles have already compressed automatic editors from the reference's
- * 40-unit presentation lane and merely preserve the bad sibling origin. */
 function automaticEditorScrollAllocationBand(band, generatedNormal, eligible) {
     var result = {
         min: band.min, normal: band.normal, recommended: band.recommended,
@@ -13293,6 +16601,14 @@ function scrollCanvasWrapperAllocationBand(item) {
             && !item.dataset.fpWidthBandMax;
         return automaticEditorScrollAllocationBand(leaf,
             parseFloat(item.dataset.fpAuthoredNormalWidth) || 0, automaticEditor);
+    }
+    if (box.classList && box.classList.contains('fp-popup-group-body')
+        && typeof getComputedStyle === 'function'
+        && getComputedStyle(box).display === 'none') {
+        var popupTitle = item.querySelector
+            ? item.querySelector('.fp-popup-group-title') : null;
+        var popupBand = popupTitleAllocationBand(item, popupTitle);
+        if (popupBand) return popupBand;
     }
     var children = directFpItems(box);
     if (!children.length) return itemHorizontalAllocationBand(item, true);
@@ -13375,11 +16691,6 @@ function descendantTableColumnRecommendation(item) {
     return Math.round(widest);
 }
 
-/* A headerless columnless List group publishes the reference's compressed band
- * (applyItemMetrics). Its Table's authored 400px recommendation belongs to the
- * inner field, not to the column: letting the allocator reuse it widened such
- * a column to 482px and pushed the neighbouring Pages off the window. The
- * compact column is a fixed track; the sibling owns the remaining row width. */
 function compactListColumnBands(children, entries) {
     if (!children || !entries) return entries;
     var compact = children.map(function (child) {
@@ -13425,10 +16736,49 @@ function isTableColumnResponsivePair(box, children, recommendations) {
     });
 }
 
+/* An automatic two-table row can have a commandbar on the leading table and
+ * none on the trailing one. Keep the trailing table at its grid width and
+ * give the row's surplus to the commandbar column; intrinsic flex otherwise
+ * lends that space to the toolbar-free trailing pane. */
+function leadingToolbarTableRemainder(children, childWidthMode) {
+    if (childWidthMode || !children || children.length !== 2) return 0;
+    var tables = children.map(function (child) {
+        var nested = child && child.querySelectorAll
+            ? child.querySelectorAll('.fp-item[data-tag="Table"]') : [];
+        return nested.length === 1 ? nested[0] : null;
+    });
+    if (!tables[0] || !tables[1]) return 0;
+    if (children.some(function (child) {
+        return !child.classList.contains('fp-container-vertical')
+            || charSize(prop(child._fpItem, ['Width', 'Ширина']));
+    })) return 0;
+    if (!tables[0].querySelector('.fp-table-toolbar')
+        || tables[1].querySelector('.fp-table-toolbar')) return 0;
+    return parseFloat(tables[1].dataset.fpTableGridWidth)
+        || parseFloat(tables[1].dataset.fpAuthoredRecommendedWidth) || 0;
+}
+
+function fitLeadingToolbarTablePairs(body) {
+    if (!body || !body.querySelectorAll) return 0;
+    var rows = body.querySelectorAll('.fp-children-horizontal');
+    var fitted = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var children = directFpItems(rows[i]);
+        var width = leadingToolbarTableRemainder(children,
+            rows[i].dataset && rows[i].dataset.fpChildItemsWidth || '');
+        if (width > 0) {
+            rows[i].classList.add('fp-table-toolbar-leading-pair');
+            rows[i].style.setProperty('--fp-table-toolbar-trailing-width', width + 'px');
+            fitted++;
+        } else {
+            rows[i].classList.remove('fp-table-toolbar-leading-pair');
+            rows[i].style.removeProperty('--fp-table-toolbar-trailing-width');
+        }
+    }
+    return fitted;
+}
+
 function tableSummaryStretchStackEligible(options) {
-    /* The reference accounts the ordinary inter-row cadence inside the leading stretch
-     * track when a table-backed composition is followed by one fixed summary.
-     * Reserving a separate CSS gap shortens every table in the leading row. */
     options = options || {};
     return !!(options.activeVerticalPage && options.directItems === 2
         && options.tablePairIsFirst && options.leadingStretch && !options.trailingStretch);
@@ -13473,10 +16823,6 @@ function authoredLabelWidthEnvelopePx(source) {
     return width > 0 ? width * REF_AUTHORED_CHAR_PX + 1 : 0;
 }
 
-/* A United=false column whose editors all carry a fixed band (Width with
- * HorizontalStretch=false, or AutoMaxWidth=false + MaxWidth) reserves that
- * band whenever the row fits: a MaxWidth 32 column paints 330px beside a
- * Width 27 column in the reference. */
 function fixedBandEditorColumn(column) {
     var fields = column && column.querySelectorAll
         ? column.querySelectorAll('.fp-item[data-tag="InputField"]') : [];
@@ -13526,15 +16872,6 @@ function logicalRowHasAuthoredWidthEnvelope(children) {
         ? { leading: leadingWidth, center: centerWidth } : null;
 }
 
-/* A plain horizontal row (no ChildItemsWidth, no explicit ThroughAlign and no
- * logical columns) is left to CSS flex, where flex-grow hands the entire row
- * surplus to the stretching child. The reference spends that surplus only after every
- * non-stretch editor owns its presentation band: a reference field with two
- * buttons is 203 (150 + 11 chrome + two 21px button lanes) and the row ends
- * before its edge; browser intrinsic sizing left that editor at 162 and gave
- * the difference to the stretching sibling, which pushed the whole trailing
- * column right. The row is therefore handed to the ordinary band allocator
- * instead of a per-form correction. */
 function plainSemanticEditorRow(children) {
     var fixedEditor = false;
     var stretching = false;
@@ -13619,17 +16956,27 @@ function fitMinimumCanvasTitleTracks(body) {
     return fitted;
 }
 
+function setAllocatedLabelMinWidth(label, width) {
+    if (!label || !label.style) return;
+    if (label.dataset && !Object.prototype.hasOwnProperty.call(label.dataset, 'fpAllocatedLabelMin'))
+        label.dataset.fpAllocatedLabelMin = label.style.minWidth || '__empty__';
+    label.style.minWidth = width + 'px';
+}
+
+function restoreAllocatedLabelMinWidths(body) {
+    var labels = body && body.querySelectorAll ? body.querySelectorAll('[data-fp-allocated-label-min]') : [];
+    for (var i = 0; i < labels.length; i++) {
+        var saved = labels[i].dataset.fpAllocatedLabelMin;
+        labels[i].style.minWidth = saved === '__empty__' ? '' : saved;
+        delete labels[i].dataset.fpAllocatedLabelMin;
+    }
+}
+
 function applyHorizontalWidthAllocations(body, strategyValue) {
     if (!body || !body.querySelectorAll || typeof getComputedStyle !== 'function') return 0;
     if (body.dataset) delete body.dataset.fpResponsiveWrapperAllocated;
     restoreHorizontalWidthAllocations(body);
     var rows = Array.prototype.slice.call(body.querySelectorAll('.fp-children-horizontal'));
-    /* Rows are allocated innermost first (the loop runs backwards). A
-     * recursive automatic column tree is the exception: the reference hands the tree's
-     * surplus to a column wrapper first, and the column's own row then spends
-     * that lane on its stretchable leaves (up to their maximum). Allocating
-     * the nested row before its owner froze it at the pre-allocation
-     * intrinsic width. */
     var recursiveTreeRows = rows.filter(function (row) {
         return isRecursiveAutomaticColumnTree(row, directFpItems(row));
     });
@@ -13655,6 +17002,11 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
             if (child.classList && child.classList.contains('fp-item')) children.push(child);
         }
         if (children.length < 2) continue;
+        if (box.dataset && box.dataset.fpPlatform85NestedRow === '1') {
+            platform85NestedContainerRowFits(box, children, box.clientWidth);
+            box.dataset.fpNoOverlapContained = '1';
+            continue;
+        }
         fitIndentedCompoundRow(box);
         if (isRecursiveAutomaticColumnTree(box, children))
             box.classList.add('fp-recursive-auto-column-tree');
@@ -13752,16 +17104,8 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
             && !children[1].dataset.fpWidthBandMax
             && children[1].dataset.fieldKind === 'ref';
         if (automaticTrailingLeftWide) {
-            /* The trailing reference field keeps the reference's automatic 40-unit editor
-             * presentation. Its earlier semantic band may already contain a
-             * compressed generated editor width, so restore only the delta;
-             * the side-title lane remains owned by the existing entry. */
             var trailingGenerated = parseFloat(
                 children[1].dataset.fpAuthoredNormalWidth) || 0;
-            /* No sideTitleGap on top: the band already holds the caption
-             * lane, and the extra slack landed right of the 410px editor.
-             * Once the window reserves the reference's scrollbar lane that
-             * slack moved the next caption 10px left of the reference. */
             var trailingDelta = Math.max(0,
                 TAXI_LAYOUT_METRICS.automaticEditorPresentationWidth - trailingGenerated)
                 - TAXI_LAYOUT_METRICS.sideTitleGap;
@@ -13797,6 +17141,15 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
             ? children.map(descendantTableColumnRecommendation) : [];
         var tableDominantPair = isTableColumnResponsivePair(
             box, children, tableColumnRecommendations);
+        var toolbarLeadingTableWidth = responsiveColumns && !tableDominantPair
+            ? leadingToolbarTableRemainder(children, childWidthMode) : 0;
+        if (toolbarLeadingTableWidth > 0) {
+            box.classList.add('fp-table-toolbar-leading-pair');
+            box.style.setProperty('--fp-table-toolbar-trailing-width', toolbarLeadingTableWidth + 'px');
+        } else {
+            box.classList.remove('fp-table-toolbar-leading-pair');
+            box.style.removeProperty('--fp-table-toolbar-trailing-width');
+        }
         if (tableDominantPair) {
             box.classList.add('fp-table-column-responsive-pair');
             entries = entries.map(function (entry, index) {
@@ -13821,10 +17174,6 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
         var explicitThroughAlign = box.dataset && box.dataset.fpThroughAlignMode === 'use';
         var nativeThroughAlign = explicitThroughAlign || unboundedDecorationRow
             || recursiveAutomaticTree;
-        /* Only an explicit ChildItemsWidth contract transfers ownership of
-         * the row from ordinary CSS intrinsic sizing to the reference logical tracks.
-         * Explicit ThroughAlign does the same for a row of generated logical
-         * columns, but without imposing an equal caption width across them. */
         /* A row of one native editor plus a stretching sibling is allocated
          * from the same semantic bands: the editor keeps its reference
          * presentation and only the remainder reaches the stretch child. */
@@ -13899,10 +17248,6 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
             var normalProjection = entries.reduce(function (sum, entry) {
                 return sum + Math.max(entry.min || 0, entry.normal || entry.recommended || 0);
             }, 0);
-            /* United=false columns are transparent tracks of their vertical
-             * owner. Browser shrink-to-content initially exposes only the
-             * recommendation, but the reference restores authored normal/MaxWidth bands
-             * whenever the containing viewport can hold them without overlap. */
             allAuthoredStretchColumns = responsiveColumns && entries.length > 1
                 && entries.every(function (entry, index) {
                     return entry.stretch && entry.max === Infinity
@@ -13923,10 +17268,6 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
                     return sum + Math.max(0, entry.min || 0);
                 }, 0);
                 available = Math.min(available, Math.max(viewportAvailable, semanticMinimum));
-                /* Several authored HorizontalStretch=true columns without a
-                 * maximum share their owner's width equally, even past the
-                 * window: e.g. three 340px quick-filter columns across a
-                 * 1062px list pane that scrolls in the reference. */
                 if (allAuthoredStretchColumns) {
                     var stretchOwner = box.parentElement;
                     var stretchOwnerWidth = stretchOwner ? stretchOwner.clientWidth : 0;
@@ -13940,13 +17281,6 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
                 if (normalRecovery)
                     trailingNormalLimit = Math.max(0,
                         Number(entries[entries.length - 1].normal) || 0);
-                /* Recursive numeric trees spend leftover in the trailing
-                 * stretch column. Capping at the recommendation left it at
-                 * 117 vs the reference 141 with matching right edges. */
-                /* Stretchable detached columns are allocated at their minimum
-                 * and then receive the row surplus up to their maximum
-                 * (221px in the reference instead of staying at the 191px
-                 * responsive minimum). */
                 var soleStretchColumn = entries.filter(function (entry) { return entry.stretch; }).length === 1;
                 var stretchCeiling = responsiveColumns && entries.some(function (entry) { return entry.stretch; })
                     ? entries.reduce(function (sum, entry, index) {
@@ -13964,10 +17298,6 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
                 if (!recursiveAutomaticTree)
                     available = Math.min(available, Math.round(
                         normalRecovery ? normalRecovery * entries.length : Math.max(recommended, stretchCeiling)));
-                /* A row of editors that all carry HorizontalStretch=true fills
-                 * its owner group: such rows end at the page's right edge in
-                 * the reference; the shrink-to-content row reported only the
-                 * sum of their normal bands. */
                 var rowOwner = box.closest ? box.closest('.fp-item') : null;
                 if (!responsiveColumns && rowOwner && children.every(function (child) {
                     return child.classList.contains('fp-control') && child._fpItem
@@ -14004,9 +17334,27 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
             }
             allocationMode = 'equal';
         }
-        if (responsiveColumns && allocationMode === 'leftwidest' && entries[0].stretch
+        var managedFittingLeftWide = false;
+        var leftWidestCompression = responsiveColumns && allocationMode === 'leftwidest'
+            && entries[0].stretch
             && (!nestedDetachedEqualOwner
-                || strategy >= HORIZONTAL_STRATEGY_VALUES['compress-width'])) {
+                || strategy >= HORIZONTAL_STRATEGY_VALUES['compress-width']);
+        if (leftWidestCompression) {
+            var leftWidestRecommended = entries.reduce(function (sum, entry) {
+                return sum + Math.max(entry.min || 0, entry.recommended || entry.normal || 0);
+            }, 0);
+            if (available + 0.5 >= leftWidestRecommended) leftWidestCompression = false;
+        }
+        /* An uncompressed LeftWidest pair keeps the same column contract as the
+         * compressed one, only on the allocator's own tracks: its editors fill
+         * the column they were given instead of standing at their authored
+         * character width in the middle of it. */
+        if (!leftWidestCompression && allocationMode === 'leftwidest'
+            && children.length === 2 && !!nestedDetachedEqualOwner
+            && entries[0].stretch
+            && entries.every(function (entry) { return !entry.explicit; }))
+            managedFittingLeftWide = true;
+        if (leftWidestCompression) {
             /* ChildItemsWidth=LeftWidest keeps the right recommendation and
              * spends compression in the growable left wrapper.  Treating
              * "widest" as stretch priority reverses the 440/559 bands. */
@@ -14032,9 +17380,6 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
         }
         /* A stretching editor spends the row only up to the window edge. The row's
          * own clientWidth may already carry a pre-layout overflow. */
-        /* A fixed editor never gets less than its painted minimum: Width=28
-         * filters are 355px wide (the reference 354), not the 290px 8px-grid
-         * band. */
         if (!responsiveColumns && !recursiveAutomaticTree)
             entries = entries.map(function (entry, index) {
                 var child = children[index];
@@ -14059,7 +17404,51 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
             }, 0);
             available = Math.max(fixedMinimum, viewportAvailable);
         }
-        var sizes = allocateHorizontalDimensionBands(entries, available, allocationMode);        if (detachedEqualLeftWidePair) {
+        var sizes = allocateHorizontalDimensionBands(entries, available, allocationMode);
+        if (sizes.length === 2 && box.classList.contains('fp-auto-column-separators')
+            && box.closest('.fp-clean85')
+            && entries[0].explicit && !entries[0].stretch && entries[1].stretch
+            && sizes[1] < (entries[1].normal || 0)) {
+            /* Measured on the editor boxes: the column is as wide as its
+             * lone editors span, plus the gap before the separator. */
+            var fixedContentLeft = Infinity;
+            var fixedContentRight = -Infinity;
+            var fixedLeaves = children[0].querySelectorAll('.fp-item.fp-control');
+            for (var fixedLeaf = 0; fixedLeaf < fixedLeaves.length; fixedLeaf++) {
+                /* Only an editor standing alone in its vertical column is
+                 * rigid; side-by-side editors compress with their row. */
+                var fixedLeafParent = fixedLeaves[fixedLeaf].parentElement;
+                if (!fixedLeafParent || !fixedLeafParent.classList.contains('fp-children-vertical')) continue;
+                var fixedLeafBox = fixedLeaves[fixedLeaf].querySelector('.fp-input-wrap');
+                var fixedLeafRect = fixedLeafBox ? fixedLeafBox.getBoundingClientRect() : null;
+                if (!fixedLeafRect || !(fixedLeafRect.width > 0)) continue;
+                fixedContentLeft = Math.min(fixedContentLeft, fixedLeafRect.left);
+                fixedContentRight = Math.max(fixedContentRight, fixedLeafRect.right);
+            }
+            var fixedContentWidth = fixedContentRight > fixedContentLeft
+                ? Math.round(fixedContentRight - fixedContentLeft) + gap : 0;
+            if (fixedContentWidth > gap && fixedContentWidth < sizes[0]) {
+                var yielded = sizes[0] - Math.max(fixedContentWidth, entries[0].min || 0);
+                var trailingRoom = Math.max(0, (entries[1].normal || 0) - sizes[1]);
+                yielded = Math.min(yielded, trailingRoom);
+                sizes = [sizes[0] - yielded, sizes[1] + yielded];
+            }
+        }
+        /* An authored leading pane remains at its declared width when the
+         * trailing pane contains tables with their own horizontal scrollport.
+         * Compressing both wrappers equally hides the trailing controls even
+         * though the table can scroll inside its remaining lane. */
+        var authoredLeadingPane = children.length === 2 && children[0].style
+            && typeof children[0].style.getPropertyValue === 'function'
+            ? parseFloat(children[0].style.getPropertyValue('--fp-authored-group-width')) || 0 : 0;
+        if (responsiveColumns && strategy === HORIZONTAL_STRATEGY_VALUES['smart-compress-to-min-width']
+            && box.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+            && box.dataset.fpGroupMode === 'always-horizontal'
+            && authoredLeadingPane > 0 && authoredLeadingPane + 96 < available
+            && children[1].querySelector('.fp-item[data-tag="Table"]')) {
+            sizes = [Math.round(authoredLeadingPane), Math.round(available - authoredLeadingPane)];
+        }
+        if (detachedEqualLeftWidePair) {
             /* ChildItemsWidth=Equal is the outer authored contract, not a
              * side effect of one responsive strategy. A nested LeftWide row
              * may publish a wider intrinsic recommendation, but it cannot
@@ -14071,13 +17460,19 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
                 var leadingField = leadingFields[leadingFieldIndex];
                 var leadingFieldNormal = parseFloat(leadingField.dataset
                     && leadingField.dataset.fpAuthoredRecommendedWidth) || 0;
-                if (leadingFieldNormal > sizes[0])
+                var leadingFieldRow = leadingField.querySelector(
+                    ':scope > .fp-control-wrap.fp-field-row');
+                var leadingFieldWrap = leadingFieldRow
+                    ? leadingFieldRow.querySelector(':scope > .fp-input-wrap') : null;
+                var leadingFieldLane = leadingFieldWrap
+                    ? Math.max(0, Math.round(leadingFieldWrap.getBoundingClientRect().left
+                        - leadingFieldRow.getBoundingClientRect().left)) : 0;
+                var leadingFieldEditor = leadingFieldWrap
+                    ? Math.max(parseFloat(leadingFieldWrap.style.minWidth) || 0,
+                        parseFloat(leadingFieldWrap.style.width) || 0) : 0;
+                if (Math.max(leadingFieldNormal, leadingFieldLane + leadingFieldEditor) > sizes[0])
                     leadingField.classList.add('fp-detached-overflow-field');
             }
-            /* A fixed compact field followed by an automatic editor is one
-             * logical row inside the leading Equal column. When a wider field
-             * in the same column publishes the reference's 15px paint overhang, the
-             * automatic trailing editor shares that right edge as well. */
             var leadingRows = children[0].querySelectorAll('.fp-children-horizontal');
             for (var leadingRowIndex = 0; leadingRowIndex < leadingRows.length;
                 leadingRowIndex++) {
@@ -14103,11 +17498,14 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
             box.style.setProperty('--fp-managed-leftwide-leading', sizes[0] + 'px');
             box.style.setProperty('--fp-managed-leftwide-trailing', sizes[1] + 'px');
             deferredManagedLeftWide.push({ box: box, children: children, gap: gap });
+        } else if (managedFittingLeftWide) {
+            /* Same column contract on the allocator's own tracks: no owner
+             * width is re-split later, so this row is not deferred. */
+            box.classList.add('fp-managed-compressed-leftwide');
+            box.style.setProperty('--fp-managed-leftwide-leading', sizes[0] + 'px');
+            box.style.setProperty('--fp-managed-leftwide-trailing', sizes[1] + 'px');
         }
         if (balancedResponsivePair) {
-            /* The reference centres the divider in the outer client, but the trailing
-             * column ends at the managed-form content edge. The latter omits
-             * Win32 host chrome and both horizontal page insets. */
             var bodyRectForPair = body.getBoundingClientRect();
             var boxRectForPair = box.getBoundingClientRect();
             var pairLeft = Math.max(0, boxRectForPair.left - bodyRectForPair.left);
@@ -14126,7 +17524,7 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
                 sizes[1] = Math.max(sizes[1], Math.round(box.clientWidth - sizes[0] - gap));
             }
         }
-        if (managedCompressedLeftWide) {
+        if (managedCompressedLeftWide || managedFittingLeftWide) {
             var leadingIndependentTrack = 0;
             for (var independentIndex = 0; independentIndex < children.length; independentIndex++) {
                 var independentLabels = children[independentIndex].querySelectorAll(
@@ -14139,7 +17537,7 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
                 children[independentIndex].style.setProperty(
                     '--fp-independent-title-track', independentTrack + 'px');
                 for (var publishedLabel = 0; publishedLabel < independentLabels.length; publishedLabel++)
-                    independentLabels[publishedLabel].style.minWidth = independentTrack + 'px';
+                    setAllocatedLabelMinWidth(independentLabels[publishedLabel], independentTrack);
             }
             /* A compact qualified field in a sibling row belongs to the same
              * leading caption lane as the first managed LeftWide column. The
@@ -14202,7 +17600,7 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
                     columnGlyphWidths.push(throughAlignGlyphMetric(alignedLabels[li]));
                 var titleTrack = throughAlignTitleTrackWidth(columnGlyphWidths);
                 for (var lj = 0; lj < alignedLabels.length; lj++)
-                    alignedLabels[lj].style.minWidth = titleTrack + 'px';
+                    setAllocatedLabelMinWidth(alignedLabels[lj], titleTrack);
                 var columnRows = children[columnIndex].querySelectorAll('.fp-field-row');
                 for (var cr = 0; cr < columnRows.length; cr++) {
                     var rowLabel = columnRows[cr].querySelector('.fp-field-label');
@@ -14278,11 +17676,92 @@ function applyHorizontalWidthAllocations(body, strategyValue) {
     return changed;
 }
 
-/* A fixed horizontal source row may contain generated wrapper tracks rather
- * than only leaf controls. Browser flex otherwise sizes those wrappers from
- * already-wrapped paint and lets their captions overlap the next track. The reference
- * projects the immutable leaf recommendations first and gives their sum to
- * the Page scroll canvas. */
+function balanceDefaultSplitterPairs(body) {
+    if (!body || !body.querySelectorAll) return 0;
+    var rows = body.querySelectorAll(
+        '.fp-children-horizontal.fp-auto-column-separators[data-fp-group-mode="always-horizontal"]');
+    var balanced = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var children = directFpItems(row);
+        if (children.length !== 2 || !children[0].classList.contains('fp-hstretch')
+            || !children[1].classList.contains('fp-hstretch')
+            || !children[0].classList.contains('fp-splitter-pane')
+            || !children[1].classList.contains('fp-splitter-pane')) continue;
+        if (children.some(function (child) {
+            return parseFloat(child.dataset.fpHorizontalPublishedWidth) > 0;
+        })) continue;
+        var owner = row._fpItem;
+        var meta = owner ? layoutMeta(owner) : null;
+        if (meta && (meta.childItemsWidth || meta.fixedWidth)) continue;
+        children[0].style.flex = '1 1 0px';
+        children[1].style.flex = '1 1 0px';
+        row.classList.add('fp-splitter-in-gap');
+        balanced++;
+    }
+    return balanced;
+}
+
+/* A nested horizontal editor row can be wider than its vertical splitter pane:
+ * unlike a logical grid row, a plain pair is normally left to intrinsic flex
+ * sizing. Keep a trailing capped editor inside the pane so it cannot touch or
+ * paint over the neighboring column. */
+function fitSplitterPaneEditorOverhangs(body) {
+    if (!body || !body.querySelectorAll) return 0;
+    var adjusted = body.querySelectorAll('[data-fp-splitter-editor-base]');
+    for (var r = 0; r < adjusted.length; r++) {
+        var base = JSON.parse(adjusted[r].dataset.fpSplitterEditorBase);
+        var nodes = [adjusted[r], adjusted[r].querySelector(':scope > .fp-control-wrap > .fp-input-wrap')];
+        for (var n = 0; n < nodes.length; n++) {
+            if (!nodes[n]) continue;
+            nodes[n].style.width = base[n][0];
+            nodes[n].style.minWidth = base[n][1];
+            nodes[n].style.maxWidth = base[n][2];
+            nodes[n].style.flex = base[n][3];
+        }
+        delete adjusted[r].dataset.fpSplitterEditorBase;
+    }
+    var rows = body.querySelectorAll('.fp-children-horizontal[data-fp-group-mode="horizontal"]');
+    var fitted = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var children = directFpItems(row);
+        if (children.length !== 2 || children.some(function (child) {
+            return child.dataset.tag !== 'InputField';
+        })) continue;
+        var pane = row.closest('.fp-splitter-pane');
+        if (!pane || !pane.nextElementSibling
+            || !pane.nextElementSibling.classList.contains('fp-splitter-pane')) continue;
+        var trailing = children[1];
+        var item = trailing._fpItem;
+        var maximum = item && parseInt(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
+        if (!maximum || !isFalse(prop(item, ['AutoMaxWidth']))
+            || charSize(prop(item, ['Width', 'Ширина']))) continue;
+        var wrap = trailing.querySelector(':scope > .fp-control-wrap > .fp-input-wrap');
+        if (!wrap) continue;
+        var paneStyle = getComputedStyle(pane.nextElementSibling);
+        var contentEdge = pane.getBoundingClientRect().right
+            - (parseFloat(paneStyle.paddingLeft) || 0);
+        var editorRect = wrap.getBoundingClientRect();
+        var overhang = Math.ceil(editorRect.right - contentEdge);
+        if (overhang < 2) continue;
+        var nextWidth = Math.max(TAXI_LAYOUT_METRICS.compressedFieldMinimumWidth,
+            Math.floor(editorRect.width - overhang));
+        var baseItem = [trailing.style.width, trailing.style.minWidth,
+            trailing.style.maxWidth, trailing.style.flex];
+        var baseWrap = [wrap.style.width, wrap.style.minWidth, wrap.style.maxWidth, wrap.style.flex];
+        trailing.dataset.fpSplitterEditorBase = JSON.stringify([baseItem, baseWrap]);
+        [trailing, wrap].forEach(function (node) {
+            node.style.width = nextWidth + 'px';
+            node.style.minWidth = '0';
+            node.style.maxWidth = nextWidth + 'px';
+            node.style.flex = '0 1 ' + nextWidth + 'px';
+        });
+        fitted++;
+    }
+    return fitted;
+}
+
 function allocateProjectedFixedHorizontalRows(body, strategyValue) {
     if (!body || !body.querySelectorAll) return 0;
     var rows = body.querySelectorAll('.fp-children-horizontal');
@@ -14351,10 +17830,6 @@ function allocateProjectedFixedHorizontalRows(body, strategyValue) {
     return changed;
 }
 
-/* Flex can make a HorizontalIfPossible row look collision-free by shrinking
- * all fields below their authored normal widths. The reference decides this earlier,
- * from normal field width plus the measured title column.
- * Preserve that signal separately from the final CSS rectangles. */
 function horizontalPreferredWidth(box) {
     if (!box || !box.children) return 0;
     var total = 0;
@@ -14390,7 +17865,73 @@ function horizontalChildPreferredWidth(child) {
     if (label) preferred += labelMetric(label) + 5;
     if (!preferred) preferred = child.scrollWidth
         || (child.getBoundingClientRect && child.getBoundingClientRect().width) || 0;
+    var finalTrackBand = finalSideChoiceAllocationBand(child);
+    if (finalTrackBand) {
+        if (finalTrackBand && finalTrackBand.min > 0)
+            preferred = Math.min(preferred, finalTrackBand.min);
+    }
     return preferred;
+}
+
+/* Resolve the parent's finite final column before wrapping the side caption.
+ * The side-choice column gets its wrapping minimum first; the leading content
+ * receives the remainder so the caption cannot publish its intrinsic width. */
+function allocateFinalSideChoiceTrack(box) {
+    if (!box || !box.dataset || box.dataset.fpGroupMode !== 'auto-screen-sensitive'
+        || !box.querySelector || typeof getComputedStyle !== 'function') return 0;
+    var children = directFpItems(box);
+    if (children.length < 2) return 0;
+    var finalChild = children[children.length - 1];
+    if (!finalChild.querySelector('.fp-final-track-side-choice')) return 0;
+    for (var ci = 0; ci < children.length - 1; ci++)
+        if (children[ci].querySelector('.fp-final-track-side-choice')) return 0;
+    var cardWithLinkPane = children.length === 2
+        && box.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+        && children[0].classList.contains('fp-ui85-card')
+        && platform85FixedColumns(children[0])
+        && children[1].querySelector('.fp-item[data-tag="InputField"]')
+        && children[1].querySelectorAll('.fp-link').length >= 3;
+    var style = getComputedStyle(box);
+    var gap = parseFloat(style.columnGap || style.gap || '') || 0;
+    var leadingWidths = children.slice(0, -1).map(function (child) {
+        var band = responsiveWrapperAllocationBand(child);
+        return Math.max(band.min || 0, band.normal || band.recommended || 0);
+    });
+    var finalBand = finalSideChoiceAllocationBand(finalChild);
+    if (!finalBand) return 0;
+    var available = box.clientWidth;
+    var formBody = box.closest('.fp-body');
+    if (formBody && formBody.clientWidth > 0) {
+        var rootInsets = TAXI_LAYOUT_METRICS.pagePadding.horizontal * 2
+            - TAXI_LAYOUT_METRICS.inputBorderChromeWidth;
+        var finiteBodyWidth = formBody.clientWidth - rootInsets;
+        available = cardWithLinkPane ? finiteBodyWidth : Math.max(available, finiteBodyWidth);
+    }
+    var sizes = finalSideChoiceRowSizes(available, gap, leadingWidths, finalBand.min || 0);
+    if (!sizes) return 0;
+    for (var i = 0; i < children.length; i++) {
+        var target = children[i];
+        if (!Object.prototype.hasOwnProperty.call(target.dataset, 'fpHorizontalBaseFlex')) {
+            target.dataset.fpHorizontalBaseFlex = target.style.flex || '__empty__';
+            target.dataset.fpHorizontalBaseWidth = target.style.width || '__empty__';
+            target.dataset.fpHorizontalBaseMinWidth = target.style.minWidth || '__empty__';
+            target.dataset.fpHorizontalBaseMaxWidth = target.style.maxWidth || '__empty__';
+        }
+        target.style.flex = '0 0 ' + sizes[i] + 'px';
+        target.style.width = sizes[i] + 'px';
+        target.style.minWidth = sizes[i] + 'px';
+        target.style.maxWidth = sizes[i] + 'px';
+        target.dataset.fpHorizontalAllocated = '1';
+        target.dataset.fpHorizontalPublishedWidth = String(sizes[i]);
+    }
+    if (cardWithLinkPane) {
+        var cardColumnsBox = directLayoutChildren(children[0]);
+        children[0].style.minWidth = '0px';
+        platform85NestedContainerRowFits(cardColumnsBox, directFpItems(cardColumnsBox), sizes[0]);
+        fitCappedFieldAfterCheckboxInCard(children[0]);
+    }
+    box.dataset.fpFinalSideChoiceTrack = '1';
+    return 1;
 }
 
 function horizontalCompressedWidth(box, minimumPriority) {
@@ -14402,18 +17943,12 @@ function horizontalCompressedWidth(box, minimumPriority) {
         if (!child.classList || !child.classList.contains('fp-item')) continue;
         var row = child.querySelector ? child.querySelector('.fp-field-row') : null;
         var normal = parseFloat((child.dataset && child.dataset.fpAuthoredNormalWidth) || '') || 0;
-        /* The reference gives an ordinary text editor a compressible Hor band even when
-         * HorizontalStretch is omitted. Only an explicit false keeps the full
-         * authored value width in the minimum-priority pass. */
         var canCompress = !(child.dataset && child.dataset.fpAuthoredFixedWidth === '1');
         var valueWidth = normal
             ? (canCompress
                 ? Math.min(normal, TAXI_LAYOUT_METRICS.responsiveCompressedElementMinimumWidth)
                 : normal) : 0;
         var label = row ? row.querySelector('.fp-field-label') : null;
-        /* The reference's narrow title column uses the same font-aware metric as the
-         * browser measurement, but at the compressed Taxi scale rather than
-         * the full rendered text width. */
         var measuredLabelWidth = 0;
         if (label) {
             /* Through-alignment may have installed an inline min-width for the
@@ -14425,10 +17960,6 @@ function horizontalCompressedWidth(box, minimumPriority) {
                 ? label.getBoundingClientRect().width : (label.offsetWidth || 0);
             label.style.minWidth = savedMinWidth;
         }
-        /* Priority decisions use the reference's authored 10px character grid, while
-         * the painted browser caption is measured on the established 8px
-         * grid. Preserve the font-aware DOM measurement, but translate it to
-         * decision space before applying the native compressed-title cap. */
         var labelScale = minimumPriority
             ? REF_AUTHORED_CHAR_PX / CHAR_PX
             : TAXI_BROWSER_METRICS.averageCharacterScale;
@@ -14444,6 +17975,19 @@ function horizontalCompressedWidth(box, minimumPriority) {
         if (row && row.classList.contains('fp-title-left')) preferred = labelWidth + 5 + valueWidth;
         else if (row && (row.classList.contains('fp-title-top') || row.classList.contains('fp-title-bottom')))
             preferred = Math.max(labelWidth, valueWidth);
+        else if (row && row.classList.contains('fp-check-row') && label) {
+            /* A checkbox's title-right caption is as wrappable as an ordinary
+             * side title: the compressed estimate must reflect that its band
+             * can shrink to the same narrow-title cap, not its unwrapped
+             * scrollWidth. Otherwise a toolbar row that could still fit
+             * within its minimum-priority band is pushed straight to the
+             * harder hard-scroll compressWidth fallback. */
+            var checkControl = row.querySelector('.fp-check, .fp-switch');
+            var checkControlWidth = checkControl && checkControl.getBoundingClientRect
+                ? checkControl.getBoundingClientRect().width : 0;
+            var checkRowGap = parseFloat(getComputedStyle(row).columnGap || getComputedStyle(row).gap || '') || 0;
+            preferred = checkControlWidth + checkRowGap + labelWidth;
+        }
         else preferred = valueWidth || child.scrollWidth || child.getBoundingClientRect().width || 0;
         total += preferred;
         count++;
@@ -14487,6 +18031,11 @@ function setResponsiveGroupOrientation(box, orientation) {
             child.dataset.fpResponsiveAlignSelf = child.style.alignSelf || '__empty__';
         }
         if (vertical) {
+            if (Object.prototype.hasOwnProperty.call(child.dataset, 'fpPlatform85BaseOverflow')) {
+                child.style.overflow = child.dataset.fpPlatform85BaseOverflow === '__empty__'
+                    ? '' : child.dataset.fpPlatform85BaseOverflow;
+                delete child.dataset.fpPlatform85BaseOverflow;
+            }
             if (child.dataset.fpHorizontalAllocated === '1') {
                 child.style.flex = child.dataset.fpHorizontalBaseFlex === '__empty__'
                     ? '' : child.dataset.fpHorizontalBaseFlex;
@@ -14523,6 +18072,13 @@ function isNativeCardStack(item) {
     });
 }
 
+function isCompactRootResponsiveRow85(box, body) {
+    if (!box.closest || !box.closest('.fp-clean85.fp-scale-compact')) return false;
+    var owner = box.closest('.fp-item');
+    return !!owner && owner.parentElement === body
+        && box.dataset.fpGroupMode === 'auto-screen-sensitive';
+}
+
 function prepareResponsiveGroups(body) {
     if (!body || !body.querySelectorAll) return 0;
     var boxes = body.querySelectorAll('[data-fp-responsive-group="1"]');
@@ -14534,6 +18090,25 @@ function prepareResponsiveGroups(body) {
     var changed = 0;
     var pageColumnScopes = [];
     for (i = boxes.length - 1; i >= 0; i--) {
+        if (isCompactRootResponsiveRow85(boxes[i], body)) {
+            /* The overflowing row keeps each column's own width. */
+            var rowItems = directFpItems(boxes[i]);
+            rowItems.forEach(function (child, index) {
+                child.style.alignSelf = 'flex-start';
+                if (index === rowItems.length - 1 && rowItems.length > 1) {
+                    child.style.flex = '1 1 0';
+                    child.style.minWidth = 'min-content';
+                    child.classList.add('fp-yielding-column-85');
+                    /* Its minimum is measured before its editors take their
+                     * natural width: the column still yields to it. */
+                    delete child.dataset.fpNaturalEditors;
+                    var yieldMinimum = Math.ceil(child.getBoundingClientRect().width);
+                    if (yieldMinimum > 0) child.style.minWidth = yieldMinimum + 'px';
+                    child.dataset.fpNaturalEditors = '1';
+                } else child.style.flexShrink = '0';
+            });
+            continue;
+        }
         if (!responsiveGroupNeedsVertical(boxes[i])) continue;
         setResponsiveGroupOrientation(boxes[i], 'vertical');
         equalizeFieldLabels(boxes[i], true);
@@ -14556,8 +18131,6 @@ function prepareResponsiveGroups(body) {
 function unboundedLabelDecorationSlack(source, parentMode) {
     if (!source || source.tag !== 'LabelDecoration' || parentMode !== 'always-horizontal') return 0;
     if (!isFalse(prop(source, ['AutoMaxWidth'])) || prop(source, ['Width', 'Ширина'])) return 0;
-    /* The reference static-text calculation keeps an almost four-unit presentation
-     * reserve (38 px at 96 DPI) before the next horizontal track. */
     return 4 * REF_AUTHORED_CHAR_PX - 3;
 }
 
@@ -14566,6 +18139,7 @@ function prepareProjectedResponsiveGroups(body) {
     var boxes = body.querySelectorAll('[data-fp-responsive-group="1"]');
     var changed = 0;
     for (var i = boxes.length - 1; i >= 0; i--) {
+        if (boxes[i].dataset && boxes[i].dataset.fpFinalSideChoiceTrack === '1') continue;
         var children = directFpItems(boxes[i]);
         /* Only projected logical rows have the inverse dependency fixed here:
          * their finite child bands are published after the ordinary responsive
@@ -14601,20 +18175,58 @@ function semanticFormCanvasWidth(body, available) {
     var minimum = 0;
     for (var i = 0; i < rows.length; i++) {
         var item = rows[i];
+        var activePanel = item.closest && item.closest('.fp-pages-active-panel');
+        var owningPages = activePanel && activePanel.closest('.fp-item[data-tag="Pages"]');
+        /* In Taxi 8.5 a nested Pages inside a root page owns its own
+         * horizontal lane. Projecting its child's viewport x-offset into
+         * the Form minimum counts the outer pane twice. */
+        if (owningPages && owningPages.parentNode !== body && body.closest
+            && body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) continue;
         var box = directLayoutChildren(item);
-        /* The recursive band models field and group tracks only. A Table
-         * compresses to its own scroll minimum and a command bar folds into
-         * «Еще», so neither yields a trustworthy minimum here (a list row
-         * would claim 1461px while the reference fits it into the 992px window). */
         if (!box || !box.classList.contains('fp-children-horizontal')
             || item.dataset.tag === 'AutoCommandBar' || item.dataset.tag === 'CommandBar'
             || box.closest('.fp-commandbar')
             || item.querySelector('.fp-item[data-tag="Table"]')) continue;
+        if (item.closest('.fp-page-wide-workspace-85')) continue;
+        /* A compact clean 8.5 root row yields its trailing column first;
+         * its real overflow is measured below, not its authored band. */
+        if (box.querySelector(':scope > .fp-yielding-column-85')) continue;
+        /* A singleton PagesRepresentation=None is a transparent responsive
+         * projection, not an authored fixed row. Its logical minimum includes
+         * every inactive page and can be much wider than the active toolbar
+         * that already fits the window (the cashier start screen was promoted
+         * from 914px to 1566px). Real overflow inside the active flattened
+         * page is measured by the row/panel pass below. */
+        var direct = directFpItems(box);
+        /* A centered root row can have a wider intrinsic text band than its
+         * painted layout. Keep the viewport when the actual row fits. */
+        if (item.parentNode === body && item.classList.contains('fp-align-center')
+            && body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+            && box.scrollWidth <= box.clientWidth + 1)
+            continue;
+        /* The root card's compact side-link lane has already been fitted to
+         * the viewport. Its earlier intrinsic width is not a Form canvas. */
+        if (item.parentNode === body && body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
+            && direct.length === 2 && direct[0].classList.contains('fp-ui85-card')
+            && direct[1].querySelector('.fp-item[data-tag="InputField"]')
+            && direct[1].querySelector('.fp-link')
+            && box.scrollWidth <= box.clientWidth + 1)
+            continue;
+        if (direct.length === 1 && direct[0].dataset.tag === 'Pages'
+            && direct[0].classList.contains('fp-pages-none')) continue;
         canvasDecisionPass = true;
         var band;
         try { band = logicalSubgridAllocationBand(item, true); }
         finally { canvasDecisionPass = false; }
-        var inset = Math.max(0, item.getBoundingClientRect().left - bodyRect.left);
+        var itemRect = item.getBoundingClientRect();
+        var inset = Math.max(0, itemRect.left - bodyRect.left);
+        /* A right-aligned root band uses its current free space to reach the
+         * viewport edge. That offset is not a second fixed inset: counting it
+         * twice turns a footer button's normal position into a false minimum
+         * Form width (for example 105px button at x860 on a 972px canvas). */
+        if (item.classList.contains('fp-align-right')
+            && body.closest && body.closest('.fp-platform-85')
+            && itemRect.right <= bodyRect.left + available + 1) inset = 0;
         minimum = Math.max(minimum, Math.ceil((band.min || 0) + 2 * inset));
     }
     /* The band over-estimates fixed-editor minima by a few dozen pixels; the
@@ -14804,9 +18416,6 @@ function bandCompactRows(stack, kids) {
     }
 }
 
-/* The first root row after the form command bar starts one Spacing row below
- * the bar's 27 px row: the reference bar at 26, editors at 62. Its top is the
- * first editor frame, not our item band or a button/picture lane. */
 function spaceFirstRootRow(body) {
     var bar = body.querySelector(':scope > .fp-item[data-tag="AutoCommandBar"]');
     var row = bar && bar.nextElementSibling;
@@ -14853,6 +18462,8 @@ function spaceFirstRootRow(body) {
     var barTop = null, buttonsBottom = null;
     var buttons = bar.querySelectorAll('.fp-bar-item');
     for (var b = 0; b < buttons.length; b++) {
+        if (typeof getComputedStyle === 'function'
+            && getComputedStyle(buttons[b]).position === 'fixed') continue;
         var buttonRect = buttons[b].getBoundingClientRect();
         if (buttonRect.height < 2) continue;
         if (barTop == null || buttonRect.top < barTop) barTop = buttonRect.top;
@@ -14952,10 +18563,6 @@ function logicalCellExtent(cell) {
     return top == null ? null : { top: top, bottom: bottom };
 }
 
-/* Parallel United=false columns of one logical grid share rows: a row
- * is as tall as its tallest cell, each cell is centred in it, and rows are
- * one Spacing row apart. A 27 px row with a button in one column makes the
- * editors of the other column step 35 in the reference, not 34. */
 /* Horizontal United=false rows stacked in one vertical group dissolve into
  * that group's grid: every row's left and right wrapper occupy the same two
  * column pairs, and all side titles of one column pair share its title track
@@ -15092,6 +18699,15 @@ function isCheckRowItem(item) {
 }
 
 function spaceStackedStaticTexts(body) {
+    /* Responsive groups can switch from a vertical stack to a horizontal
+     * row between passes. A native spacing margin calculated for the former
+     * must not push later siblings down inside the horizontal row. */
+    var spaced = body.querySelectorAll('[data-fp-native-spacing="1"]');
+    for (var si = 0; si < spaced.length; si++) {
+        spaced[si].style.marginTop = spaced[si].dataset.fpNativeSpacingMargin || '';
+        delete spaced[si].dataset.fpNativeSpacing;
+        delete spaced[si].dataset.fpNativeSpacingMargin;
+    }
     markTextChoiceRows(body);
     markStackSpacers(body);
     spaceFirstRootRow(body);
@@ -15139,15 +18755,285 @@ function spaceStackedStaticTexts(body) {
     }
 }
 
+/* A long authored editor beside a checkbox shares the group's finite row.
+ * MaxWidth is an upper bound, not a reason to move the checkbox beyond that
+ * row. Keep the title lane and shrink only the editor's paint. */
+function version85ConfigBody(body) {
+    return !!(body && body.closest && body.closest('.fp-clean85')
+        && !body.closest('.fp-cfg-taxi-enable-85'));
+}
+
+function fitAuthoredFieldBesideCheckbox(body) {
+    if (!body.closest('.fp-platform-85.fp-taxi')) return;
+    var rows = body.querySelectorAll('.fp-children-horizontal');
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var children = directFpItems(row);
+        if (children.length !== 2 || children[0].dataset.tag !== 'InputField'
+            || children[1].dataset.tag !== 'CheckBoxField') continue;
+        var owner = row.closest('.fp-item');
+        if (!owner || normGroupMode(prop(owner._fpItem, ['Group'])) !== 'always-horizontal') continue;
+        var field = children[0];
+        var source = field._fpItem;
+        if (!source || !charSize(prop(source, ['Width']))
+            || !charSize(prop(source, ['MaxWidth']))) continue;
+        var editor = field.querySelector(':scope > .fp-control-wrap > .fp-input-wrap');
+        var fieldRow = field.querySelector(':scope > .fp-control-wrap.fp-field-row');
+        if (!editor || !fieldRow) continue;
+        var tooltip = field.querySelector('.fp-tooltip-bottom');
+        var base = field._fpCheckboxFitBase;
+        if (base) {
+            field.style.flex = base.flex;
+            field.style.width = base.width;
+            field.style.minWidth = base.minWidth;
+            field.style.maxWidth = base.maxWidth;
+            editor.style.flex = base.editorFlex;
+            editor.style.width = base.editorWidth;
+            editor.style.minWidth = base.editorMinWidth;
+            editor.style.maxWidth = base.editorMaxWidth;
+            if (tooltip) tooltip.style.width = base.tooltipWidth;
+            row.style.minWidth = base.rowMinWidth;
+        } else field._fpCheckboxFitBase = {
+            flex: field.style.flex, width: field.style.width,
+            minWidth: field.style.minWidth, maxWidth: field.style.maxWidth,
+            editorFlex: editor.style.flex, editorWidth: editor.style.width,
+            editorMinWidth: editor.style.minWidth, editorMaxWidth: editor.style.maxWidth,
+            tooltipWidth: tooltip ? tooltip.style.width : '', rowMinWidth: row.style.minWidth
+        };
+        var available = owner.clientWidth || row.parentElement.clientWidth;
+        var gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+        var checkboxWidth = Math.ceil(children[1].getBoundingClientRect().width);
+        var fieldWidth = Math.floor(available - gap - checkboxWidth);
+        var titleLane = Math.ceil(editor.getBoundingClientRect().left
+            - fieldRow.getBoundingClientRect().left);
+        if (fieldWidth < 240
+            || charSize(prop(source, ['Width'])) + titleLane <= fieldWidth + 1) continue;
+        var editorWidth = Math.max(100, fieldWidth - titleLane - 2);
+        field.style.flex = '0 0 ' + fieldWidth + 'px';
+        field.style.width = fieldWidth + 'px';
+        field.style.minWidth = '0';
+        field.style.maxWidth = fieldWidth + 'px';
+        editor.style.width = editorWidth + 'px';
+        editor.style.minWidth = '0';
+        editor.style.maxWidth = editorWidth + 'px';
+        editor.style.flex = '0 0 ' + editorWidth + 'px';
+        if (tooltip) tooltip.style.width = editorWidth + 'px';
+        row.style.minWidth = '0';
+    }
+}
+
+/* An unbounded, titleless input in a narrow vertical column may inherit a
+ * broad editor width from its control type. Its container is content-sized,
+ * so that width escapes the column and hides the field's trailing buttons.
+ * Give the editor the column's actual lane while retaining its tooltip link. */
+function fitSingleInputToVerticalColumn(body) {
+    if (!body.closest('.fp-platform-85.fp-taxi')) return;
+    var groups = body.querySelectorAll('.fp-children-vertical > .fp-item.fp-container.fp-has-tooltip-link');
+    for (var i = 0; i < groups.length; i++) {
+        var group = groups[i];
+        var row = directLayoutChildren(group);
+        if (!row || !row.classList.contains('fp-children-horizontal')) continue;
+        var fields = directFpItems(row);
+        if (fields.length !== 1 || fields[0].dataset.tag !== 'InputField') continue;
+        var field = fields[0];
+        var source = field._fpItem;
+        if (!source || prop(source, ['Width', 'MinWidth', 'MaxWidth'])) continue;
+        var editor = field.querySelector(':scope > .fp-control-wrap > .fp-input-wrap');
+        if (!editor) continue;
+        var base = group._fpSingleInputFitBase;
+        if (base) {
+            group.style.width = base.groupWidth;
+            group.style.maxWidth = base.groupMaxWidth;
+            field.style.width = base.fieldWidth;
+            field.style.maxWidth = base.fieldMaxWidth;
+            field.style.flex = base.fieldFlex;
+            editor.style.width = base.editorWidth;
+            editor.style.maxWidth = base.editorMaxWidth;
+            editor.style.flex = base.editorFlex;
+        } else group._fpSingleInputFitBase = {
+            groupWidth: group.style.width, groupMaxWidth: group.style.maxWidth,
+            fieldWidth: field.style.width, fieldMaxWidth: field.style.maxWidth,
+            fieldFlex: field.style.flex, editorWidth: editor.style.width,
+            editorMaxWidth: editor.style.maxWidth, editorFlex: editor.style.flex
+        };
+        var available = group.parentElement.clientWidth;
+        var tooltip = group.querySelector(':scope > .fp-tooltip-link');
+        var tooltipWidth = Math.max(28,
+            tooltip ? Math.ceil(tooltip.getBoundingClientRect().width) + 8 : 0);
+        var editorWidth = Math.floor(available - tooltipWidth - 2);
+        if (editorWidth < 100 || editor.getBoundingClientRect().width <= editorWidth + 1) continue;
+        group.style.width = available + 'px';
+        group.style.maxWidth = available + 'px';
+        field.style.width = editorWidth + 'px';
+        field.style.maxWidth = editorWidth + 'px';
+        field.style.flex = '0 0 ' + editorWidth + 'px';
+        editor.style.width = editorWidth + 'px';
+        editor.style.maxWidth = editorWidth + 'px';
+        editor.style.flex = '0 0 ' + editorWidth + 'px';
+    }
+}
+
+function laneInFrameOpenButtons85(body) {
+    if (!body.closest('.fp-clean85')) return;
+    var buttons = body.querySelectorAll(
+        '.fp-field-row:not(.fp-multiline) > .fp-input-wrap.fp-input-85 > .fp-input-btn-open-85');
+    for (var i = 0; i < buttons.length; i++) {
+        var button = buttons[i];
+        var frame = button.parentElement;
+        /* Only a button painted inside the frame moves; one a context rule
+         * already placed outside the narrowed frame stays calibrated. */
+        if (getComputedStyle(button).position !== 'static'
+            && button.getBoundingClientRect().right > frame.getBoundingClientRect().right + 1) continue;
+        var row = frame.parentElement;
+        var lane = document.createElement('span');
+        lane.className = 'fp-open-lane-85';
+        lane.appendChild(button);
+        frame.insertAdjacentElement('afterend', lane);
+        row.classList.add('fp-has-open-lane-85');
+    }
+}
+
+function fitClean85CompressibleRowsUnderCanvasPressure(body) {
+    if (!body || !body.querySelectorAll || !version85ConfigBody(body)) return 0;
+    var changed = 0;
+    var previous = body.querySelectorAll('[data-fp-row-pressure-cap="1"]');
+    for (var p = 0; p < previous.length; p++) {
+        var prevItem = previous[p];
+        prevItem.style.width = prevItem.dataset.fpRowPressureBaseWidth === '__empty__'
+            ? '' : prevItem.dataset.fpRowPressureBaseWidth;
+        prevItem.style.maxWidth = prevItem.dataset.fpRowPressureBaseMaxWidth === '__empty__'
+            ? '' : prevItem.dataset.fpRowPressureBaseMaxWidth;
+        prevItem.style.minWidth = prevItem.dataset.fpRowPressureBaseMinWidth === '__empty__'
+            ? '' : prevItem.dataset.fpRowPressureBaseMinWidth;
+        prevItem.style.flex = prevItem.dataset.fpRowPressureBaseFlex === '__empty__'
+            ? '' : prevItem.dataset.fpRowPressureBaseFlex;
+        delete prevItem.dataset.fpRowPressureCap;
+        delete prevItem.dataset.fpRowPressureBaseWidth;
+        delete prevItem.dataset.fpRowPressureBaseMaxWidth;
+        delete prevItem.dataset.fpRowPressureBaseMinWidth;
+        delete prevItem.dataset.fpRowPressureBaseFlex;
+        var prevLabel = prevItem.querySelector('.fp-check-row .fp-field-label');
+        if (prevLabel) { prevLabel.style.minWidth = ''; prevLabel.style.flexShrink = ''; }
+    }
+    var previousRows = body.querySelectorAll('[data-fp-row-pressure-row-cap="1"]');
+    for (var pr = 0; pr < previousRows.length; pr++) {
+        var prevRow = previousRows[pr];
+        prevRow.style.maxWidth = prevRow.dataset.fpRowPressureRowBaseMaxWidth === '__empty__'
+            ? '' : prevRow.dataset.fpRowPressureRowBaseMaxWidth;
+        delete prevRow.dataset.fpRowPressureRowCap;
+        delete prevRow.dataset.fpRowPressureRowBaseMaxWidth;
+    }
+    if (typeof getComputedStyle !== 'function') return changed;
+    function pin(item, target) {
+        item.dataset.fpRowPressureBaseWidth = item.style.width || '__empty__';
+        item.dataset.fpRowPressureBaseMaxWidth = item.style.maxWidth || '__empty__';
+        item.dataset.fpRowPressureBaseMinWidth = item.style.minWidth || '__empty__';
+        item.dataset.fpRowPressureBaseFlex = item.style.flex || '__empty__';
+        item.style.width = target + 'px';
+        item.style.maxWidth = target + 'px';
+        item.style.minWidth = target + 'px';
+        item.style.flex = '0 0 ' + target + 'px';
+        item.dataset.fpRowPressureCap = '1';
+        changed++;
+    }
+    var bodyRect = body.getBoundingClientRect();
+    var available = body.clientWidth;
+    var rows = body.querySelectorAll('.fp-children-horizontal');
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var rowRect = row.getBoundingClientRect();
+        /* Only a row that is itself painted past the window is a candidate:
+         * an ordinary row that is simply narrow needs neither the cap nor
+         * any compression. */
+        if (Math.ceil(rowRect.right - bodyRect.left) <= available + 1) continue;
+        var items = directFpItems(row);
+        if (items.length < 2) continue;
+        /* Scope this pass to a row this fix actually knows how to reason
+         * about - one holding a standalone right-aligned search or a
+         * wrappable checkbox caption. An unrelated row (a footer's
+         * Назад/Далее pair, for example) may be painted wider than the
+         * window for its own reasons (aligned against a Pages tablist
+         * above it); capping it here without any of the compensating
+         * compression this function applies moved it into that tablist. */
+        var hasKnownCompressible = items.some(function (it) {
+            if (it.dataset && it.dataset.tag === 'SearchStringAddition'
+                && it.classList.contains('fp-align-right') && !it.classList.contains('fp-bar-item'))
+                return true;
+            if (it.dataset && it.dataset.tag === 'CheckBoxField') {
+                var cr = it.querySelector(':scope > .fp-control-wrap.fp-check-row:not(.fp-title-left)');
+                var lbl = cr && cr.querySelector('.fp-field-label');
+                return !!(lbl && /\S\s+\S/.test(String(lbl.textContent || '').trim()));
+            }
+            return false;
+        });
+        if (!hasKnownCompressible) continue;
+        var naturalWidths = items.map(function (it) { return it.getBoundingClientRect().width; });
+        var style = getComputedStyle(row);
+        var gap = parseFloat(style.columnGap || style.gap || '') || 0;
+        var naturalSum = naturalWidths.reduce(function (sum, w) { return sum + w; }, 0)
+            + gap * Math.max(0, items.length - 1);
+        /* The row's own painted overflow (rowRect vs available) reflects the
+         * stretch inherited from a wider ancestor, not what this row's
+         * content actually needs - capping the row below removes that
+         * inherited slack on its own. Only the content's own natural sum
+         * against the window is a genuine shortage that needs an item to
+         * give up size. */
+        var overflow = Math.ceil(naturalSum) - available;
+        var rowCapWidth = Math.min(available, Math.ceil(naturalSum));
+        row.dataset.fpRowPressureRowBaseMaxWidth = row.style.maxWidth || '__empty__';
+        row.style.maxWidth = rowCapWidth + 'px';
+        row.dataset.fpRowPressureRowCap = '1';
+        changed++;
+        for (var k = 0; k < items.length && overflow > 1; k++) {
+            var item = items[k];
+            if (!item.dataset || item.dataset.tag !== 'SearchStringAddition'
+                || !item.classList.contains('fp-align-right')
+                || item.classList.contains('fp-bar-item')) continue;
+            var searchCurrent = naturalWidths[k];
+            var searchTarget = Math.max(140, Math.ceil(searchCurrent) - overflow);
+            if (searchTarget >= searchCurrent - 1) continue;
+            overflow -= Math.ceil(searchCurrent) - searchTarget;
+            pin(item, searchTarget);
+        }
+        for (var k2 = 0; k2 < items.length && overflow > 1; k2++) {
+            var item2 = items[k2];
+            if (!item2.dataset || item2.dataset.tag !== 'CheckBoxField') continue;
+            var checkRow = item2.querySelector(':scope > .fp-control-wrap.fp-check-row:not(.fp-title-left)');
+            var label = checkRow && checkRow.querySelector('.fp-field-label');
+            if (!label || !/\S\s+\S/.test(String(label.textContent || '').trim())) continue;
+            var wrapped = Math.ceil(longestWordLabelMetric(label));
+            if (!wrapped) continue;
+            var checkControl = checkRow.querySelector('.fp-check, .fp-switch');
+            var checkControlWidth = checkControl && checkControl.getBoundingClientRect
+                ? checkControl.getBoundingClientRect().width : 0;
+            var rowGap = parseFloat(getComputedStyle(checkRow).columnGap || getComputedStyle(checkRow).gap || '') || 0;
+            var floor = Math.ceil(checkControlWidth + rowGap + wrapped);
+            var current = naturalWidths[k2];
+            var target = Math.max(floor, Math.ceil(current) - overflow);
+            if (target >= current - 1) continue;
+            overflow -= Math.ceil(current) - target;
+            pin(item2, target);
+            label.style.minWidth = '0';
+            label.style.flexShrink = '1';
+        }
+    }
+    return changed;
+}
+
 function fitFormViewport(body) {
     if (!body || !body.isConnected || !body.clientWidth) return false;
+    laneInFrameOpenButtons85(body);
     resetFormViewport(body);
+    fitClean85CompressibleRowsUnderCanvasPressure(body);
+    fitRootCardSideLinkColumns(body);
     spaceStackedStaticTexts(body);
     /* resetFormViewport clears the grown root Pages; re-take it on the
      * current rows so the page keeps its native content height. */
     fitRootPagesPreferredHeights(body);
     releaseStackedAuthoredHeights(body);
     fitPageTabs(body);
+    if (!version85ConfigBody(body)) fitAuthoredFieldBesideCheckbox(body);
+    if (!version85ConfigBody(body)) fitSingleInputToVerticalColumn(body);
     /* A compact List column is a fixed track whose toolbar overflows
      * into More. Fit that toolbar inside the track before collisions are
      * measured: the unfitted min-content bar was otherwise reserved as the
@@ -15243,6 +19129,34 @@ function fitFormViewport(body) {
     return reservedAny;
     }
     reserveCollidingTracks();
+    function releaseResolvedRootPageOverflow() {
+        if (!body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) return;
+        for (var pr = 0; pr < rows.length; pr++) {
+            var pageRow = rows[pr];
+            if (!pageRow.classList.contains('fp-no-overlap-width')) continue;
+            var pagePanel = pageRow.closest('.fp-pages-active-panel');
+            var rootPages = pagePanel && pagePanel.closest('.fp-item[data-tag="Pages"]');
+            if (!rootPages || rootPages.parentNode !== body) continue;
+            var pageTracks = directFpItems(pageRow);
+            if (pageTracks.length !== 2) continue;
+            var reservedMin = pageRow.style.minWidth;
+            var reservedContentWidth = pagePanel.style.getPropertyValue('--fp-content-width');
+            var hadPanelOverflow = pagePanel.classList.contains('fp-window-overflow');
+            pageRow.style.minWidth = '';
+            pageRow.classList.remove('fp-no-overlap-width');
+            pagePanel.classList.remove('fp-window-overflow');
+            pagePanel.style.removeProperty('--fp-content-width');
+            var separatedTracks = pageTracks[0].getBoundingClientRect().right
+                <= pageTracks[1].getBoundingClientRect().left + 1;
+            if (!separatedTracks || horizontalRowMetrics(pageRow).collision) {
+                pageRow.style.minWidth = reservedMin;
+                pageRow.classList.add('fp-no-overlap-width');
+                if (hadPanelOverflow) pagePanel.classList.add('fp-window-overflow');
+                if (reservedContentWidth)
+                    pagePanel.style.setProperty('--fp-content-width', reservedContentWidth);
+            }
+        }
+    }
     for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         if (row.closest && row.closest('.fp-commandbar')) continue;
@@ -15346,10 +19260,6 @@ function fitFormViewport(body) {
         for (var lp = 0; lp < panelWidths.length; lp++) if (panelWidths[lp].panel === rootPanel) listed = true;
         if (!listed) panelWidths.push({ panel: rootPanel, required: rootPanel.scrollWidth + 10, forced: true });
     }
-    /* A tabbed Pages nested inside a root band does not own a scrollbar of its
-     * own: the reference widens that whole band (its search field and
-     * right-aligned command bar move with it) and scrolls the Form. Only a
-     * Pages that is itself a root item keeps the page-local scrollport. */
     var pageWraps = body.querySelectorAll('.fp-pages-panel-wrap');
     for (var pw = 0; pw < pageWraps.length; pw++) {
         var pageWrap = pageWraps[pw];
@@ -15377,7 +19287,35 @@ function fitFormViewport(body) {
          * visibility switch above Pages) viewport-wide; propagating the Page
          * width to body moves those controls beyond the visible right edge. */
     }
+    var sidePaneBands = body.querySelectorAll(':scope > .fp-item[data-fp-side-pane-canvas]');
+    var sidePaneBodyStyle = sidePaneBands.length ? getComputedStyle(body) : null;
+    for (var spb = 0; spb < sidePaneBands.length; spb++) {
+        var sidePaneRect = sidePaneBands[spb].getBoundingClientRect();
+        required = Math.max(required, Math.ceil(sidePaneRect.left - bodyRect.left
+            + (parseFloat(sidePaneBands[spb].dataset.fpSidePaneCanvas) || 0)
+            + (parseFloat(sidePaneBodyStyle.paddingLeft) || 0)
+            + (parseFloat(sidePaneBodyStyle.paddingRight) || 0)));
+        forceBodyOverflow = true;
+    }
     var semanticCanvas = semanticFormCanvasWidth(body, available);
+    /* A compact root row whose trailing column already yielded still
+     * overflows by its real content: the Form canvas takes that width. */
+    var yieldingColumns = body.querySelectorAll('.fp-children-horizontal:has(> .fp-ui85-card) > .fp-yielding-column-85');
+    for (var yc = 0; yc < yieldingColumns.length; yc++) {
+        var yieldRight = Math.ceil(yieldingColumns[yc].getBoundingClientRect().right - bodyRect.left
+            + TAXI_LAYOUT_METRICS.pagePadding.horizontal);
+        if (yieldRight > available) semanticCanvas = Math.max(semanticCanvas || 0, yieldRight);
+    }
+    if (body.closest && body.closest('.fp-clean85')) {
+        var rootPagesItems = body.querySelectorAll(':scope > .fp-item[data-tag="Pages"][data-fp-widest-page-group]');
+        for (var rpi = 0; rpi < rootPagesItems.length; rpi++) {
+            var pageRect = rootPagesItems[rpi].getBoundingClientRect();
+            var pageCanvas = Math.ceil(pageRect.left - bodyRect.left
+                + (parseFloat(rootPagesItems[rpi].dataset.fpWidestPageGroup) || 0)
+                + 2 * TAXI_LAYOUT_METRICS.pagePadding.horizontal);
+            if (pageCanvas > available) semanticCanvas = Math.max(semanticCanvas || 0, pageCanvas);
+        }
+    }
     if (semanticCanvas) {
         required = semanticCanvas;
         forceBodyOverflow = true;
@@ -15404,11 +19342,13 @@ function fitFormViewport(body) {
             fitPageTabs(body);
             fitChartFields(body);
             reserveCollidingTracks();
+            releaseResolvedRootPageOverflow();
             return true;
         }
         fitPageTabs(body);
         fitChartFields(body);
         reserveCollidingTracks();
+        releaseResolvedRootPageOverflow();
         return body.querySelectorAll('.fp-pages-active-panel.fp-window-overflow').length > 0;
     }
     body.style.setProperty('--fp-content-width', Math.max(0, required - 20) + 'px');
@@ -15425,7 +19365,34 @@ function fitFormViewport(body) {
      * a footer group at 480px). Reserve once more against the
      * final classes; this never resets, so widths only grow. */
     reserveCollidingTracks();
+    releaseResolvedRootPageOverflow();
     return true;
+}
+
+function fitRootCardSideLinkColumns(body) {
+    if (!body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) return;
+    var roots = body.querySelectorAll(':scope > .fp-item.fp-container-horizontal');
+    for (var i = 0; i < roots.length; i++) {
+        var row = directLayoutChildren(roots[i]);
+        var children = directFpItems(row);
+        if (children.length !== 2 || !children[0].classList.contains('fp-ui85-card')
+            || !children[1].querySelector('.fp-link')
+            || !children[1].querySelector('.fp-item[data-tag="InputField"]')) continue;
+        var side = children[1];
+        var gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+        var remaining = Math.floor(row.clientWidth - children[0].getBoundingClientRect().width - gap);
+        if (remaining < 96 || remaining >= side.getBoundingClientRect().width) continue;
+        side.style.flex = '0 0 ' + remaining + 'px';
+        side.style.width = remaining + 'px';
+        side.style.minWidth = remaining + 'px';
+        side.style.maxWidth = remaining + 'px';
+        var field = side.querySelector('.fp-item[data-tag="InputField"]');
+        if (field) {
+            field.style.width = remaining + 'px';
+            field.style.minWidth = '0';
+            field.style.maxWidth = remaining + 'px';
+        }
+    }
 }
 
 /* The browser implements the geometry with CSS/DOM measurements, but records
@@ -15443,11 +19410,6 @@ function selectHorizontalStrategy(state) {
     return 'auto';
 }
 
-/* The reference static-text transformation keeps the normal wrapped variant until a
- * narrower word-break variant is needed. Measure both in the actual DOM font,
- * including formatted spans; stale heights and character-count estimates do
- * not describe width-dependent content. CSS reflows the live label and its
- * following siblings; this pass only counts the compressed labels. */
 function wrappedLabelPressure(body) {
     if (!body || !body.querySelectorAll) return 0;
     var labels = body.querySelectorAll('[data-fp-wrap-normal-width]');
@@ -15488,12 +19450,6 @@ function horizontalPriorityPressure(body) {
     return result;
 }
 
-/* The reference evaluates an authored-width field in a vertical column against that
- * column's available width too. Flex may already have shrunk the browser
- * control to a collision-free rectangle, so retain the pre-flex Width signal.
- * AutoRows is the minimal native case: Width=40 resolves to 400 layout px
- * plus 10px input chrome, needs compression at viewport 400, and none when
- * the viewport widens to 480. */
 function verticalFieldPriorityPressure(body, settledCanvas) {
     var result = { smartCompressToMinWidth: false, compressWidth: false };
     if (!body || !body.querySelectorAll) return result;
@@ -15536,9 +19492,6 @@ function rootSimpleVerticalColumnWidth(normalWidths, available, strategyValue) {
         return Math.max(maximum, width);
     }, 0);
     if (!normal) return 0;
-    /* The reference's root Vertical grid has one shared column. Without horizontal
-     * pressure the form stops at that column's normal width; under pressure the scroll
-     * panel takes the complete logical viewport and every row shares it. */
     return Math.round(strategyValue === 0 ? Math.min(available, normal) : available);
 }
 
@@ -15629,8 +19582,16 @@ function fitRootSimpleVerticalColumn(body, strategyValue) {
     }
     if (!children.length) return 0;
     if (body.classList) body.classList.add('fp-root-simple-vertical-column');
-    var width = rootSimpleVerticalColumnWidth(children.map(function (entry) { return entry.normal; }),
-        body.clientWidth, strategyValue);
+    var interface85 = !!(body && body.closest && body.closest('.fp-interface-85'));
+    var availableWidth = body.clientWidth;
+    if (interface85) {
+        var bodyStyle = getComputedStyle(body);
+        availableWidth -= (parseFloat(bodyStyle.paddingLeft) || 0)
+            + (parseFloat(bodyStyle.paddingRight) || 0);
+    }
+    var width = interface85 ? Math.round(availableWidth)
+        : rootSimpleVerticalColumnWidth(children.map(function (entry) { return entry.normal; }),
+            availableWidth, strategyValue);
     if (!width) return 0;
     for (var c = 0; c < children.length; c++) {
         var node = children[c].node;
@@ -15638,9 +19599,17 @@ function fitRootSimpleVerticalColumn(body, strategyValue) {
         node.style.minWidth = width + 'px';
         node.style.maxWidth = width + 'px';
         node.style.flex = '0 0 auto';
+        var topLabel = node.querySelector(':scope > .fp-control-wrap.fp-field-row.fp-title-top > .fp-field-label');
+        if (topLabel) {
+            var labelHeight = topLabel.getBoundingClientRect().height;
+            var labelLineHeight = parseFloat(getComputedStyle(topLabel).lineHeight) || 0;
+            if (labelLineHeight && labelHeight > labelLineHeight + 1)
+                node.classList.add('fp-title-auto-wrapped');
+            else node.classList.remove('fp-title-auto-wrapped');
+        }
         var textarea = node.querySelector('textarea.fp-input');
         var authoredHeight = parseInt(prop(node._fpItem, ['Height', 'Высота']), 10) || 0;
-        if (textarea && !authoredHeight) {
+        if (textarea && !authoredHeight && !interface85) {
             /* Native TextBox's absent multiline Height is a two-row 55px
              * normal band. It is not implicit VerticalStretch: a simple root
              * form with two text areas must still leave the following field
@@ -15713,6 +19682,108 @@ function fitRightCommandBarLanes(body) {
     }
 }
 
+function interface85ResponsivePagesTableClamp(table, responsive) {
+    var pages = table.closest('.fp-item[data-tag="Pages"]');
+    if (!pages || pages.parentElement !== responsive || !pages._fpItem
+        || pagesRep(pages._fpItem) !== 'none'
+        || prop(pages._fpItem, ['Height', 'Высота'])) return false;
+    var pageBox = table.parentElement;
+    if (!pageBox || !pageBox.classList || !pageBox.classList.contains('fp-container-page')) return false;
+    var pageItems = directFpItems(pageBox);
+    var panes = directFpItems(responsive);
+    var paneIndex = panes.indexOf(pages);
+    return pageItems.length === 1 && pageItems[0] === table
+        && paneIndex >= 0 && paneIndex < panes.length - 1;
+}
+
+function interface85ResponsiveUncappedTableClamp(body, table) {
+    if (!body || !table || !body.classList) return false;
+    var interface85 = body.classList.contains('fp-interface-85')
+        || (body.closest && body.closest('.fp-interface-85'));
+    if (!interface85) return false;
+    var source = table._fpItem;
+    if (!source) return false;
+    if (prop(source, ['Height', 'Высота', 'HeightInTableRows'])) return false;
+    if (!table.closest) return false;
+    var responsive = table.closest('[data-fp-responsive-group="1"]');
+    if (!responsive || !responsive.dataset || responsive.dataset.fpSelectedOrientation !== 'vertical') return false;
+    var column = table.closest('.fp-item.fp-sized-width');
+    if (isFalse(prop(source, ['AutoMaxHeight']))
+        && column && column.parentElement === responsive) return true;
+    return interface85ResponsivePagesTableClamp(table, responsive);
+}
+
+function restoreInterface85ResponsiveTableClamp(item) {
+    if (!item || !item.dataset || item.dataset.fp85ResponsiveTableClamp !== '1') return;
+    item.style.flex = item.dataset.fp85ResponsiveTableBaseFlex === '__empty__'
+        ? '' : item.dataset.fp85ResponsiveTableBaseFlex;
+    delete item.dataset.fp85ResponsiveTableClamp;
+    delete item.dataset.fp85ResponsiveTableBaseFlex;
+}
+
+function clampInterface85ResponsiveTable(body, item) {
+    if (!interface85ResponsiveUncappedTableClamp(body, item)) return false;
+    item.dataset.fp85ResponsiveTableClamp = '1';
+    item.dataset.fp85ResponsiveTableBaseFlex = item.style.flex || '__empty__';
+    /* Its responsive column was sized from the table's minimum. Letting the
+     * preferred Height flex-grow afterwards escapes that already allocated
+     * column and paints into the next stacked column. */
+    item.style.flex = '0 1 0px';
+    return true;
+}
+
+function fitInterface85ResponsiveTableClamps(body, tables) {
+    if (!body || !tables) return 0;
+    var fitted = 0;
+    for (var i = 0; i < tables.length; i++) {
+        restoreInterface85ResponsiveTableClamp(tables[i]);
+        if (clampInterface85ResponsiveTable(body, tables[i])) fitted++;
+    }
+    return fitted;
+}
+
+function resetListFilterPanes(body) {
+    var released = body.querySelectorAll('.fp-list-pane-released');
+    for (var r = 0; r < released.length; r++) {
+        released[r].classList.remove('fp-list-pane-released');
+        var frozen = released[r].querySelector(':scope > .fp-item[data-tag="Pages"]');
+        if (frozen) frozen.style.removeProperty('flex');
+    }
+    var grown = body.querySelectorAll('[data-fp-list-pane-band]');
+    for (var g = 0; g < grown.length; g++) {
+        grown[g].style.removeProperty('--fp-list-pane-band');
+        delete grown[g].dataset.fpListPaneBand;
+    }
+}
+
+function releaseListFilterPanes(body) {
+    resetListFilterPanes(body);
+    if (!body.closest('.fp-clean85')) return;
+    var pages = body.querySelectorAll('.fp-children-vertical > .fp-item[data-tag="Pages"]');
+    for (var i = 0; i < pages.length; i++) {
+        var list = pages[i];
+        var column = list.parentNode;
+        if (!list.nextElementSibling || !list.querySelector('.fp-table-toolbar')) continue;
+        var overflowing = false;
+        for (var sib = list.nextElementSibling; sib; sib = sib.nextElementSibling)
+            if (sib.scrollHeight > sib.clientHeight + 1) overflowing = true;
+        if (!overflowing) continue;
+        var height = list.getBoundingClientRect().height;
+        if (!height) continue;
+        list.style.setProperty('flex', '0 0 ' + height + 'px', 'important');
+        column.classList.add('fp-list-pane-released');
+        /* The root band grows by the released overflow; the body scrolls. */
+        var contentBottom = column.lastElementChild.getBoundingClientRect().bottom;
+        var band = column;
+        while (band.parentNode && band.parentNode !== body) band = band.parentNode;
+        var bandRect = band.getBoundingClientRect();
+        if (contentBottom > bandRect.bottom && band.parentNode === body) {
+            band.dataset.fpListPaneBand = '1';
+            band.style.setProperty('--fp-list-pane-band', (contentBottom - bandRect.top) + 'px');
+        }
+    }
+}
+
 function fitAuthoredTableHeights(body) {
     var previousCrossAxis = body.querySelectorAll('[data-fp-table-cross-normal]');
     for (var pc = 0; pc < previousCrossAxis.length; pc++) {
@@ -15724,6 +19795,7 @@ function fitAuthoredTableHeights(body) {
     var scrollportOverflow = body.scrollHeight > body.clientHeight + 2;
     for (var i = 0; i < tables.length; i++) {
         var item = tables[i];
+        restoreInterface85ResponsiveTableClamp(item);
         var widget = item.querySelector('.fp-table-widget');
         var grid = widget && widget.querySelector('.fp-table-mock');
         if (!grid || !item.getBoundingClientRect().width) continue;
@@ -15897,12 +19969,6 @@ function fitAuthoredTableWidths(body) {
             || parseFloat(item.dataset.fpAuthoredNormalWidth) || 0;
         if (!gridWidth) continue;
 
-        /* The native table generator fixes the logical grid band, not the
-         * surrounding vertical group. Toolbar/search/status chrome remains a
-         * sibling of that grid and may publish a wider preferred size (the
-         * common 400px grid + automatic bar case is 451px in the reference). Restore the
-         * bar before measuring so a previous narrow resize cannot permanently
-         * hide commands and make the next wide pass underestimate the shell. */
         var toolbar = widget.querySelector('.fp-table-toolbar');
         if (toolbar) {
             var hidden = toolbar.querySelectorAll('.fp-bar-overflow-hidden');
@@ -15933,23 +19999,27 @@ function fitAuthoredTableWidths(body) {
     }
 }
 
-function fitPhysicalTableColumnWidths(body) {
+function fitPhysicalTableColumnWidths(body, withinSelector) {
     if (!body || !body.querySelectorAll || typeof window === 'undefined') return 0;
     var grids = body.querySelectorAll('.fp-table-mock');
     var fitted = 0;
     for (var i = 0; i < grids.length; i++) {
         var grid = grids[i];
+        if (withinSelector && !grid.closest(withinSelector)) continue;
         var table = grid.querySelector('table');
         var cols = table && table.querySelectorAll('colgroup > col');
         if (!table || !cols || !cols.length) continue;
         var minima = [];
-        for (var c = 0; c < cols.length; c++)
+        var resizeable = [];
+        for (var c = 0; c < cols.length; c++) {
             minima.push(parseFloat(cols[c].dataset.fpMinWidth) || parseFloat(cols[c].style.width) || 0);
+            resizeable.push(cols[c].dataset.fpResizeable === '1');
+        }
         var style = window.getComputedStyle(grid);
         var viewport = grid.clientWidth
             - (parseFloat(style.paddingLeft) || 0)
             - (parseFloat(style.paddingRight) || 0);
-        var widths = allocateTableColumnWidths(minima, viewport);
+        var widths = allocateTableColumnWidths(minima, viewport, resizeable);
         var total = 0;
         for (var w = 0; w < widths.length; w++) {
             cols[w].style.width = widths[w] + 'px';
@@ -16053,11 +20123,6 @@ function anchorBottomAlignedRuns(body) {
     return moved;
 }
 
-/* A vertical group with an authored Width and HorizontalStretch=false is a
- * hard column in the reference: every row ends on its right edge. The trailing editor
- * of each row absorbs the difference - it compresses down to the field
- * minimum, and grows only when it is not itself fixed (the browser bands
- * would otherwise put the row ends 44-103px past the column edge). */
 function restoreFixedWidthColumnEdges(body) {
     var edited = body.querySelectorAll('[data-fp-column-edge-base]');
     for (var i = 0; i < edited.length; i++) {
@@ -16091,9 +20156,28 @@ function fitFixedWidthColumnEdges(body) {
         var width = parseFloat(column.dataset.fpAuthoredDecisionWidth || '');
         var box = directLayoutChildren(column);
         if (!(width > 0) || !box || !box.classList.contains('fp-children-vertical')) continue;
+        /* 2.21 widens a fixed column to an AlwaysHorizontal row that cannot
+         * wrap; the widened track, not the authored band, is its edge. */
+        if (formVersionAtLeast(column._fpItem, '2.21'))
+            width = Math.max(width, platform85FixedColumnWidth(column));
         var edge = column.getBoundingClientRect().left + width;
         var rows = directFpItems(box);
         for (var r = 0; r < rows.length; r++) {
+            /* The compound number/date row has two local caption lanes. A
+             * following single value owns its own caption, not their widest
+             * inherited track; its editor then grows to the fixed edge. */
+            if (column.dataset.fpNumberDatePair === '1'
+                && r > 0 && rows[r].dataset.tag === 'InputField'
+                && rows[r].classList.contains('fp-hstretch')
+                && rows[r].dataset.fpAuthoredWidthPresent !== '1') {
+                var localLabel = rows[r].querySelector(':scope > .fp-control-wrap.fp-field-row.fp-title-left > .fp-field-label');
+                if (localLabel) {
+                    var localTrack = throughAlignTitleTrackWidth([throughAlignGlyphMetric(localLabel)]);
+                    localLabel.style.minWidth = localTrack + 'px';
+                    localLabel.style.maxWidth = localTrack + 'px';
+                    localLabel.style.flex = '0 0 ' + localTrack + 'px';
+                }
+            }
             var editor = trailingEditor(rows[r]);
             /* A nested fixed column is fitted by its own entry. */
             if (!editor || editor.closest('.fp-item.fp-container-vertical.fp-sized-width') !== column) continue;
@@ -16126,8 +20210,375 @@ function fitFixedWidthColumnEdges(body) {
     return fitted;
 }
 
+/* A visible tooltip below a side-caption editor belongs to the editor's
+ * column. Its unconstrained text must not widen the whole horizontal row. */
+function fitSideEditorTooltips(body) {
+    var items = body.querySelectorAll('.fp-item.fp-tooltip-side-v[data-tag="InputField"]');
+    for (var i = 0; i < items.length; i++) {
+        var item = items[i];
+        var row = item.querySelector(':scope > .fp-control-wrap.fp-field-row.fp-title-left');
+        var note = item.querySelector(':scope > .fp-tooltip-text');
+        var editor = row && row.querySelector(':scope > .fp-input-wrap');
+        if (!editor || !note) continue;
+        var itemBox = item.getBoundingClientRect();
+        var editorBox = editor.getBoundingClientRect();
+        note.style.marginLeft = Math.max(0, Math.round(editorBox.left - itemBox.left)) + 'px';
+        var noteWidth = editorBox.width;
+        if (item.classList.contains('fp-inherited-title-track'))
+            noteWidth = Math.min(noteWidth, 8 * REF_AUTHORED_CHAR_PX);
+        note.style.width = Math.max(1, Math.round(noteWidth)) + 'px';
+    }
+}
+
+/* ThroughAlign carries the preceding side-title lane into a following
+ * horizontal group. A tooltip beneath its first editor depends on that
+ * lane: without it the editor grows into the caption space and the note
+ * loses a line. */
+function fitFollowingTooltipTitleTracks(body) {
+    var groups = body.querySelectorAll('.fp-item.fp-container-horizontal');
+    for (var i = 0; i < groups.length; i++) {
+        var group = groups[i];
+        var parent = group.parentElement;
+        if (!parent || !parent.classList.contains('fp-children-vertical')) continue;
+        var first = group.querySelector('.fp-item.fp-tooltip-side-v[data-tag="InputField"]');
+        if (!first) continue;
+        var label = first.querySelector(':scope > .fp-field-row.fp-title-left > .fp-field-label');
+        var previous = group.previousElementSibling;
+        var precedingLabel = null;
+        while (previous && !precedingLabel) {
+            precedingLabel = previous.querySelector('.fp-field-row.fp-title-left > .fp-field-label');
+            previous = previous.previousElementSibling;
+        }
+        if (!label || !precedingLabel) continue;
+        var track = Math.round(precedingLabel.getBoundingClientRect().width
+            + TAXI_BROWSER_METRICS.horizontalSpacing.single);
+        if (track <= label.getBoundingClientRect().width) continue;
+        label.style.minWidth = track + 'px';
+        label.style.maxWidth = track + 'px';
+        first.classList.add('fp-inherited-title-track');
+    }
+}
+
+function reserveBottomPagesBand(body) {
+    if (!body.closest('.fp-platform-85.fp-taxi')) return;
+    var pages = body.querySelectorAll('.fp-item[data-tag="Pages"].fp-align-bottom');
+    for (var i = 0; i < pages.length; i++) {
+        var item = pages[i]._fpItem;
+        if (!item || !isFalse(prop(item, ['VerticalStretch']))) continue;
+        var authored = parseInt(prop(item, ['Height']), 10) || 0;
+        if (!authored || !pages[i].closest('.fp-collapsible-body')) continue;
+        var page = pages[i];
+        var block = page.querySelector(':scope > .fp-control-wrap > .fp-group-block');
+        var outer = block && block.querySelector(':scope > .fp-pages-outer');
+        var controlWrap = block && block.parentElement;
+        if (!outer || !controlWrap) continue;
+        var base = page._fpBottomPagesBandBase;
+        if (!base) page._fpBottomPagesBandBase = base = {
+            height: page.style.height, minHeight: page.style.minHeight,
+            marginBottom: page.style.marginBottom,
+            wrapHeight: controlWrap.style.height, blockHeight: block.style.height,
+            outerHeight: outer.style.height
+        };
+        page.style.height = base.height;
+        page.style.minHeight = base.minHeight;
+        page.style.marginBottom = '0px';
+        controlWrap.style.height = base.wrapHeight;
+        block.style.height = base.blockHeight;
+        outer.style.height = base.outerHeight;
+        var natural = page.getBoundingClientRect().height;
+        var reserve = Math.max(0, authored * (GROUP_ROW_PX + 1) - natural);
+        var followingGap = Math.min(reserve, TAXI_LAYOUT_METRICS.rowGap - 1);
+        var grown = natural + reserve - followingGap;
+        if (grown > natural) {
+            page.style.height = grown + 'px';
+            page.style.minHeight = grown + 'px';
+            controlWrap.style.height = '100%';
+            block.style.height = '100%';
+            outer.style.height = '100%';
+        }
+        page.style.marginBottom = followingGap + 'px';
+    }
+}
+
+function restorePageCardRails(body) {
+    var rails = body.querySelectorAll('[data-fp-page-card-rail="1"]');
+    for (var i = 0; i < rails.length; i++) {
+        var rail = rails[i];
+        var row = directLayoutChildren(rail);
+        rail.style.width = rail.dataset.fpPageCardRailBaseWidth || '';
+        rail.style.maxWidth = rail.dataset.fpPageCardRailBaseMaxWidth || '';
+        if (row) row.style.width = rail.dataset.fpPageCardRailBaseRowWidth || '';
+        delete rail.dataset.fpPageCardRail;
+    }
+    var fields = body.querySelectorAll('[data-fp-page-card-rail-field="1"]');
+    for (var j = 0; j < fields.length; j++) {
+        fields[j].style.flex = fields[j].dataset.fpPageCardRailBaseFlex || '';
+        delete fields[j].dataset.fpPageCardRailField;
+    }
+}
+
+function restoreCompactMultilineFooters(body) {
+    var adjusted = body.querySelectorAll('[data-fp-compact-multiline-footer="1"]');
+    for (var i = 0; i < adjusted.length; i++) {
+        var node = adjusted[i];
+        var original = node.dataset.fpCompactMultilineFooterStyle;
+        if (original === '__empty__') node.removeAttribute('style');
+        else node.setAttribute('style', original);
+        if (node.dataset.fpCompactMultilineFooterVertical === '1') {
+            node.classList.remove('fp-children-horizontal');
+            node.classList.add('fp-children-vertical', 'fp-responsive-group-vertical');
+        }
+        delete node.dataset.fpCompactMultilineFooter;
+        delete node.dataset.fpCompactMultilineFooterStyle;
+        delete node.dataset.fpCompactMultilineFooterVertical;
+    }
+}
+
+/* An AutoScreenTypeSensitive footer keeps its comment and summary on one row
+ * even when the browser's min-content width for the multiline editor is too
+ * large. The one-line variant uses half the editor's authored maximum; the
+ * taller variant reserves the summary's two double-spaced native lanes. */
+function fitCompactMultilineFooters(body) {
+    if (!body || !body.querySelectorAll) return 0;
+    var rows = body.querySelectorAll('.fp-children-horizontal, .fp-responsive-group-vertical');
+    var fitted = 0;
+    function save(node, vertical) {
+        node.dataset.fpCompactMultilineFooter = '1';
+        node.dataset.fpCompactMultilineFooterStyle = node.getAttribute('style') || '__empty__';
+        if (vertical) node.dataset.fpCompactMultilineFooterVertical = '1';
+    }
+    function width(node, value, flex) {
+        if (flex) node.style.setProperty('flex', '0 0 ' + value + 'px', 'important');
+        node.style.setProperty('width', value + 'px', 'important');
+        node.style.setProperty('min-width', value + 'px', 'important');
+        node.style.setProperty('max-width', value + 'px', 'important');
+    }
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var owner = row.closest('.fp-item');
+        if (!owner || !owner._fpItem
+            || normGroupMode(prop(owner._fpItem, ['Group'])) !== 'auto-screen-sensitive') continue;
+        var children = directFpItems(row);
+        if (children.length !== 2 || !children[0]._fpItem || !children[1]._fpItem
+            || normGroupMode(prop(children[0]._fpItem, ['Group'])) !== 'vertical'
+            || ['horizontal', 'auto-screen-sensitive'].indexOf(
+                normGroupMode(prop(children[1]._fpItem, ['Group']))) < 0) continue;
+        var fieldBox = directLayoutChildren(children[0]);
+        var fields = directFpItems(fieldBox);
+        if (fields.length !== 1 || fields[0].dataset.tag !== 'InputField'
+            || !fields[0]._fpItem || !isTrue(prop(fields[0]._fpItem, ['MultiLine', 'МногострочныйРежим']))
+            || !Number(prop(fields[0]._fpItem, ['Height', 'Высота']))) continue;
+        var field = fields[0];
+        var oneLine = Number(prop(field._fpItem, ['Height', 'Высота'])) === 1;
+        if (oneLine !== row.classList.contains('fp-responsive-group-vertical')) continue;
+        var inputWrap = field.querySelector('.fp-input-wrap');
+        var choiceButtons = field.querySelector('.fp-multiline-buttons');
+        var rightRow = directLayoutChildren(children[1]);
+        var band = responsiveWrapperAllocationBand(children[0]);
+        if (!inputWrap || !choiceButtons || !rightRow
+            || !rightRow.classList.contains('fp-children-horizontal') || !isFinite(band.max)) continue;
+        var gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+        var rightBand = responsiveWrapperAllocationBand(children[1]);
+        var left = oneLine ? Math.round(band.max / 2)
+            : Math.round(row.clientWidth - gap - rightBand.normal
+                - 2 * TAXI_LAYOUT_METRICS.horizontalSpacing.double);
+        var right = row.clientWidth - gap - left;
+        var fieldWidth = left - Math.ceil(choiceButtons.getBoundingClientRect().width)
+            - TAXI_BROWSER_METRICS.horizontalSpacing.half - 2;
+        var summaryGroups = directFpItems(rightRow);
+        if (fieldWidth < Math.max(0, responsiveWrapperAllocationBand(field).min || 0)
+            || right < Math.max(0, rightBand.min || 0)
+            || !oneLine && summaryGroups.length !== 2)
+            continue;
+        var adjusted = [row, children[0], children[1], field, inputWrap, rightRow];
+        if (!oneLine) adjusted.push(summaryGroups[1]);
+        adjusted.forEach(function (node) {
+            save(node, node === row && oneLine);
+        });
+        if (oneLine) {
+            row.classList.remove('fp-children-vertical', 'fp-responsive-group-vertical');
+            row.classList.add('fp-children-horizontal');
+            row.style.alignItems = 'flex-end';
+        }
+        width(children[0], left, true);
+        width(children[1], right, true);
+        width(field, fieldWidth, false);
+        width(inputWrap, fieldWidth, true);
+        rightRow.style.justifyContent = 'space-between';
+        if (!oneLine) {
+            var lastBand = responsiveWrapperAllocationBand(summaryGroups[1]);
+            width(summaryGroups[1], Math.round(lastBand.normal
+                + TAXI_BROWSER_METRICS.horizontalSpacing.oneandhalf), true);
+        }
+        fitted++;
+    }
+    return fitted;
+}
+
+/* A Pages list and a non-stretch card are separate native tracks. The card's
+ * semantic recommendation is its visible width; min-content from a hidden
+ * page or a long filter must not widen that rail and shift the list. */
+function fitPageCardRails(body) {
+    if (!body || !body.querySelectorAll || !body.clientWidth) return 0;
+    var rows = body.querySelectorAll('.fp-children-horizontal');
+    var fitted = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var children = directFpItems(row);
+        if (children.length !== 2 || !children[0].matches('.fp-item[data-tag="Pages"]')
+            || !children[1].matches('.fp-item[data-tag="UsualGroup"]')
+            || !children[1]._fpItem || !showAsCard(children[1]._fpItem)
+            || isTrue(prop(children[1]._fpItem, ['HorizontalStretch', 'РастягиватьПоГоризонтали']))
+            || children.some(function (child) { return child.dataset.fpAuthoredWidthPresent === '1'; }))
+            continue;
+        var owner = row.closest('.fp-item');
+        if (!owner || owner.dataset.tag !== 'UsualGroup' || owner.dataset.fpAuthoredWidthPresent === '1')
+            continue;
+        var bodyRect = body.getBoundingClientRect();
+        var ownerRect = owner.getBoundingClientRect();
+        var inset = Math.max(0, ownerRect.left - bodyRect.left);
+        var width = Math.round(body.clientWidth - 2 * inset);
+        var gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+        var cardBand = responsiveWrapperAllocationBand(children[1]);
+        var cardWidth = Math.round(cardBand.recommended || cardBand.normal || 0);
+        var listWidth = width - gap - cardWidth;
+        if (listWidth < Math.max(0, responsiveWrapperAllocationBand(children[0]).min || 0)
+            || cardWidth < Math.max(0, cardBand.min || 0)) continue;
+        owner.dataset.fpPageCardRailBaseWidth = owner.style.width;
+        owner.dataset.fpPageCardRailBaseMaxWidth = owner.style.maxWidth;
+        owner.dataset.fpPageCardRailBaseRowWidth = row.style.width;
+        owner.dataset.fpPageCardRail = '1';
+        owner.style.setProperty('width', width + 'px', 'important');
+        owner.style.setProperty('max-width', width + 'px', 'important');
+        row.style.setProperty('width', width + 'px', 'important');
+        [[children[0], listWidth], [children[1], cardWidth]].forEach(function (track) {
+            track[0].style.setProperty('flex', '0 0 ' + track[1] + 'px', 'important');
+            track[0].style.setProperty('width', track[1] + 'px', 'important');
+            track[0].style.setProperty('min-width', track[1] + 'px', 'important');
+            track[0].style.setProperty('max-width', track[1] + 'px', 'important');
+        });
+        var cardFields = children[1].querySelectorAll('.fp-children-vertical > .fp-item[data-tag="InputField"]');
+        for (var fi = 0; fi < cardFields.length; fi++) {
+            var field = cardFields[fi];
+            var following = field.nextElementSibling;
+            if (!following || following.dataset.tag !== 'UsualGroup'
+                || field._fpItem && isTrue(prop(field._fpItem,
+                    ['VerticalStretch', 'РастягиватьПоВертикали']))) continue;
+            field.dataset.fpPageCardRailBaseFlex = field.style.flex;
+            field.dataset.fpPageCardRailField = '1';
+            field.style.setProperty('flex', '0 0 auto', 'important');
+        }
+        fitted++;
+    }
+    return fitted;
+}
+
+/* An AutoScreenTypeSensitive table pair can return to Horizontal after the
+ * responsive allocation pass. Its earlier wide flex tracks then survive that
+ * orientation change and push the trailing pane outside the viewport, even
+ * though the table grids themselves own horizontal scrolling. */
+function fitRestoredTableSplitterPairs(body) {
+    if (!body || !body.closest || !body.closest('.fp-platform-85.fp-taxi')) return 0;
+    var rows = body.querySelectorAll('.fp-children-horizontal[data-fp-group-mode="auto-screen-sensitive"]');
+    var fitted = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        var owner = row.closest('.fp-item');
+        if (!owner || owner.parentElement !== body) continue;
+        var children = directFpItems(row);
+        if (children.length !== 2 || !children.every(function (child) {
+            return child.classList.contains('fp-splitter-pane')
+                && child.classList.contains('fp-hstretch')
+                && !!child.querySelector('.fp-item[data-tag="Table"]');
+        })) continue;
+        var rect = row.getBoundingClientRect();
+        var bodyRect = body.getBoundingClientRect();
+        var gap = parseFloat(getComputedStyle(row).columnGap) || 0;
+        var available = Math.floor(bodyRect.right - rect.left - gap);
+        var leadingBand = responsiveWrapperAllocationBand(children[0]);
+        var trailingBand = responsiveWrapperAllocationBand(children[1]);
+        if (available <= 0 || rect.width <= available + gap + 1
+            || leadingBand.min + trailingBand.min > available) continue;
+        var leading = Math.max(Math.ceil(leadingBand.min),
+            Math.min(Math.round(leadingBand.normal), available - Math.ceil(trailingBand.min)));
+        var trailing = available - leading;
+        for (var c = 0; c < 2; c++) {
+            var width = c === 0 ? leading : trailing;
+            children[c].style.flex = '0 0 ' + width + 'px';
+            children[c].style.width = width + 'px';
+            children[c].style.minWidth = width + 'px';
+            children[c].style.maxWidth = width + 'px';
+            children[c].dataset.fpHorizontalPublishedWidth = String(width);
+        }
+        fitted++;
+    }
+    return fitted;
+}
+
+/* A bottom-aligned button spacer follows the preview's two stretch sections.
+ * Reserve compact breathing room around the button and lend the remaining height
+ * back to the table and details; otherwise the empty spacer owns that height. */
+function fitBottomButtonSpacers(body) {
+    if (!body || !body.closest || !body.closest('.fp-platform-85.fp-taxi')) return 0;
+    var previousLeading = body.querySelectorAll('[data-fp-bottom-button-leading]');
+    for (var pl = 0; pl < previousLeading.length; pl++) {
+        previousLeading[pl].style.flex = previousLeading[pl].dataset.fpBottomButtonLeadingFlex || '';
+        delete previousLeading[pl].dataset.fpBottomButtonLeading;
+        delete previousLeading[pl].dataset.fpBottomButtonLeadingFlex;
+    }
+    var previous = body.querySelectorAll('[data-fp-bottom-button-spacer]');
+    for (var p = 0; p < previous.length; p++) {
+        previous[p].style.flex = previous[p].dataset.fpBottomButtonSpacerFlex || '';
+        previous[p].style.height = previous[p].dataset.fpBottomButtonSpacerHeight || '';
+        delete previous[p].dataset.fpBottomButtonSpacer;
+        delete previous[p].dataset.fpBottomButtonSpacerFlex;
+        delete previous[p].dataset.fpBottomButtonSpacerHeight;
+    }
+    var rows = body.querySelectorAll('.fp-children-vertical');
+    var fitted = 0;
+    for (var i = 0; i < rows.length; i++) {
+        var children = directFpItems(rows[i]);
+        if (children.length !== 2 || !children[0].classList.contains('fp-vstretch')) continue;
+        var primaryPages = children[0].dataset && children[0].dataset.tag === 'Pages';
+        if (!primaryPages && (!children[0].classList.contains('fp-sized-width')
+            || !children[0].querySelector('.fp-item[data-tag="Table"]'))) continue;
+        var spacer = children[1];
+        if (!spacer.classList.contains('fp-vstretch') || !spacer._fpItem
+            || String(prop(spacer._fpItem, ['VerticalAlign']) || '').toLowerCase() !== 'bottom') continue;
+        var spacerBox = directLayoutChildren(spacer);
+        var spacerChildren = directFpItems(spacerBox);
+        if (spacerChildren.length !== 1 || spacerChildren[0].dataset.tag !== 'Button') continue;
+        var buttonHeight = Math.ceil(spacerChildren[0].getBoundingClientRect().height);
+        /* A tabbed side panel already has its own lower border; one compact
+         * spacing step separates that border from the bottom command. */
+        var reserved = buttonHeight + (primaryPages ? 1 : 4)
+            * TAXI_LAYOUT_METRICS.verticalSpacing.single;
+        if (spacer.getBoundingClientRect().height <= reserved + (primaryPages ? 8 : 20)) continue;
+        spacer.dataset.fpBottomButtonSpacerFlex = spacer.style.flex || '';
+        spacer.dataset.fpBottomButtonSpacerHeight = spacer.style.height || '';
+        spacer.dataset.fpBottomButtonSpacer = '1';
+        spacer.style.flex = '0 0 ' + reserved + 'px';
+        spacer.style.height = reserved + 'px';
+        var contentBox = directLayoutChildren(children[0]);
+        var sections = directFpItems(contentBox);
+        if (sections.length === 2 && sections.every(function (section) {
+            return section.classList.contains('fp-vstretch')
+                && !!section.querySelector('.fp-item[data-tag="Table"]');
+        })) {
+            sections[0].dataset.fpBottomButtonLeading = '1';
+            sections[0].dataset.fpBottomButtonLeadingFlex = sections[0].style.flex || '';
+            sections[0].style.flex = '2 1 auto';
+        }
+        fitted++;
+    }
+    return fitted;
+}
+
 function runHorizontalStrategyPass(body) {
+    restoreAllocatedLabelMinWidths(body);
     if (!body) return { strategy: 'auto' };
+    if (!version85ConfigBody(body)) restoreCompactMultilineFooters(body);
+    if (!version85ConfigBody(body)) restorePageCardRails(body);
     resetFormViewport(body);
     revertPromotedAutoTitles(body);
     resetDetachedColumnRows(body);
@@ -16166,18 +20617,12 @@ function runHorizontalStrategyPass(body) {
         state.compressWidth = state.verticalGrouping > 0
             && (pressure.compressWidth || verticalPressure.compressWidth);
     }
+    resetListFilterPanes(body);
+    capAutoCappedFieldColumns(body);
     fitAuthoredTableHeights(body);
     state.flattenedPagesEnvelope = fitFlattenedPagesAlternativeEnvelope(body);
     state.rootPagesPreferred = fitRootPagesPreferredHeights(body);
     var viewportOverflow = fitFormViewport(body);
-    /* A stretchable field's normal width (a Table's reference default grid band,
-     * min(88, 40 + 12(n-3)) units) is pressure only against the width its
-     * column finally receives. Before fitFormViewport the column still has
-     * the reset viewport width; the sibling rows' true minimums may then
-     * publish a scroll canvas that is wider than that normal (an 880px list
-     * grid measured in a 750px pre-canvas column while the reference
-     * gives it 1057px). Re-measure the vertical-field signal on the settled
-     * canvas so it cannot mask the genuine canvas overflow below. */
     if (viewportOverflow && state.smartCompressToMinWidth && !rowSmartCompressPressure
         && !state.titlesOnTop) {
         var settledVerticalPressure = verticalFieldPriorityPressure(body, true);
@@ -16188,6 +20633,7 @@ function runHorizontalStrategyPass(body) {
      * Refit once the canvas has been published so a reachable wide toolbar is
      * not permanently measured against the earlier narrow page viewport. */
     refitCommandBars(body);
+    releaseListFilterPanes(body);
     state.dontAlignButtons = commandBarOverflowCount(body);
     /* A scroll canvas can still expose the browser's untransformed visual
      * rectangles while the native semantic minimum already fits. Do not
@@ -16221,6 +20667,8 @@ function runHorizontalStrategyPass(body) {
      * unrelated responsive controls already own a stable decision. */
     state.verticalGrouping = Math.max(state.verticalGrouping,
         prepareProjectedResponsiveGroups(body));
+    fitRestoredTableSplitterPairs(body);
+    fitBottomButtonSpacers(body);
     inheritPageFollowingThroughAlignTracks(body);
     alignStackedLogicalRowColumns(body);
     fitFixedWidthColumnEdges(body);
@@ -16230,9 +20678,13 @@ function runHorizontalStrategyPass(body) {
      * stale floor then lets the table overflow its row onto the next group.
      * Remeasure against the final horizontal allocation. */
     shareDetachedSiblingColumns(body);
-    fitTableAncestorMinimums(body, body.querySelectorAll('.fp-table-authored-height'));
+    var authoredTables = body.querySelectorAll('.fp-table-authored-height');
+    fitInterface85ResponsiveTableClamps(body, authoredTables);
+    fitTableAncestorMinimums(body, authoredTables);
     fitMinimumCanvasTitleTracks(body);
     fitFormViewport(body);
+    if (!version85ConfigBody(body)) fitCompactMultilineFooters(body);
+    if (!version85ConfigBody(body)) fitPageCardRails(body);
     state.fittedPhysicalTableColumns = fitPhysicalTableColumnWidths(body);
     if (body.dataset) {
         body.dataset.fpHorizontalStrategy = state.strategy;
@@ -16247,7 +20699,27 @@ function runHorizontalStrategyPass(body) {
     }
     fitWrappedSideCaptions(body);
     fitAllLeadingCaptionsBeforeTitledPagesNone(body);
+    if (!version85ConfigBody(body)) fitFollowingTooltipTitleTracks(body);
+    if (!version85ConfigBody(body)) fitSideEditorTooltips(body);
+    if (!version85ConfigBody(body)) reserveBottomPagesBand(body);
     syncDetachedColumnRows(body);
+    fitInterface85ThroughColumns(body);
+    /* Allocation passes can restore responsive inline flex bases later in
+     * reflow. Reassert this structural table pair at the settled layout edge. */
+    state.fittedToolbarLeadingTablePairs = fitLeadingToolbarTablePairs(body);
+    fitCardSideChoiceSpacing(body);
+    fitCompactSideContentTable(body);
+    fitListCardPagesGutter(body);
+    fitFixedFieldPairInCollapsedGroup(body);
+    if (body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')) {
+        var sideCards = body.querySelectorAll('.fp-ui85-card');
+        for (var sc = 0; sc < sideCards.length; sc++) {
+            var sidePane = sideCards[sc].nextElementSibling;
+            if (sidePane && sidePane.querySelector('.fp-item[data-tag="InputField"]')
+                && sidePane.querySelectorAll('.fp-link').length >= 3)
+                fitCappedFieldAfterCheckboxInCard(sideCards[sc]);
+        }
+    }
     /* Scroll extents settle after the widened canvas styles are committed.
      * A deferred final fit prevents the table's earlier ResizeObserver pass
      * from leaving commands hidden according to the pre-canvas viewport. */
@@ -16255,8 +20727,338 @@ function runHorizontalStrategyPass(body) {
         requestAnimationFrame(function () {
             refitCommandBars(body);
             stretchRootCommandBarFooter(body);
+            if (state.fittedToolbarLeadingTablePairs)
+                fitPhysicalTableColumnWidths(body, '.fp-table-toolbar-leading-pair');
+            fitTaxi85CompactWidgetFooter(body);
+            fitTaxi85CatalogSearchToolbar(body);
         });
     return state;
+}
+
+var INTERFACE85_EDITOR_WIDTH = 451;
+var INTERFACE85_GRID_GAP = 16;
+
+var INTERFACE85_ROW = {
+    normal: { charPx: 11, pad: 11, gap: 16, minimum: 79 },
+    compact: { charPx: 9, pad: 9, gap: 12, minimum: 66 }
+};
+
+function interface85RowMetrics(node) {
+    return node && node.closest && node.closest('.fp-scale-compact') ? INTERFACE85_ROW.compact : INTERFACE85_ROW.normal;
+}
+
+function interface85RefWidthChars(item, ctx, tag) {
+    var chars = parseInt(prop(item, ['Width', 'Ширина']), 10) || 0;
+    if (chars <= 0) return 0;
+    var max = parseInt(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
+    if (max > 0 && isFalse(prop(item, ['AutoMaxWidth']))) chars = Math.min(chars, max);
+    return chars;
+}
+
+function interface85EditorNatural(field) {
+    var chars = parseInt(field && field.dataset && field.dataset.fp85WidthChars, 10);
+    if (!(chars > 0)) return INTERFACE85_EDITOR_WIDTH;
+    var metrics = interface85RowMetrics(field);
+    return chars * metrics.charPx + metrics.pad;
+}
+
+/* A top caption is cut to its editor, but a shrinking row keeps it whole. */
+function interface85EditorMinimum(field) {
+    var metrics = interface85RowMetrics(field);
+    var caption = field.querySelector(':scope > .fp-field-85.fp-title-top > .fp-field-label');
+    return Math.max(metrics.minimum, caption ? Math.ceil(interface85TextWidth(caption)) : 0);
+}
+
+/* Full text width of a caption the layout may have cut with an ellipsis. */
+var interface85TextCanvas = null;
+function interface85TextWidth(node) {
+    var text = (node.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!text) return 0;
+    if (!interface85TextCanvas && typeof document !== 'undefined') interface85TextCanvas = document.createElement('canvas');
+    var context = interface85TextCanvas && interface85TextCanvas.getContext && interface85TextCanvas.getContext('2d');
+    if (!context) return 0;
+    var style = getComputedStyle(node);
+    context.font = style.fontStyle + ' ' + style.fontWeight + ' ' + style.fontSize + ' ' + style.fontFamily;
+    /* The platform lays text out on whole-pixel glyph advances (form lab:
+     * 40 × «Н» is 440px where the browser gives 426). */
+    var width = 0;
+    for (var i = 0; i < text.length; i++) width += Math.round(context.measureText(text.charAt(i)).width);
+    return width;
+}
+
+function interface85MeasureWidth(node, mode) {
+    var saved = node.style.cssText;
+    node.style.width = mode;
+    node.style.minWidth = '0';
+    node.style.maxWidth = 'none';
+    node.style.flex = '0 0 auto';
+    var width = node.getBoundingClientRect().width;
+    node.style.cssText = saved;
+    return width;
+}
+
+function interface85GridRowCells(item) {
+    if (!item || item.dataset.tag !== 'UsualGroup') return null;
+    var block = item.querySelector(':scope > .fp-control-wrap > .fp-group-block, :scope > .fp-control-wrap > .fp-group-bare');
+    var row = block && block.querySelector(':scope > .fp-children-horizontal');
+    if (!row) return null;
+    /* A nested horizontal group of fields lays out as a flat run of its
+     * fields (form lab: ±2px against the flat row). */
+    var nestedRows = [];
+    var visible = function (child) {
+        return child.classList && child.classList.contains('fp-item') && child.getBoundingClientRect().height;
+    };
+    var fields = [];
+    Array.prototype.forEach.call(row.children, function (child) {
+        if (!visible(child)) return;
+        var nested = child.dataset.tag === 'UsualGroup'
+            && child.querySelector(':scope > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal');
+        var nestedFields = nested ? Array.prototype.filter.call(nested.children, visible) : [];
+        if (nested && nestedFields.length && nestedFields.every(function (leaf) {
+            return /^(?:InputField|LabelField)$/.test(leaf.dataset.tag || '');
+        })) {
+            nestedRows.push({ item: child, row: nested });
+            fields.push.apply(fields, nestedFields);
+            return;
+        }
+        /* A vertical group of editors is one cell: the widest natural and
+         * minimum of its editors, which then fill the cell. */
+        var column = child.dataset.tag === 'UsualGroup'
+            && child.querySelector(':scope > .fp-control-wrap > .fp-group-bare > .fp-children-vertical');
+        var columnFields = column ? Array.prototype.filter.call(column.children, visible) : [];
+        if (column && columnFields.length && columnFields.every(function (leaf) {
+            return /^(?:InputField|LabelField)$/.test(leaf.dataset.tag || '');
+        })) child._fp85ColumnFields = columnFields;
+        fields.push(child);
+    });
+    if (fields.length < 2 && !block.querySelector(':scope > .fp-group-title')) return null;
+    if (!fields.every(function (child) {
+        return child._fp85ColumnFields || /^(?:InputField|CheckBoxField|LabelField)$/.test(child.dataset.tag || '');
+    })) return null;
+    return { block: block, row: row, fields: fields, nestedRows: nestedRows,
+        title: block.querySelector(':scope > .fp-group-title') || row.querySelector(':scope > .fp85-through-title') };
+}
+
+function interface85RootItemBasis(item) {
+    var tag = item.dataset.tag || '';
+    if (tag === 'InputField' || tag === 'LabelField') return INTERFACE85_EDITOR_WIDTH;
+    if (tag === 'CheckBoxField') return interface85MeasureWidth(item, 'max-content');
+    if (tag === 'UsualGroup' && item.classList.contains('fp-container-vertical'))
+        return INTERFACE85_EDITOR_WIDTH + (item.querySelector(':scope .fp-collapsible-group') ? 22 : 0);
+    return 0;
+}
+
+/* A top caption that wraps in a narrowed column grows the field band
+ * instead of painting the editor into the next row. */
+function interface85GrowWrappedCaptions(body) {
+    body.querySelectorAll(':scope > .fp-field-item-85, :scope > .fp-item[data-tag="UsualGroup"] .fp-field-item-85')
+        .forEach(function (field) {
+            var caption = field.querySelector(':scope > .fp-field-85.fp-title-top > .fp-field-label');
+            if (!caption || field.classList.contains('fp-title-height-85')) return;
+            var lineHeight = parseFloat(getComputedStyle(caption).lineHeight) || 19;
+            var wrapped = caption.getBoundingClientRect().height > lineHeight + 2;
+            [['height', 'auto'], ['max-height', 'none'], ['flex-basis', 'auto']].forEach(function (entry) {
+                if (wrapped) field.style.setProperty(entry[0], entry[1], 'important');
+                else field.style.removeProperty(entry[0]);
+            });
+        });
+}
+
+function fitInterface85ThroughColumns(body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85')
+        || body.closest('.fp-control-gallery-85')) return 0;
+    var roots = Array.prototype.filter.call(body.children, function (child) {
+        return child.classList && child.classList.contains('fp-item')
+            && child.dataset.tag !== 'AutoCommandBar' && child.getBoundingClientRect().height;
+    });
+    var grids = [];
+    roots.forEach(function (item) {
+        var cells = interface85GridRowCells(item);
+        if (cells) grids.push({ item: item, cells: cells });
+    });
+    if (!grids.length) return 0;
+    var columns = 0;
+    grids.forEach(function (grid) {
+        grid.count = (grid.cells.title ? 1 : 0) + grid.cells.fields.length;
+        columns = Math.max(columns, grid.count);
+    });
+    if (columns < 2) return 0;
+    var metrics = interface85RowMetrics(body);
+    var bases = [], minimums = [];
+    for (var c = 0; c < columns; c++) {
+        bases.push(0);
+        minimums.push(0);
+    }
+    roots.forEach(function (item) {
+        if (grids.some(function (grid) { return grid.item === item; })) return;
+        var basis = interface85RootItemBasis(item);
+        bases[0] = Math.max(bases[0], basis);
+        /* A vertical group shrinks down to its widest child's minimum. */
+        if (basis) minimums[0] = Math.max(minimums[0], item.dataset.tag === 'CheckBoxField' ? basis : metrics.minimum);
+    });
+    grids.forEach(function (grid) {
+        var offset = 0;
+        if (grid.cells.title) {
+            var titleWidth = interface85MeasureWidth(grid.cells.title, 'min-content');
+            bases[0] = Math.max(bases[0], titleWidth);
+            minimums[0] = Math.max(minimums[0], titleWidth);
+            offset = 1;
+        }
+        grid.cells.fields.forEach(function (field, index) {
+            var check = field.dataset.tag === 'CheckBoxField';
+            var editors = field._fp85ColumnFields || [field];
+            var basis = check ? interface85MeasureWidth(field, 'max-content')
+                : Math.max.apply(null, editors.map(interface85EditorNatural));
+            var minimum = check ? basis : Math.max.apply(null, editors.map(interface85EditorMinimum));
+            bases[index + offset] = Math.max(bases[index + offset] || 0, basis);
+            minimums[index + offset] = Math.max(minimums[index + offset] || 0, minimum);
+        });
+    });
+    var leftCaptions = [];
+    roots.forEach(function (item) {
+        var label = item.querySelector(':scope > .fp-field-85.fp-title-left > .fp-field-label, '
+            + ':scope > .fp-check-row.fp-title-left > .fp-field-label');
+        if (label) leftCaptions.push({ item: item, label: label, check: item.dataset.tag === 'CheckBoxField' });
+    });
+    var captionFull = 0, captionTrack = 0, hasLeftEditor = false;
+    leftCaptions.forEach(function (entry) {
+        var text = interface85MeasureWidth(entry.label, 'max-content');
+        captionFull = Math.max(captionFull, text + INTERFACE85_GRID_GAP);
+        /* A checkbox caption keeps its own 8px gap before the box. */
+        captionTrack = Math.max(captionTrack, entry.check
+            ? text + (parseFloat(getComputedStyle(entry.label.parentNode).columnGap) || 0)
+            : interface85MeasureWidth(entry.label, 'min-content') + INTERFACE85_GRID_GAP);
+        if (!entry.check) hasLeftEditor = true;
+    });
+    if (hasLeftEditor) bases[0] = Math.max(bases[0], captionFull + INTERFACE85_EDITOR_WIDTH + 35);
+    if (!bases[0]) bases[0] = INTERFACE85_EDITOR_WIDTH;
+    var sharedColumns = grids.length > 1 || grids.some(function (grid) { return grid.cells.title; })
+        || roots.some(function (item) {
+            return !grids.some(function (grid) { return grid.item === item; }) && interface85RootItemBasis(item);
+        });
+    if (sharedColumns) minimums = minimums.map(function () { return 0; });
+    var style = getComputedStyle(body);
+    var rowWidth = body.offsetWidth - (parseFloat(style.paddingLeft) || 0) - 21;
+    var available = rowWidth - metrics.gap * (columns - 1);
+    /* A cell never asks for more than the row; its minimum still wins. */
+    var prefs = bases.map(function (value, index) {
+        return Math.max(Math.min(value, rowWidth - 3), minimums[index] || 0);
+    });
+    var total = prefs.reduce(function (sum, value) { return sum + value; }, 0);
+    var shrink = total > available;
+    /* A fitting row keeps natural widths: a long top caption is cut to its editor. */
+    var widths = bases.map(function (value) { return Math.min(value, rowWidth - 3); });
+    if (shrink) {
+        var floor = minimums.reduce(function (sum, value) { return sum + (value || 0); }, 0);
+        var t = Math.max(0, (available - floor) / Math.max(1, total - floor));
+        widths = prefs.map(function (value, index) {
+            var minimum = minimums[index] || 0;
+            return Math.round(minimum + (value - minimum) * t);
+        });
+        /* The platform hands the rounding remainder of a shrunk grid to its
+         * last column (08: 319/304/305 of 928px). */
+        if (floor < available) widths[widths.length - 1] += Math.floor(available)
+            - widths.reduce(function (sum, value) { return sum + value; }, 0);
+    }
+    var setWidth = function (node, width) {
+        if (node.classList.contains('fp-field-item-85')) node.classList.add('fp85-through-cell');
+        node.style.width = width + 'px';
+        node.style.minWidth = width + 'px';
+        node.style.maxWidth = width + 'px';
+        node.style.flex = '0 0 auto';
+    };
+    roots.forEach(function (item) {
+        var grid = null;
+        for (var g = 0; g < grids.length; g++) if (grids[g].item === item) grid = grids[g];
+        if (!grid) {
+            if (!interface85RootItemBasis(item)) return;
+            setWidth(item, widths[0]);
+            if (item.dataset.tag === 'UsualGroup') {
+                item.querySelectorAll(':scope .fp-field-item-85:not(.fp-field-wide-85)').forEach(function (field) {
+                    setWidth(field, widths[0]);
+                });
+            }
+            return;
+        }
+        item.classList.add('fp85-through-row');
+        item.style.width = 'auto';
+        item.style.maxWidth = 'none';
+        var row = grid.cells.row;
+        row.style.columnGap = metrics.gap + 'px';
+        row.style.flexWrap = 'nowrap';
+        var index = 0;
+        if (grid.cells.title) {
+            var titleCell = grid.cells.title;
+            titleCell.classList.add('fp85-through-title');
+            row.insertBefore(titleCell, row.firstChild);
+            setWidth(titleCell, widths[0]);
+            index = 1;
+        }
+        grid.cells.fields.forEach(function (field, fieldIndex) {
+            var width = widths[index + fieldIndex];
+            /* An editor whose caption is wider than itself is solved at the
+             * caption width but painted at its own width; the rest stays unused. */
+            if (field._fp85ColumnFields) {
+                setWidth(field, width);
+                field._fp85ColumnFields.forEach(function (editor) { setWidth(editor, width); });
+                return;
+            }
+            if (field.dataset.tag !== 'CheckBoxField') {
+                var natural = interface85EditorNatural(field);
+                if (interface85EditorMinimum(field) > natural) width = Math.min(width, natural);
+            }
+            setWidth(field, width);
+        });
+        (grid.cells.nestedRows || []).forEach(function (nested) {
+            nested.row.style.columnGap = metrics.gap + 'px';
+            nested.row.style.flexWrap = 'nowrap';
+            nested.item.style.width = 'auto';
+            nested.item.style.maxWidth = 'none';
+            nested.item.style.flex = '0 0 auto';
+        });
+    });
+    if (hasLeftEditor) {
+        /* A narrow window shrinks the caption track with its column so the
+         * editor keeps a usable share of it. */
+        var narrowTrack = widths[0] - captionTrack < 120;
+        if (narrowTrack) {
+            var captionMin = 0;
+            leftCaptions.forEach(function (entry) {
+                var gap = parseFloat(getComputedStyle(entry.label.parentNode).columnGap) || 0;
+                captionMin = Math.max(captionMin, interface85MeasureWidth(entry.label, 'min-content') + gap);
+            });
+            captionTrack = Math.max(captionMin, widths[0] - 120);
+            leftCaptions.forEach(function (entry) {
+                if (!entry.check) return;
+                entry.item.style.setProperty('height', 'auto', 'important');
+                entry.item.style.setProperty('max-height', 'none', 'important');
+                entry.item.querySelector(':scope > .fp-check-row').style.setProperty('height', 'auto', 'important');
+            });
+        }
+        leftCaptions.forEach(function (entry) {
+            var rowStyle = getComputedStyle(entry.label.parentNode);
+            var gap = parseFloat(rowStyle.columnGap) || 0;
+            /* Every root row starts on the same 4px content edge. */
+            var width = Math.max(0, captionTrack - gap);
+            var capped = 'min(' + width + 'px, calc(100% - ' + (entry.check ? 32 : 80) + 'px))';
+            ['width', 'min-width', 'max-width'].forEach(function (name) {
+                entry.label.style.setProperty(name, capped, 'important');
+            });
+            entry.label.style.setProperty('flex', '0 0 auto', 'important');
+            entry.label.style.boxSizing = 'border-box';
+            entry.label.style.whiteSpace = entry.check && !narrowTrack ? 'nowrap' : 'normal';
+        });
+    }
+    interface85GrowWrappedCaptions(body);
+    if (typeof ResizeObserver === 'function') {
+        if (!body._fp85WrapObserver)
+            body._fp85WrapObserver = new ResizeObserver(function () { interface85GrowWrappedCaptions(body); });
+        body.querySelectorAll('.fp-field-item-85 > .fp-field-85.fp-title-top > .fp-field-label').forEach(function (caption) {
+            body._fp85WrapObserver.observe(caption);
+        });
+    }
+    body.dataset.fp85ThroughColumns = widths.join(',');
+    return columns;
 }
 
 /* United=false vertical columns of one horizontal group are not independent
@@ -16381,6 +21183,7 @@ function observeFormViewport(body) {
         refitCommandBars(body);
         stretchRootCommandBarFooter(body);
         publishWindowScrollStart(body);
+        tolerateResidualOverflow(body);
         fittedWidth = body.clientWidth;
         fittedHeight = body.clientHeight;
     });
@@ -16388,8 +21191,28 @@ function observeFormViewport(body) {
     body._fpResizeObserver = observer;
 }
 
-/* The root AutoCommandBar is window chrome: the reference starts the window scrollbar
- * lane at the first content row below it, not at the client top. */
+var RESIDUAL_OVERFLOW_PX = 4;
+function tolerateResidualOverflow(body) {
+    if (!body || !body.querySelectorAll || typeof getComputedStyle !== 'function') return;
+    var ports = [body].concat(Array.prototype.slice.call(body.querySelectorAll(
+        '.fp-pages-active-panel, .fp-item.fp-root-flattened-page')));
+    for (var i = 0; i < ports.length; i++) {
+        var port = ports[i];
+        if (port.dataset && port.dataset.fpResidualOverflow) {
+            port.style.removeProperty('overflow-y');
+            delete port.dataset.fpResidualOverflow;
+        }
+    }
+    for (var j = 0; j < ports.length; j++) {
+        var el = ports[j];
+        if (getComputedStyle(el).overflowY !== 'auto') continue;
+        var residue = el.scrollHeight - el.clientHeight;
+        if (residue <= 0 || residue > RESIDUAL_OVERFLOW_PX) continue;
+        el.style.setProperty('overflow-y', 'hidden', 'important');
+        el.dataset.fpResidualOverflow = String(residue);
+    }
+}
+
 function publishWindowScrollStart(body) {
     if (!body || !body.style) return;
     var start = 0;
@@ -16645,6 +21468,21 @@ var ELEMENT_PROPERTY_TITLES = {
     ScrollOnCompress: 'Прокрутка при сжатии', ShowInHeader: 'Показывать в заголовке',
     MultiLine: 'Многострочный режим', PasswordMode: 'Режим пароля',
     MarkIncomplete: 'Отмечать незаполненное', AutoMarkIncomplete: 'Автоотметка незаполненного',
+    ShowCommandBar: 'Показывать командную панель', ButtonImportance: 'Важность кнопки',
+    ShowAsCard: 'Показывать как карточку', AppearanceInCard: 'Вид в карточке',
+    WidthInCard: 'Ширина в карточке', CardRepresentationType: 'Вид представления карточки',
+    ShowTitleInCard: 'Показывать заголовок в карточке', AutoMaxCardHeight: 'Автомаксимальная высота карточки',
+    ScaleVariant: 'Вариант масштаба', TextSize: 'Размер текста',
+    AutoWidthInTable: 'Автоширина в таблице', VerticalLinesBWA: 'Вертикальные линии (режим совместимости)',
+    HorizontalLinesBWA: 'Горизонтальные линии (режим совместимости)',
+    UseAlternationRowColorBWA: 'Чередование цветов строк (режим совместимости)',
+    CellHyperlinkRepresentation: 'Представление гиперссылки ячейки',
+    CellHyperlinkDisplayVariant: 'Вариант отображения гиперссылки ячейки',
+    CellMark: 'Отметка ячейки', RowActionsShowType: 'Отображение действий строки',
+    MarkRequiredComplete: 'Отмечать заполнение обязательного', ActionPurpose: 'Назначение действия',
+    SelectedRowsUse: 'Использование выбранных строк', AppearanceMode: 'Режим внешнего вида',
+    BackgroundShowMode: 'Режим отображения фона', TumblerRepresentation: 'Представление тумблера',
+    CollapsedRepresentationItem: 'Элемент свернутого представления',
     kind: 'Вид', ref: 'Ссылка на стиль', faceName: 'Гарнитура', height: 'Размер',
     scale: 'Масштаб', bold: 'Жирный', italic: 'Курсив', underline: 'Подчёркивание',
     strikeout: 'Зачёркивание',
@@ -16709,6 +21547,7 @@ function propertyTitleFrom(dictionary, key) {
 function propertyTitle(key) {
     return propertyTitleFrom(ELEMENT_PROPERTY_TITLES, key)
         || propertyTitleFrom(ATTRIBUTE_PROPERTY_TITLES, key)
+        || XU.terms.propertyName(key)
         || humanizeIdent(key);
 }
 
@@ -16731,7 +21570,10 @@ var ITEM_KIND_TITLES = {
     GanttChartField: 'Поле диаграммы Ганта', PlannerField: 'Поле планировщика',
     GraphicalSchemaField: 'Поле графической схемы', FormattedDocumentField: 'Поле форматированного документа',
     CalendarField: 'Поле календаря', PeriodField: 'Поле периода', GeographicsField: 'Поле географической схемы',
-    PDFDocumentField: 'Поле PDF документа'
+    PDFDocumentField: 'Поле PDF документа',
+    SearchStringAddition: 'Строка поиска', ViewStatusAddition: 'Состояние просмотра',
+    SearchControlAddition: 'Управление поиском', ContextMenu: 'Контекстное меню',
+    ExtendedTooltip: 'Расширенная подсказка', DendrogramField: 'Поле дендрограммы'
 };
 
 function itemKindTitle(tag) {
@@ -16862,15 +21704,29 @@ var PROPERTY_VALUE_TITLES = {
 });
 
 function propertyValueTitle(key, value) {
-    var dictionary = PROPERTY_VALUE_TITLES[key];
-    if (!dictionary) return String(value);
-    if (Object.prototype.hasOwnProperty.call(dictionary, value)) return dictionary[value];
-    /* Normalized values (representationOf gives 'pictureandtext') miss the exact key. */
-    var normalized = String(value).toLowerCase();
-    for (var known in dictionary) {
-        if (Object.prototype.hasOwnProperty.call(dictionary, known) && known.toLowerCase() === normalized) return dictionary[known];
+    var dictionary = key && PROPERTY_VALUE_TITLES[key];
+    if (dictionary) {
+        if (Object.prototype.hasOwnProperty.call(dictionary, value)) return dictionary[value];
+        /* Normalized values (representationOf gives 'pictureandtext') miss the exact key. */
+        var normalized = String(value).toLowerCase();
+        for (var known in dictionary) {
+            if (Object.prototype.hasOwnProperty.call(dictionary, known) && known.toLowerCase() === normalized) return dictionary[known];
+        }
     }
-    return String(value);
+    return platformValue(key, value);
+}
+
+/* A value no per-property list names: a reference, type, style item,
+ * picture or platform enumeration in its Russian spelling. Comma lists
+ * («Список, SearchStringRepresentation») are read part by part. */
+function platformValue(key, value) {
+    var s = String(value);
+    var bare = String(key || '').replace(/^.*\./, '');
+    if (/datapath$/i.test(bare) || bare === 'UseAlways') return XU.terms.dataPath(s);
+    if (bare === 'ExcludedCommand' || bare === 'ExcludedCommands') return XU.terms.stdCommandTitle(s) || s;
+    var whole = XU.terms.presentValue(s, bare);
+    if (whole !== s || s.indexOf(', ') < 0) return whole;
+    return s.split(', ').map(function (part) { return XU.terms.presentValue(part, bare); }).join(', ');
 }
 function propertyValuePresentation(value, key) {
     if (value === true || /^true$/i.test(String(value))) return 'Да';
@@ -16879,7 +21735,7 @@ function propertyValuePresentation(value, key) {
     if (Array.isArray(value)) return value.length ? value.map(function (item) { return propertyValueTitle(key, item); }).join(', ') : 'Пустой список';
     if (typeof value === 'object') {
         var summary = [];
-        if (value.ref) summary.push(value.ref);
+        if (value.ref) summary.push(XU.terms.presentValue(value.ref));
         if (value.faceName) summary.push(value.faceName);
         if (value.height) summary.push(String(value.height) + ' пт');
         if (value.bold === true) summary.push('жирный');
@@ -16887,7 +21743,7 @@ function propertyValuePresentation(value, key) {
         if (value.underline === true) summary.push('подчёркнутый');
         return summary.length ? summary.join('; ') : 'Составное значение';
     }
-    return key ? propertyValueTitle(key, value) : String(value);
+    return propertyValueTitle(key, value);
 }
 
 function objectDetailItems(value, parentKey) {
@@ -16901,24 +21757,87 @@ function objectDetailItems(value, parentKey) {
     return out;
 }
 
-function structuredDetailItems(value, prefix, out, depth) {
-    out = out || [];
-    depth = depth || 0;
-    if (!value || depth > 5 || out.length >= 100) return out;
-    var here = prefix || value.name || 'Значение';
-    var attrs = value.attributes || {};
-    for (var key in attrs) {
-        if (Object.prototype.hasOwnProperty.call(attrs, key))
-            out.push({ label: here + '.@' + key, value: propertyValuePresentation(attrs[key]) });
-    }
-    if (value.text != null && String(value.text) !== '')
-        out.push({ label: here, value: propertyValuePresentation(value.text) });
-    for (var i = 0; value.children && i < value.children.length && out.length < 100; i++) {
-        var child = value.children[i];
-        structuredDetailItems(child, here + '.' + (child.name || i), out, depth + 1);
-    }
+/* Structured values (CommandSet, ChoiceParameters, Period, Border...) as
+ * readable rows: namespace prefixes and xsi:type/xsi:nil markers dropped,
+ * names in Russian, leaves through the common value presentation. */
+function structuredDetailItems(value, key) {
+    if (Array.isArray(value)) return value.reduce(function (all, one) { return all.concat(structuredDetailItems(one, key)); }, []);
+    var rootName = structuredLocalName(value) || key;
+    if (Object.prototype.hasOwnProperty.call(STRUCTURED_DETAILS, rootName)) return STRUCTURED_DETAILS[rootName](value);
+    var out = [];
+    walkStructured(value, [], rootName, out, 0);
     return out;
 }
+
+function structuredName(name) {
+    var bare = String(name || '').replace(/^.*:/, '');
+    return propertyTitleFrom(ELEMENT_PROPERTY_TITLES, bare) || XU.terms.propertyName(bare) || humanizeIdent(bare);
+}
+
+function walkStructured(node, path, name, out, depth) {
+    if (!node || depth > 5 || out.length >= 100) return;
+    var attrs = node.attributes || {};
+    for (var a in attrs) {
+        if (!Object.prototype.hasOwnProperty.call(attrs, a)) continue;
+        var local = a.replace(/^.*:/, '');
+        if (local === 'type' || local === 'nil') continue;
+        out.push({ label: path.concat(structuredName(local)).join(' › '), value: platformValue(local, attrs[a]) });
+    }
+    if (node.text != null && String(node.text).trim() !== '')
+        out.push({ label: path.join(' › ') || 'Значение', value: platformValue(name, String(node.text).trim()) });
+    for (var i = 0; node.children && i < node.children.length && out.length < 100; i++) {
+        var child = node.children[i];
+        var childName = structuredLocalName(child);
+        walkStructured(child, path.concat(structuredName(childName)), childName, out, depth + 1);
+    }
+}
+
+/* Every text below a node, for values nested in wrappers (v8:FixedArray). */
+function structuredLeafTexts(node, out) {
+    out = out || [];
+    if (!node) return out;
+    if (node.text != null && String(node.text).trim() !== '') out.push(String(node.text).trim());
+    for (var i = 0; node.children && i < node.children.length; i++) structuredLeafTexts(node.children[i], out);
+    return out;
+}
+
+var STRUCTURED_DETAILS = {
+    CommandSet: function (value) {
+        var names = structuredChildren(value, 'ExcludedCommand').map(function (c) {
+            return platformValue('ExcludedCommands', String(c.text || '').trim());
+        });
+        return names.length ? [{ label: 'Исключенные команды', value: names.join(', ') }] : [];
+    },
+    ChoiceParameters: function (value) {
+        return structuredChildren(value, 'item').map(function (item) {
+            var texts = structuredLeafTexts(structuredChildren(item, 'value')[0]);
+            return {
+                label: structuredAttribute(item, 'name') || 'Параметр',
+                value: texts.length ? texts.map(function (t) { return platformValue('', t); }).join(', ') : 'Пусто'
+            };
+        });
+    },
+    ChoiceParameterLinks: function (value) {
+        return structuredChildren(value, 'Link').map(function (link) {
+            var name = structuredChildren(link, 'Name')[0];
+            var path = structuredChildren(link, 'DataPath')[0];
+            var change = structuredChildren(link, 'ValueChange')[0];
+            var shown = XU.terms.dataPath(path && path.text ? String(path.text).trim() : '');
+            var mode = change && change.text ? platformValue('ValueChange', String(change.text).trim()) : '';
+            return { label: name && name.text ? String(name.text).trim() : 'Связь', value: shown + (mode ? ' (' + mode.toLowerCase() + ')' : '') };
+        });
+    },
+    UserVisible: function (value) {
+        return (value.children || []).map(function (child) {
+            var local = structuredLocalName(child);
+            var role = structuredAttribute(child, 'name');
+            return {
+                label: local === 'Common' ? 'Общая' : XU.terms.metadataRef(role || local),
+                value: platformValue('', String(child.text || '').trim())
+            };
+        });
+    }
+};
 
 var DESIGN_TIME_REF_KINDS = {
     Enum: 'Перечисление', Catalog: 'Справочник', Document: 'Документ', ChartOfCharacteristicTypes: 'ПланВидовХарактеристик',
@@ -16975,6 +21894,12 @@ function elementInspector(entry) {
             var choiceItems = choiceListDetailItems(item.structuredProperties.ChoiceList);
             if (choiceItems.length) rowValue = choiceItems.map(function (c) { return c.value; }).join(', ');
         }
+        /* The flat text of a structured property glues its parts together
+         * (Отбор.ВладелецСкладClear); its readable rows say it properly. */
+        if (Object.prototype.hasOwnProperty.call(STRUCTURED_DETAILS, key) && item.structuredProperties && item.structuredProperties[key]) {
+            var details = structuredDetailItems(item.structuredProperties[key], key);
+            if (details.length) rowValue = details.map(function (d) { return d.label + ': ' + d.value; }).join('; ');
+        }
         var row = {
             key: key, label: propertyTitle(key), value: rowValue,
             changed: false, color: /^#[0-9a-f]{6,8}$/i.test(String(value)) ? String(value) : ''
@@ -16984,7 +21909,7 @@ function elementInspector(entry) {
             row.link = 'data-path';
         rows.push(row);
         if (String(key).toLowerCase() === 'datapath' && entry.typeName) {
-            rows.push({ key: 'Type', label: 'Тип', value: String(entry.typeName), changed: false, color: '' });
+            rows.push({ key: 'Type', label: 'Тип', value: typePresentation(entry.typeName), changed: false, color: '' });
         }
         if (value && typeof value === 'object' && !Array.isArray(value)) {
             var objectItems = objectDetailItems(value, key);
@@ -17167,8 +22092,8 @@ function attributeInspector(entry) {
         groups.push({
             label: 'Настройки',
             items: [
-                { label: 'Вид', value: entry.attribute.settings.type || 'Не указан' },
-                { label: 'Основная таблица', value: entry.attribute.settings.mainTable || 'Не указана' }
+                { label: 'Вид', value: entry.attribute.settings.type ? platformValue('', entry.attribute.settings.type) : 'Не указан' },
+                { label: 'Основная таблица', value: entry.attribute.settings.mainTable ? platformValue('', entry.attribute.settings.mainTable) : 'Не указана' }
             ]
         });
     }
@@ -17247,9 +22172,6 @@ function outlineCollapseAll(items, collapsed) {
     return collapsed;
 }
 
-/* A root surface may be wrapped in one or more transparent Representation=None
- * groups. The reference still places the native form inset before that first painted
- * surface; the transparent structural wrappers do not consume it. */
 function firstItemOwnsNativeInset(item) {
     if (!item || !item.classList) return false;
     if ((item.dataset && item.dataset.tag === 'Pages')
@@ -17271,11 +22193,6 @@ function firstItemOwnsNativeInset(item) {
     return false;
 }
 
-/* The platform command bar is window chrome: it starts 3px below the caption
- * and the body spends no top inset on it. A form that publishes no such bar
- * opens ordinary content on the platform top inset instead — the reference
- * puts the first row of a bar-less form at y=35, not on the chrome line.
- * Only the top band differs; the horizontal inset is unchanged. */
 function bodyOwnsContentTopInset(firstRenderedTag) {
     return String(firstRenderedTag || '') !== 'AutoCommandBar';
 }
@@ -17331,10 +22248,6 @@ function fillTabPagesPastTrailingSiblings(body) {
         trailHeight += visible[th].getBoundingClientRect().height;
     var bodyBox = body.getBoundingClientRect();
     var pagesBox = pages.getBoundingClientRect();
-    /* useIfNecessary: vstretch Pages takes the leftover client height, then
-     * one more footer band so the command bar is wholly below the fold.
-     * body.bottom − pages.top is the visible remainder; trailHeight is the
-     * bar that must not remain on the last visible row (the reference wizard 04). */
     var fill = Math.round(bodyBox.bottom - pagesBox.top + trailHeight);
     if (fill < 80) return false;
     pages.style.minHeight = fill + 'px';
@@ -17397,12 +22310,184 @@ function stretchRootCommandBarFooter(body) {
     return true;
 }
 
+function fitTaxi85CompactWidgetFooter(body) {
+    if (!body || !body.closest || !body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)'))
+        return false;
+    var rows = body.querySelectorAll('.fp-children-horizontal');
+    var compactFooter = false;
+    for (var r = 0; r < rows.length; r++) {
+        var children = directFpItems(rows[r]);
+        if (children.length !== 4 || !children[0].classList.contains('fp-control')
+            || !children.slice(1).every(function (child) {
+                return child.classList.contains('fp-ui85-card')
+                    && child.classList.contains('fp-no-hstretch');
+            })) continue;
+        /* Compact counters use their content width. The generic allocator's
+         * equal columns lend them the entire window and push the last link
+         * beneath the neighbouring collapse action. */
+        for (var c = 1; c < children.length; c++) {
+            children[c].style.flex = '0 0 auto';
+            children[c].style.width = '';
+            children[c].style.minWidth = '';
+            children[c].style.maxWidth = '';
+        }
+        compactFooter = true;
+    }
+    if (!compactFooter) return false;
+    var last = null;
+    for (var i = body.children.length - 1; i >= 0; i--) {
+        var item = body.children[i];
+        if (item.classList && item.classList.contains('fp-item')
+            && !item.hidden && item.style.display !== 'none') {
+            last = item;
+            break;
+        }
+    }
+    if (!last || !last.classList.contains('fp-container-horizontal')
+        || !last.classList.contains('fp-align-right')
+        || last.querySelectorAll('.fp-button').length !== 1) return true;
+    var baseMargin = last.dataset.fpCanvasTrailingBaseMargin;
+    if (baseMargin != null)
+        last.style.marginLeft = baseMargin === '__empty__' ? '' : baseMargin;
+    else last.dataset.fpCanvasTrailingBaseMargin = last.style.marginLeft || '__empty__';
+    var canvas = body.scrollWidth;
+    if (canvas <= body.clientWidth + 100) return true;
+    var rightInset = Math.max(0, body.getBoundingClientRect().right
+        - last.getBoundingClientRect().right);
+    last.style.marginLeft = Math.max(0,
+        canvas - last.getBoundingClientRect().width - rightInset) + 'px';
+    return true;
+}
+
+function fitTaxi85CatalogSearchToolbar(body) {
+    if (!body || !body.closest || !body.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)'))
+        return false;
+    var panes = body.querySelectorAll('.fp-item.fp-container-horizontal.fp-splitter-pane');
+    for (var p = 0; p < panes.length; p++) {
+        var pane = panes[p];
+        var innerRow = pane.querySelector('.fp-children-horizontal');
+        if (!innerRow) continue;
+        var inner = directFpItems(innerRow);
+        if (inner.length < 4 || inner[0].dataset.tag !== 'Button'
+            || inner[1].dataset.tag !== 'UsualGroup'
+            || inner[2].dataset.tag !== 'Button'
+            || !inner[inner.length - 1].classList.contains('fp-hstretch')
+            || !inner[1].querySelector('.fp-input-leading-icon-85')) continue;
+        var modeButton = inner[0].querySelector('.fp-button.fp-picture-command-title-track');
+        if (!modeButton || !modeButton.title) continue;
+        var outerRow = pane.parentElement;
+        if (!outerRow || !outerRow.classList.contains('fp-children-horizontal')) continue;
+        var outer = directFpItems(outerRow);
+        var paneIndex = outer.indexOf(pane);
+        if (paneIndex !== 1 || outer[0].dataset.tag !== 'Button'
+            || !outer[0].querySelector('.fp-button.fp-icon-btn')) continue;
+        /* The native toolbar reserves the referenced command's caption width
+         * even when its authored button paints only the picture. Compact gaps
+         * give that reservation room without pushing the trailing actions out. */
+        var captionWidth = 0;
+        try {
+            var canvas = body.ownerDocument.createElement('canvas');
+            var context = canvas.getContext('2d');
+            if (context) {
+                context.font = getComputedStyle(modeButton).font;
+                captionWidth = context.measureText(modeButton.title).width;
+            }
+        } catch (e) { /* Keep the ordinary toolbar when canvas is unavailable. */ }
+        if (!captionWidth) continue;
+        var modeWidth = Math.ceil(captionWidth) + 42;
+        var leading = outer[0];
+        var leadingButton = leading.querySelector('.fp-button');
+        leading.style.width = '36px';
+        leading.style.minWidth = '36px';
+        leading.style.flex = '0 0 36px';
+        if (leadingButton) {
+            leadingButton.style.width = '34px';
+            leadingButton.style.minWidth = '34px';
+        }
+        inner[0].style.width = modeWidth + 'px';
+        inner[0].style.minWidth = modeWidth + 'px';
+        inner[0].style.flex = '0 0 ' + modeWidth + 'px';
+        modeButton.style.width = (modeWidth - 2) + 'px';
+        modeButton.style.minWidth = (modeWidth - 2) + 'px';
+        innerRow.style.columnGap = '4px';
+        outerRow.style.columnGap = '4px';
+        var tailStart = -1;
+        for (var t = 2; t < outer.length; t++) {
+            if (outer[t].querySelector('.fp-button.fp-icon-btn')) {
+                tailStart = t;
+                break;
+            }
+        }
+        if (tailStart > 2 && outer.length - tailStart === 4
+            && outer.slice(2, tailStart).every(function (item) {
+                return (item.dataset.tag === 'LabelDecoration' && !item.textContent.trim())
+                    || item.classList.contains('fp-hidden-children-only');
+            }) && outer.slice(tailStart).every(function (item) {
+                return !!item.querySelector('.fp-button.fp-icon-btn');
+            })) {
+            /* Empty runtime groups and a blank stretch decoration do not get
+             * gutters of their own in the native compact bar. */
+            for (var s = 2; s < tailStart; s++) outer[s].style.display = 'none';
+            for (var a = tailStart; a < outer.length; a++) {
+                var action = outer[a];
+                var actionButton = action.querySelector('.fp-button.fp-icon-btn');
+                action.style.width = '38px';
+                action.style.minWidth = '38px';
+                action.style.flex = '0 0 38px';
+                actionButton.style.width = '36px';
+                actionButton.style.minWidth = '36px';
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+function disconnectPreviewObservers(node) {
+    if (!node) return;
+    if (node._fpResizeObserver && typeof node._fpResizeObserver.disconnect === 'function')
+        node._fpResizeObserver.disconnect();
+    var children = node.children || [];
+    for (var i = 0; i < children.length; i++) disconnectPreviewObservers(children[i]);
+}
+
+function dispose(container) {
+    if (!container) return;
+    var ctx = container._fpCtx;
+    if (ctx && ctx.root) closeAllPopups(ctx.root);
+    disconnectPreviewObservers(container);
+    var doc = container.ownerDocument || document;
+    if (container._fpPopupDismiss && doc && doc.removeEventListener)
+        doc.removeEventListener('click', container._fpPopupDismiss, true);
+    if (container._fpPopupKey && doc && doc.removeEventListener)
+        doc.removeEventListener('keydown', container._fpPopupKey);
+    container._fpPopupDismiss = null;
+    container._fpPopupKey = null;
+    container._fpCtx = null;
+}
+
 function render(model, container, options) {
     options = options || {};
-    if (container._fpCtx && container._fpCtx.root)
+    if (container._fpCtx && container._fpCtx.root) {
         closeAllPopups(container._fpCtx.root);
+        disconnectPreviewObservers(container);
+    }
     container.innerHTML = '';
-    container.className = 'fp-root fp-taxi fp-light';
+    var interface85 = isInterface85Mode(model && model.interfaceMode);
+    var profile = interface85 ? FORM_RENDER_PROFILES.ui85 : FORM_RENDER_PROFILES.taxi83;
+    var platform85 = isPlatform85Model(model);
+    var controlGallery85 = isInterface85ControlGallery(model);
+    container.className = 'fp-root fp-light ' + profile.rootClass + ' ' + (interface85
+        ? 'fp-interface-85 fp-clean85'
+        : 'fp-taxi');
+    container.dataset.renderProfile = profile.id;
+    var scale = normKey(prop(model, ['ScaleVariant']));
+    if (interface85 && /compact|компакт/.test(scale)) container.classList.add('fp-scale-compact');
+    if (interface85 && /^taxienableversion8_5$/i.test(String(model && model.configInterfaceMode || '')))
+        container.classList.add('fp-cfg-taxi-enable-85');
+    if (platform85) container.classList.add('fp-platform-85');
+    if (controlGallery85) container.classList.add('fp-control-gallery-85');
+    if (interface85CardTabsForm(model)) container.classList.add('fp85-card-tabs-form');
     var body = el('div', 'fp-body');
     body.id = 'fp-canvas';
     container.appendChild(body);
@@ -17422,6 +22507,7 @@ function render(model, container, options) {
     var items = displayItems(model);
     var ctx = {
         model: model,
+        profile: profile,
         root: body,
         onSelect: options.onSelect,
         commandTitles: commandTitles,
@@ -17431,6 +22517,7 @@ function render(model, container, options) {
         styleItems: model.styleItems || {},
         commonPictures: model.commonPictures || {}
     };
+    ctx.controlGallery85 = controlGallery85;
     if (formObjectKind(model) === 'catalog') body.classList.add('fp-form-catalog');
     container._fpCtx = ctx;
     if (!container._fpPopupDismiss) {
@@ -17449,11 +22536,12 @@ function render(model, container, options) {
         doc.addEventListener('keydown', container._fpPopupKey);
     }
     /* The managed client always keeps the 23px window-caption strip, even when
-     * a form has no visible title. ShowTitle controls the text, not the blue
-     * chrome itself (many generated forms deliberately leave that strip blank). */
+     * a form has no visible title. An explicitly authored non-auto title can
+     * still caption the window when ShowTitle hides the in-form heading. */
     var formTitle = options.windowTitle || rawTitle(model);
     var cap = el('div', 'fp-form-title');
-    if (options.windowTitle || (formTitle && !isFalse(prop(model, ['ShowTitle', 'ПоказыватьЗаголовок'])))) {
+    if (options.windowTitle || (formTitle && (!isFalse(prop(model, ['ShowTitle', 'ПоказыватьЗаголовок']))
+        || isFalse(prop(model, ['AutoTitle', 'АвтоЗаголовок']))))) {
         setFormattedText(cap, formTitle, false,
             options.windowTitle ? false : !isFalse(prop(model, ['TitleFormatted'])));
     }
@@ -17462,9 +22550,6 @@ function render(model, container, options) {
      * narrow. Only plausible dialog widths are honoured: a few forms carry a
      * number that is clearly not characters, and squeezing on that would lie. */
     var fwChars = parseInt(prop(model, ['Width', 'Ширина']), 10);
-    /* The width is on the reference char-unit ruler (Width*10+10) plus the window
-     * insets: Width=68 opens 712 px wide in the reference; the
-     * 8px browser grid (584) squeezed its table and message band. */
     if (fwChars > 0 && fwChars <= 200) body.style.maxWidth = (fwChars * REF_AUTHORED_CHAR_PX + 10 + 34) + 'px';
     var verticalScroll = String(prop(model, ['VerticalScroll', 'ВертикальнаяПолосаПрокрутки']) || '')
         .toLowerCase().replace(/[ _-]+/g, '');
@@ -17480,9 +22565,6 @@ function render(model, container, options) {
          * exactly like a UsualGroup - previously these were dropped. */
         var rootMeta = layoutMeta(model);
         applyLayout(body, rootMeta);
-        /* Form.Group=AlwaysHorizontal/Horizontal puts the root groups side by
-         * side in the reference; only an explicit Form.Group does, the
-         * default root flow stays vertical. */
         var rootHorizontal = rootMeta.orientation === 'horizontal'
             && !!normOrient(prop(model, ['Group', 'Группировка']));
         if (rootHorizontal) body.classList.add('fp-root-horizontal');
@@ -17492,6 +22574,8 @@ function render(model, container, options) {
         if (isCompactColorBand(firstContentItem))
             body.classList.add('fp-root-notice-band');
         renderPreview(items, body, ctx, model);
+        capAutoCappedFieldColumns(body);
+        markInterface85TableFilterCardWorkspace(body);
         if (rootHorizontal) {
             /* One equal grid column per root content item; the root
              * AutoCommandBar spans the whole row above them (viewer.css). */
@@ -17531,6 +22615,8 @@ function render(model, container, options) {
          * pass expand the bar back to its intrinsic command width. */
         fitRightCommandBarLanes(body);
         fitAllLeadingCaptionsBeforeTitledPagesNone(body);
+        balanceDefaultSplitterPairs(body);
+        fitSplitterPaneEditorOverhangs(body);
         /* Dev/test-only autonomous layout shadow. The hook is absent in all
          * normal hosts, cannot mutate renderer geometry, and failures remain
          * diagnostic so preview availability never depends on it. */
@@ -17564,8 +22650,27 @@ function render(model, container, options) {
             }
         }
         publishWindowScrollStart(body);
+        tolerateResidualOverflow(body);
         observeFormViewport(body);
     }
+}
+
+/* Hosts that change the browser viewport after a document is already open
+ * need an explicit completion point. ResizeObserver is only a fallback: a
+ * capture must be able to await the complete layout pass. */
+function reflow(container) {
+    if (!container) return null;
+    var ctx = container._fpCtx;
+    var body = ctx && ctx.root;
+    if (!body || !body.isConnected) return null;
+    refitSharedCompactPairCaptions(body);
+    var state = runHorizontalStrategyPass(body);
+    fitRightCommandBarLanes(body);
+    refitCommandBars(body);
+    stretchRootCommandBarFooter(body);
+    publishWindowScrollStart(body);
+    tolerateResidualOverflow(body);
+    return state;
 }
 
 function revealPopupAncestors(root, node) {
@@ -17645,9 +22750,6 @@ var PAINTED_LEAF_SELECTOR = PAINTED_LEAF_CLASSES.map(function (name) {
     return '.' + name;
 }).join(', ');
 
-/* Transient layers paint over the form by design. The DataSearch glyph of a
- * white search surface deliberately sits on the field's right border, as in
- * the reference. */
 var OVERLAP_EXEMPT_SELECTOR = '.fp-popup, .fp-popup-menu, '
     + '.fp-flattened-pages-measure, [data-fp-overlap-allowed], '
     + '.fp-search-picture-surface > .fp-control-wrap > .fp-group-bare > .fp-children'
@@ -17699,6 +22801,29 @@ function overlapPaintedRect(node, body) {
     return rect;
 }
 
+/* Clean 8.5 top-title fields use stacked caption and editor lanes. Their DOM
+ * layout rectangles can overlap because the caption row includes flex space,
+ * even when the rendered label ink, title icon and editor frame do not. Ignore
+ * only these same-owner, structurally stacked pairs; cross-owner collisions
+ * (including a group tooltip over a field's open button) remain audited. */
+function clean85TopTitleLanePair(a, b, body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85') || !a || !b) return false;
+    var ownerA = a.node.closest('[data-id]');
+    var ownerB = b.node.closest('[data-id]');
+    if (!ownerA || ownerA !== ownerB || !ownerA.classList.contains('fp-field-item-85')) return false;
+    var row = ownerA.querySelector(':scope > .fp-control-wrap.fp-field-row.fp-title-top');
+    if (!row || getComputedStyle(row).flexDirection !== 'column') return false;
+    var kinds = [a.kind, b.kind].sort().join('|');
+    if (kinds === 'fp-field-label|fp-input-wrap')
+        return row.contains(a.node) && row.contains(b.node);
+    var label = a.kind === 'fp-field-label' ? a : b.kind === 'fp-field-label' ? b : null;
+    var wrap = a.kind === 'fp-input-wrap' ? a : b.kind === 'fp-input-wrap' ? b : null;
+    var link = a.kind === 'fp-tooltip-link' ? a : b.kind === 'fp-tooltip-link' ? b : null;
+    if (!link || link.node.parentElement !== ownerA || getComputedStyle(link.node).position !== 'absolute')
+        return false;
+    if (label) return row.contains(label.node);
+    return !!wrap && row.contains(wrap.node);
+}
 /* Invariant check: pairs of visible painted leaves that cover each other by
  * more than `tolerance` px on both axes. Ancestor/descendant pairs (a button
  * inside its field) are not collisions. Returns report-friendly records keyed
@@ -17709,10 +22834,28 @@ function paintedOverlaps(container, options) {
     if (!body) return [];
     var tolerance = options && options.tolerance != null ? Number(options.tolerance) : 1;
     var nodes = body.querySelectorAll(PAINTED_LEAF_SELECTOR);
+    /* A bottom-pinned (sticky) root strip occludes the scrolled content
+     * beneath it, as the platform's pinned footer does; content under it is
+     * not painted and cannot collide with the strip's buttons. */
+    var pinned = [];
+    for (var pc = 0; pc < body.children.length; pc++) {
+        var pinnedStyle = getComputedStyle(body.children[pc]);
+        if (pinnedStyle.position === 'sticky' && pinnedStyle.bottom !== 'auto')
+            pinned.push({ node: body.children[pc], rect: body.children[pc].getBoundingClientRect() });
+    }
     var leaves = [];
     for (var i = 0; i < nodes.length; i++) {
         if (nodes[i].closest(OVERLAP_EXEMPT_SELECTOR)) continue;
         var rect = overlapPaintedRect(nodes[i], body);
+        if (!rect) continue;
+        for (var pp = 0; pp < pinned.length && rect; pp++) {
+            if (pinned[pp].node.contains(nodes[i])) continue;
+            if (rect.bottom > pinned[pp].rect.top && rect.right > pinned[pp].rect.left
+                && rect.left < pinned[pp].rect.right) {
+                rect.bottom = Math.min(rect.bottom, pinned[pp].rect.top);
+                if (rect.bottom - rect.top <= 0) rect = null;
+            }
+        }
         if (!rect) continue;
         var owner = nodes[i].closest('[data-id]');
         var ownerItem = owner && owner._fpItem;
@@ -17734,6 +22877,7 @@ function paintedOverlaps(container, options) {
         for (var k = 0; k < active.length; k++) {
             var other = active[k];
             if (other.node.contains(current.node) || current.node.contains(other.node)) continue;
+            if (clean85TopTitleLanePair(other, current, body)) continue;
             var dx = Math.min(other.rect.right, current.rect.right)
                 - Math.max(other.rect.left, current.rect.left);
             var dy = Math.min(other.rect.bottom, current.rect.bottom)
@@ -17750,6 +22894,8 @@ function paintedOverlaps(container, options) {
                 key: pair[0].id + ':' + pair[0].kind + '|' + pair[1].id + ':' + pair[1].kind,
                 a: { id: pair[0].id, kind: pair[0].kind },
                 b: { id: pair[1].id, kind: pair[1].kind },
+                aRect: pair[0].rect,
+                bRect: pair[1].rect,
                 dx: Math.round(dx * 10) / 10,
                 dy: Math.round(dy * 10) / 10,
                 area: Math.round(dx * dy)
@@ -17770,6 +22916,8 @@ root.FormPreview = {
     activeEvents: activeEvents,
     resetViewState: resetViewState,
     render: render,
+    reflow: reflow,
+    dispose: dispose,
     outline: outline,
     attributeOutline: attributeOutline,
     formHandlerIndex: formHandlerIndex,
@@ -17787,13 +22935,26 @@ root.FormPreview = {
     attributeIcon: attributeIcon,
     /* 1C type names in the Designer's spelling, shared with the object window. */
     typePresentation: typePresentation,
+    /* Property and event names in Russian, shared with the object window. */
+    propertyTitle: propertyTitle, eventTitle: eventTitle,
+    /* A common picture's Picture.zip as a data URL, for the object window. */
+    zipPictureDataUrl: zipPictureDataUrl,
     _test: {
+        rootBarImplicitMore: rootBarImplicitMore,
         horizontalRowMetrics: horizontalRowMetrics,
         fitFormViewport: fitFormViewport,
         containHorizontalTrackRows: containHorizontalTrackRows,
         layoutMeta: layoutMeta,
+        attachFormVersion: attachFormVersion,
+        formVersionAtLeast: formVersionAtLeast,
+        designerInlinePopUp: designerInlinePopUp,
+        tableVisualFlags: tableVisualFlags,
+        splitterPane: splitterPane,
+        cappedSplitterField: cappedSplitterField,
         emptyDecorationIsCompactInParent: emptyDecorationIsCompactInParent,
         pictureDecorationIconId: pictureDecorationIconId,
+        svgIntrinsicSizeFromText: svgIntrinsicSizeFromText,
+        itemLocalPictureIntrinsicSize: itemLocalPictureIntrinsicSize,
         renderablePages: renderablePages,
         markPagesTabbedShell: markPagesTabbedShell,
         isRootFlattenedPage: isRootFlattenedPage,
@@ -17812,6 +22973,13 @@ root.FormPreview = {
         spacingPx: spacingPx,
         labelMetric: labelMetric,
         responsiveGroupNeedsVertical: responsiveGroupNeedsVertical,
+        platform85NestedContainerRowFits: platform85NestedContainerRowFits,
+        isInterface85Mode: isInterface85Mode,
+        isPlatform85Model: isPlatform85Model,
+        interface85RootSplitSpec: interface85RootSplitSpec,
+        interface85LegendFooter: interface85LegendFooter,
+        searchControlPicture: searchControlPicture,
+        withColon: withColon,
         precedingCappedPageColumnWidth: precedingCappedPageColumnWidth,
         precedingThroughAlignTitleTrackWidth: precedingThroughAlignTitleTrackWidth,
         inheritPageFollowingThroughAlignTracks: inheritPageFollowingThroughAlignTracks,
@@ -17828,12 +22996,20 @@ root.FormPreview = {
         horizontalStrategyValue: horizontalStrategyValue,
         runHorizontalStrategyPass: runHorizontalStrategyPass,
         dimensionBands: dimensionBands,
+        interface85AuthoredInputWidth: interface85AuthoredInputWidth,
+        hasVisibleLayoutChild: hasVisibleLayoutChild,
         authoredControlHeightPx: authoredControlHeightPx,
+        pictureDecorationHeightPx: pictureDecorationHeightPx,
         authoredEditorPaintWidth: authoredEditorPaintWidth,
         authoredAutoMaxEditorPaintWidth: authoredAutoMaxEditorPaintWidth,
         autoMaxEditorBandWidth: autoMaxEditorBandWidth,
         isTrailingVisibleChild: isTrailingVisibleChild,
         itemHorizontalAllocationBand: itemHorizontalAllocationBand,
+        sideChoiceTrackAllocation: sideChoiceTrackAllocation,
+        sideChoiceAllocationBand: sideChoiceAllocationBand,
+        finalSideChoiceRowSizes: finalSideChoiceRowSizes,
+        allocateFinalSideChoiceTrack: allocateFinalSideChoiceTrack,
+        popupTitleAllocationBand: popupTitleAllocationBand,
         logicalSubgridAllocationBand: logicalSubgridAllocationBand,
         authoredLabelWidthEnvelopePx: authoredLabelWidthEnvelopePx,
         unboundedLabelDecorationSlack: unboundedLabelDecorationSlack,
@@ -17916,6 +23092,8 @@ root.FormPreview = {
         itemTypePresentation: itemTypePresentation,
         metaStringLengthQualifier: metaStringLengthQualifier,
         titleLocation: titleLocation,
+        controlTitleLocation: controlTitleLocation,
+        isInterface85ControlGallery: isInterface85ControlGallery,
         pagesRep: pagesRep,
         commandBarHasOnlyHyperlinks: commandBarHasOnlyHyperlinks,
         fitPageTabWidth: fitPageTabWidth,
@@ -17925,7 +23103,20 @@ root.FormPreview = {
         MIN_PAGE_TAB_PX: MIN_PAGE_TAB_PX,
         WIDE_PAGE_TAB_MIN_PX: WIDE_PAGE_TAB_MIN_PX,
         isEmptyCommandBar: isEmptyCommandBar,
+        displayItems: displayItems,
+        commandBarAllowed: commandBarAllowed,
+        interface85RootCommandBarPlacement: interface85RootCommandBarPlacement,
+        interface85RootCommandBands: interface85RootCommandBands,
+        interface85ResponsiveUncappedTableClamp: interface85ResponsiveUncappedTableClamp,
+        fitInterface85ResponsiveTableClamps: fitInterface85ResponsiveTableClamps,
         tableCommandBarVisible: tableCommandBarVisible,
+        resolveFormRenderProfile: resolveFormRenderProfile,
+        modelHasUi85Evidence: modelHasUi85Evidence,
+        textSizeClass: textSizeClass,
+        showAsCard: showAsCard,
+        autoWidthInTableMode: autoWidthInTableMode,
+        cellHyperlinkMode: cellHyperlinkMode,
+        normButtonImportance: normButtonImportance,
         groupHasFields: groupHasFields,
         isFalse: isFalse,
         isTrue: isTrue,
@@ -17939,8 +23130,9 @@ root.FormPreview = {
         booleanTumblerOptions: booleanTumblerOptions,
         tableColumns: tableColumns,
         tablePhysicalColumns: tablePhysicalColumns,
-        tableColumnNativeMinimumPx: tableColumnNativeMinimumPx,
-        columnWidthPx: columnWidthPx,
+        tableColumnNaturalPx: tableColumnNaturalPx,
+        tableColumnResizeable: tableColumnResizeable,
+        tableColumnLayout: tableColumnLayout,
         allocateTableColumnWidths: allocateTableColumnWidths,
         fitPhysicalTableColumnWidths: fitPhysicalTableColumnWidths,
         headerKids: headerKids,
@@ -17949,6 +23141,7 @@ root.FormPreview = {
         columnCaption: columnCaption,
         tableStdCommands: tableStdCommands,
         tableBarItems: tableBarItems,
+        tableHasAuthoredCreationMenu: tableHasAuthoredCreationMenu,
         tableIsList: tableIsList,
         tableIsTree: tableIsTree,
         treeExpanded: treeExpanded,
@@ -17985,6 +23178,7 @@ root.FormPreview = {
         isTumbler: isTumbler,
         normPictureSize: normPictureSize,
         absoluteColor: absoluteColor,
+        pictureTintMatchesParent: pictureTintMatchesParent,
         styleItemColor: styleItemColor,
         styleItemLookup: styleItemLookup,
         buttonColorGradient: buttonColorGradient,
@@ -18055,10 +23249,14 @@ root.FormPreview = {
         metaDateFraction: metaDateFraction,
         objectMetaCandidates: objectMetaCandidates,
         resolveButtonRep: resolveButtonRep,
+        normalizeRootFormBar: normalizeRootFormBar,
         wantsVStretch: wantsVStretch,
         marksIncomplete: marksIncomplete,
         hasButtonIcon: hasButtonIcon,
         pictureRef: pictureRef,
+        pictureDecorationSpacerWidthPx: pictureDecorationSpacerWidthPx,
+        normDisplayImportance: normDisplayImportance,
+        commandBarButtonImportance: commandBarButtonImportance,
         prop: prop,
         anchorBottomAlignedRuns: anchorBottomAlignedRuns,
         isMultilineField: isMultilineField,
@@ -18067,7 +23265,6 @@ root.FormPreview = {
         formObjectKind: formObjectKind,
         formStdCommandButtons: formStdCommandButtons,
         formCommandBar: formCommandBar,
-        displayItems: displayItems,
         stdCommandKey: stdCommandKey,
         iconIdFor: iconIdFor,
         iconIdFromRef: iconIdFromRef,
