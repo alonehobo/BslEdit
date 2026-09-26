@@ -6,6 +6,57 @@
 
 ![BSLView](guide/images/hero.png)
 
+## Установка и обновление
+
+Одна команда в PowerShell — без прав администратора, git и Node:
+
+```powershell
+irm https://raw.githubusercontent.com/alonehobo/BslEdit/main/install.ps1 | iex
+```
+
+Скрипт сам скачивает последний релиз, проверяет контрольные суммы, ставит
+BSLEdit и MCP-сервер и подключает сервер к Claude Code, Codex и Cursor.
+**Обновление — та же команда:** она заменит установку на последнюю версию.
+
+Можно просто дать агенту ссылку на репозиторий и попросить «установи» —
+инструкция для агентов в [INSTALL.md](INSTALL.md).
+
+Отдельные инструменты — на странице [Releases](https://github.com/alonehobo/BslEdit/releases):
+
+| Файл | Инструмент | Как установить |
+|---|---|---|
+| `BSLView.zip` | Плагин Total Commander | Открыть архив в Total Commander |
+| `BSLEdit.zip` | Редактор | Распаковать и запустить `BSLEdit.exe` (один файл, ничего рядом не нужно) |
+| `1c-form-viewer-vscode-*.vsix` | VS Code | Marketplace: **1C Form Viewer** или Install from VSIX |
+| `1c-form-viewer-native-*-win-x64.zip` | MCP-сервер | Распаковать и [подключить к агенту](guide/mcp.md#подключение) |
+
+Требования: Windows 10/11 и WebView2 Runtime (обычно уже установлен). MCP-серверу
+нужен Edge или Chrome.
+
+Что нового в последней версии — [Releases](https://github.com/alonehobo/BslEdit/releases).
+
+## Как это выглядит
+
+**Конфигурация как клиентское приложение** — разделы, команды и панель элементов:
+
+![Начальная страница](guide/images/Начальная%20страница.png)
+
+**Все функции** — все объекты конфигурации и расширений по видам:
+
+![Все функции](guide/images/Все%20функции.png)
+
+**Глобальный поиск** по модулям, формам и макетам конфигурации, расширений и внешних обработок:
+
+![Глобальный поиск](guide/images/Глобальный%20поиск.png)
+
+**Функциональные опции** — отключите опцию и посмотрите, что пропадёт из интерфейса:
+
+![Функциональные опции](guide/images/Функциональные%20опции.png)
+
+**Окно объекта метаданных** — реквизиты с типами, формы, макеты, модули и роли:
+
+![Окно объекта](guide/images/Окно%20объекта.png)
+
 ## Инструменты
 
 | | Что это | Кому |
@@ -60,32 +111,6 @@
 | Распаковка EPF/ERF/CF/CFE с добавлением в Git | ✓ | ✓ | — | — |
 | Правка форм агентом | — | — | через Chat | ✓ |
 | Макеты из Excel и их правка | — | — | через Chat | ✓ |
-
-## Установка
-
-MCP-сервер и BSLEdit ставятся одной командой PowerShell (без прав
-администратора, сам подключает сервер к Claude Code, Codex и Cursor):
-
-```powershell
-irm https://raw.githubusercontent.com/alonehobo/BslEdit/main/install.ps1 | iex
-```
-
-Можно просто дать агенту ссылку на репозиторий и попросить «установи» —
-инструкция для агентов в [INSTALL.md](INSTALL.md).
-
-Всё скачивается со страницы [Releases](https://github.com/alonehobo/BslEdit/releases).
-
-| Файл | Инструмент | Как установить |
-|---|---|---|
-| `BSLView.zip` | Плагин Total Commander | Открыть архив в Total Commander |
-| `BSLEdit.zip` | Редактор | Распаковать и запустить `BSLEdit.exe` (один файл, ничего рядом не нужно) |
-| `1c-form-viewer-vscode-*.vsix` | VS Code | Marketplace: **1C Form Viewer** или Install from VSIX |
-| `1c-form-viewer-native-*-win-x64.zip` | MCP-сервер | Распаковать и [подключить к агенту](guide/mcp.md#подключение) |
-
-Требования: Windows 10/11 и WebView2 Runtime (обычно уже установлен). MCP-серверу
-нужен Edge или Chrome.
-
-Что нового в последней версии — [Releases](https://github.com/alonehobo/BslEdit/releases).
 
 ## Разработка
 
