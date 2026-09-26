@@ -15,7 +15,21 @@ var sessionAnnotations = root.SessionAnnotations(host, previewPane, function (id
     var item = byId(id);
     /* Spreadsheet cells are not in the outline; they are never missing. */
     return { id: id, name: item && item.name || id, title: titleOf(item || { name: id }), missing: !item && !/^r\d+c\d+$/.test(id) };
-});
+}, { reveal: revealAnnotation });
+
+/* A click on a note or its number selects what it is about. */
+function revealAnnotation(entry) {
+    if (!current) return;
+    var id = String(entry.elementId);
+    if (byId(id)) { selectElement(id); return; }
+    var view = Providers.view(providerFor(current.format));
+    if (view.highlight) view.highlight(host, id);
+    /* A spreadsheet cell has no outline row, but it is the selection now. */
+    current.selectedId = id;
+    var node = findDom(id);
+    if (node && node.scrollIntoView) node.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    sessionAnnotations.updatePositions();
+}
 var internalMode = new URLSearchParams(window.location.search).get('internal') === '1';
 /* The native server's hidden renderer: nobody looks at this page, so the form
  * gets the whole window without the header and the element outline. */

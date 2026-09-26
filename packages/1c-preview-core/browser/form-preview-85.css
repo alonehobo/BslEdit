@@ -30,7 +30,8 @@
     color: #20252b;
     background: #fff;
 }
-.fp-clean85 .fp-body:not(:has(> .fp-item[data-tag="Pages"], .fp85-root-split, .fp-root-flattened-page)) {
+.fp-clean85 .fp-body:not(:has(> .fp-item[data-tag="Pages"], .fp85-root-split, .fp-root-flattened-page)),
+.fp-clean85 .fp-body.fp85-editors-before-page:not(:has(> .fp-item[data-tag="Pages"]:not(.fp-root-flattened-page), .fp85-root-split)) {
     --fp-page-padding-x: 3px;
 }
 .fp-clean85 .fp-body.fp-root-content-top-inset {
@@ -54,7 +55,7 @@
     min-width: 0;
 }
 .fp-clean85 .fp-editor-row-85 > .fp-input-wrap.fp-input-85 {
-    flex: 1 1 auto;
+    flex: 1 1 0 !important;
     width: auto !important;
     min-width: 0 !important;
     max-width: none !important;
@@ -67,6 +68,12 @@
     flex: 0 0 auto;
     align-items: center;
     gap: 8px;
+}
+.fp-clean85 .fp-editor-actions-85 > .fp-spin-down + .fp-spin-up {
+    margin-left: -4px;
+}
+.fp-clean85 .fp-editor-actions-85 > .fp-spin-up ~ .fp-input-btn-open-85 {
+    margin-left: 4px;
 }
 .fp-clean85 .fp-editor-actions-85 > .fp-input-btn,
 .fp-clean85 .fp-editor-actions-85 > .fp-spin-up,
@@ -554,6 +561,12 @@
      * horizontal group it must not become the flex basis and cap the editor's
      * authored width. */
     flex: 0 1 auto !important;
+}
+.fp-clean85 .fp-pages-active-panel:has(> .fp-field-item-85.fp-hstretch:not([data-fp85-default-width])) {
+    width: 100%; max-width: none; align-self: stretch;
+}
+.fp-clean85 .fp-children-horizontal > .fp-field-item-85.fp-hstretch:not([data-fp85-default-width]):not([data-fp-authored-width-present]):has(> .fp-field-85.fp-title-top) {
+    flex-grow: 1 !important;
 }
 .fp-clean85 .fp-children-horizontal > .fp-field-item-85.fp-field-wide-85[data-fp-authored-width-present="1"]
     > .fp-control-wrap.fp-field-row > .fp-input-wrap.fp-input-85 {
@@ -1854,7 +1867,9 @@
     flex: 0 0 52px !important;
 }
 .fp-clean85 .fp-body.fp-form-catalog:has(> .fp-item.fp-root-commandbar-bottom)
-    > .fp-item:not(.fp-root-commandbar-top):not(.fp-root-commandbar-bottom) {
+    > .fp-item.fp-root-commandbar-top + .fp-item:not(.fp-root-commandbar-bottom):has(+ .fp-item.fp-root-commandbar-bottom),
+.fp-clean85 .fp-body.fp-form-catalog:has(> .fp-item.fp-root-commandbar-bottom)
+    > .fp-item:first-child:not(.fp-root-commandbar-top):not(.fp-root-commandbar-bottom):has(+ .fp-item.fp-root-commandbar-bottom) {
     flex: 1 1 0 !important;
     min-height: 0 !important;
     overflow: auto !important;
@@ -2534,7 +2549,7 @@
 /* Some managed pages expose a generated one-button AutoCommandBar alongside
  * their authored command group. In the clean client the authored group is the
  * visible toolbar; keep the generated row out of the layout. */
-.fp-clean85 .fp-item.fp-root-commandbar-top:has(+ .fp-item.fp-color-surface) {
+.fp-clean85 .fp-item.fp-root-commandbar-top:has(+ .fp-item.fp-color-surface):has(.fp-commandbar > .fp-bar-item:not(.fp-more-item)) {
     flex: 0 0 0 !important;
     width: 0 !important;
     min-width: 0 !important;
@@ -2701,6 +2716,12 @@
     font-weight: 500;
     vertical-align: middle;
     white-space: nowrap;
+    /* A column name never paints over the next column. */
+    overflow: hidden;
+}
+.fp-clean85.fp-scale-compact .fp-table-auto-insert-empty-row tbody td.fp-table-empty-body {
+    font-size: 13px;
+    line-height: 16px;
 }
 .fp-clean85 .fp-table-auto-insert-empty-row tbody td.fp-table-row-selector-empty {
     width: 44px;
@@ -2863,10 +2884,12 @@
 .fp-clean85 .fp-commandbar .fp-button-85 {
     color: var(--fp-85-text);
 }
-/* The clean client wraps long below-field explanations at a readable line
- * length instead of letting them run across the entire form. */
 .fp-clean85 .fp-item.fp-tooltip-side-v > .fp-tooltip-text {
     max-width: 420px;
+}
+.fp-clean85 .fp-item.fp-field-item-85.fp-tooltip-side-v:has(> .fp-field-85.fp-title-top)
+    > .fp-tooltip-text.fp-tooltip-unbounded {
+    max-width: 100%;
 }
 
 /* Spin buttons: flat #e9e9e9 squares with #999 chevrons. */
@@ -4464,7 +4487,7 @@
 
 /* A list page with a filter card gives the table the flexible track and keeps
  * the card at the clean-client width, with wide table columns scrolling inside. */
-.fp-clean85 .fp-body.fp85-table-filter-card-workspace {
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace:has(> .fp-item.fp-pages-tabs .fp-pages-outer.TabsOnTop .fp-item[data-fp85-table-filter-pair="1"]) {
     width: calc(100vw - 24px) !important;
     min-width: 0 !important;
     max-width: calc(100vw - 24px) !important;
@@ -4499,54 +4522,73 @@
     min-width: 0 !important;
     max-width: 100% !important;
 }
-.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-pages-outer.TabsOnTop
-    .fp-item.fp-container-horizontal:has(.fp-table-widget):has(.fp-ui85-card) {
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-item[data-fp85-table-filter-pair="1"] {
     width: 100% !important;
     min-width: 0 !important;
     max-width: 100% !important;
 }
-.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-pages-outer.TabsOnTop
-    .fp-item.fp-container-horizontal:has(.fp-table-widget):has(.fp-ui85-card)
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-item[data-fp85-table-filter-pair="1"]
     > .fp-control-wrap,
-.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-pages-outer.TabsOnTop
-    .fp-item.fp-container-horizontal:has(.fp-table-widget):has(.fp-ui85-card)
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-item[data-fp85-table-filter-pair="1"]
     > .fp-control-wrap > .fp-group-bare {
     width: 100% !important;
     min-width: 0 !important;
     max-width: 100% !important;
 }
-.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-pages-outer.TabsOnTop
-    .fp-item.fp-container-horizontal:has(.fp-table-widget):has(.fp-ui85-card)
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-item[data-fp85-table-filter-pair="1"]
     > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal {
     display: grid !important;
-    grid-template-columns: minmax(0, 1fr) 417px !important;
+    grid-template-columns: minmax(0, 1fr) var(--fp85-filter-card-width, 417px) !important;
     column-gap: 16px !important;
     width: 100% !important;
     min-width: 0 !important;
     max-width: none !important;
 }
-.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-pages-outer.TabsOnTop
-    .fp-item.fp-container-horizontal:has(.fp-table-widget):has(.fp-ui85-card)
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-item[data-fp85-table-filter-pair="1"]
     > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-item:first-child {
     width: 100% !important;
     min-width: 0 !important;
     max-width: none !important;
     flex: 0 1 auto !important;
 }
-.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-pages-outer.TabsOnTop
-    .fp-item.fp-container-horizontal:has(.fp-table-widget):has(.fp-ui85-card)
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-item[data-fp85-table-filter-pair="1"]
     > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-item.fp-ui85-card {
-    width: 417px !important;
-    min-width: 417px !important;
-    max-width: 417px !important;
-    flex: 0 0 417px !important;
+    width: var(--fp85-filter-card-width, 417px) !important;
+    min-width: var(--fp85-filter-card-width, 417px) !important;
+    max-width: var(--fp85-filter-card-width, 417px) !important;
+    flex: 0 0 var(--fp85-filter-card-width, 417px) !important;
+    box-sizing: border-box;
+    border: 1px solid var(--fp-85-muted-border);
+    border-radius: 16px;
+}
+/* The same pair as the root columns of a horizontal Form. */
+.fp-clean85 .fp-body.fp-root-horizontal[data-fp85-table-filter-pair="1"] {
+    grid-template-columns: minmax(0, 1fr) var(--fp85-filter-card-width) !important;
+    column-gap: 16px !important;
+}
+.fp-clean85 .fp-body.fp-root-horizontal[data-fp85-table-filter-pair="1"] > .fp-item {
+    min-width: 0 !important;
+}
+.fp-clean85 .fp-body.fp-root-horizontal[data-fp85-table-filter-pair="1"] > .fp-item.fp-ui85-card {
     box-sizing: border-box;
     border: 1px solid var(--fp-85-muted-border);
     border-radius: 16px;
 }
 .fp-clean85 .fp-body.fp85-table-filter-card-workspace
-    .fp-ui85-card > .fp-control-wrap > .fp-group-bare > .fp-children-vertical {
-    transform: translateX(20px);
+    .fp-ui85-card > .fp-control-wrap > :is(.fp-group-bare, .fp-group-block) > .fp-children-vertical {
+    /* An inset, not a transform: a translated column overflows the card in
+     * scrollWidth and the canvas pass then widens the whole form. */
+    box-sizing: border-box;
+    padding-left: 20px;
+}
+/* A separated (WeakSeparation) filter card paints the same insets as a bare one. */
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace
+    .fp-ui85-card:has(> .fp-control-wrap > .fp-group-block) {
+    padding: 0 !important;
+}
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace
+    .fp-ui85-card > .fp-control-wrap > .fp-group-block {
+    padding: 0 !important; border: 0 !important; margin: 0 !important;
 }
 .fp-clean85 .fp-body.fp85-table-filter-card-workspace
     .fp-ui85-card .fp-pages-outer.TabsOnTop {
@@ -4554,11 +4596,45 @@
 }
 .fp-clean85 .fp-body.fp85-table-filter-card-workspace
     .fp-ui85-card .fp-field-item-85 {
-    width: calc(100% - 46px) !important;
+    width: calc(100% - 26px) !important;
     min-width: 0 !important;
-    max-width: 367px !important;
+    max-width: calc(var(--fp85-filter-card-width, 417px) - 50px) !important;
     flex: 0 1 auto !important;
     transform: translate(-7px, 4px);
+}
+/* A lone editor of a HorizontalIfPossible row in the filter card is one more
+ * card row: the full editor width and the card's own 16px cadence, not the
+ * shrink-to-fit row with its inline field margins. */
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-ui85-card
+    .fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-field-item-85:only-child),
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-ui85-card
+    .fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-field-item-85:only-child)
+    > .fp-control-wrap,
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-ui85-card
+    .fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-field-item-85:only-child)
+    > .fp-control-wrap > .fp-group-bare,
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-ui85-card
+    .fp-item.fp-container-horizontal > .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal:has(> .fp-field-item-85:only-child) {
+    width: 100% !important;
+    max-width: none !important;
+}
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-ui85-card
+    .fp-item.fp-container-horizontal > .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal > .fp-field-item-85:only-child {
+    margin: 0 !important;
+}
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-ui85-card
+    .fp-item.fp-container-horizontal > .fp-control-wrap > .fp-group-bare
+    > .fp-children-horizontal > .fp-field-item-85:only-child > .fp-field-row {
+    align-items: flex-start;
+}
+/* An untitled separated group inside the card paints no line in the clean
+ * client, so it adds no inset to the card's row cadence either. */
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-ui85-card
+    .fp-item.fp-container:not(.fp-bare):has(> .fp-control-wrap > .fp-group-block > .fp-children:first-child) {
+    padding-top: 0 !important; padding-bottom: 0 !important;
+    border-top-width: 0 !important; border-bottom-width: 0 !important;
 }
 .fp-clean85 .fp-body.fp85-table-filter-card-workspace
     .fp-ui85-card .fp-item[data-tag="CheckBoxField"]:has(> .fp-check-switcher) {
@@ -4748,7 +4824,7 @@
     border-left-width: 0; border-right-width: 0;
 }
 
-.fp-clean85:not(.fp-control-gallery-85) .fp-body.fp-root-native-inset:has(> .fp-item.fp-pages-tabbed:first-child):not(:has(.fp-page-tab-icon)) > .fp-item.fp-pages-tabbed {
+.fp-clean85:not(.fp-control-gallery-85) .fp-body.fp-root-native-inset:not(.fp-form-authored-width):has(> .fp-item.fp-pages-tabbed:first-child):not(:has(.fp-page-tab-icon)) > .fp-item.fp-pages-tabbed {
     width: fit-content !important; max-width: none !important; margin-left: 0 !important;
     align-self: flex-start !important;
 }
@@ -4758,7 +4834,7 @@
 .fp-clean85:not(.fp-control-gallery-85) .fp-body.fp-root-native-inset:has(> .fp-item.fp-pages-tabbed:first-child):not(:has(.fp-page-tab-icon)) > .fp-item.fp-pages-tabbed:has(~ .fp-item.fp-pages-tabbed) {
     flex: 0 0 auto !important; min-height: 0 !important;
 }
-.fp-clean85:not(.fp-control-gallery-85) .fp-body.fp-root-native-inset:has(> .fp-item.fp-pages-tabbed:first-child):not(:has(.fp-page-tab-icon)) > .fp-item.fp-pages-tabbed .fp-pages-outer.fp-pages-85 > .fp-pages-panel-wrap > .fp-pages-active-panel {
+.fp-clean85:not(.fp-control-gallery-85) .fp-body.fp-root-native-inset:not(.fp-form-authored-width):has(> .fp-item.fp-pages-tabbed:first-child):not(:has(.fp-page-tab-icon)) > .fp-item.fp-pages-tabbed .fp-pages-outer.fp-pages-85 > .fp-pages-panel-wrap > .fp-pages-active-panel {
     width: var(--fp-85-control-width); max-width: var(--fp-85-control-width); padding: 0;
 }
 .fp-clean85:not(.fp-control-gallery-85) .fp-body.fp-root-native-inset:has(> .fp-item.fp-pages-tabbed:first-child):not(:has(.fp-page-tab-icon)) > .fp-item.fp-pages-tabbed .fp-pages-outer.fp-pages-85.TabsOnLeftHorizontal:not(:has(.fp-page-tab-icon)) {
@@ -4831,6 +4907,19 @@
 .fp-clean85 .fp85-through-cell .fp-input-wrap.fp-input-85 {
     width: 100% !important; min-width: 0 !important; max-width: none !important; flex: 1 1 auto;
 }
+/* An editor of a fixed-Width group fills the group (form lab: Width 10 and 60
+ * editors both paint the group width). */
+.fp-clean85 .fp85-fixed-cell { border-right-width: 0 !important; }
+.fp-clean85 .fp85-fixed-cell > .fp-control-wrap { width: 100%; max-width: none; }
+.fp-clean85 .fp85-fixed-cell .fp-input-wrap.fp-input-85 {
+    width: 100% !important; min-width: 0 !important; max-width: none !important; flex: 1 1 auto;
+}
+.fp-clean85 .fp85-through-cell.fp-autonumber-85 .fp-input-wrap.fp-input-85 {
+    width: calc(100% - 40px) !important; flex: 0 0 auto;
+}
+.fp-clean85 .fp85-through-cell.fp-autonumber-85 > .fp-field-row > .fp-input-wrap::after {
+    left: calc(100% + 16px);
+}
 .fp-clean85:not(.fp-control-gallery-85) .fp-body[data-fp85-through-columns] > .fp-item[data-tag="UsualGroup"]
     .fp-children-vertical > .fp-field-item-85 + .fp-field-item-85 {
     margin-top: 7px;
@@ -4845,6 +4934,10 @@
 }
 .fp-clean85:not(.fp-control-gallery-85) .fp-body[data-fp85-through-columns] > .fp-item[data-tag="UsualGroup"] + .fp85-through-row:not(:has(.fp85-through-title)) {
     margin-top: 1px;
+}
+.fp-clean85:not(.fp-control-gallery-85) .fp-body[data-fp85-through-columns] > .fp85-through-row.fp-bare.fp-item[data-tag="UsualGroup"] + .fp85-through-row.fp-bare,
+.fp-clean85:not(.fp-control-gallery-85) .fp-body[data-fp85-through-columns] > .fp85-through-row.fp-bare + .fp-field-item-85:has(> .fp-field-85.fp-title-top) {
+    margin-top: 7px;
 }
 /* TitleHeight>1 grows the field band by its caption rows. */
 .fp-clean85 .fp-body .fp-field-item-85.fp-title-height-85.fp-title-height-85:has(> .fp-field-85.fp-title-top) {
@@ -5238,7 +5331,16 @@
     width: min(calc(100vw - 4px), 100%) !important;
     max-width: min(calc(100vw - 4px), 100%) !important;
 }
-.fp-clean85.fp-scale-compact .fp-pages-tablist-85-more > .fp-pages-tab:not(.fp-page-tab-more-85):not(.fp-page-tab-overflow-85) {
+.fp-clean85.fp-scale-compact .fp-pages-tablist-85-more > .fp-pages-tab:not(.fp-page-tab-more-85):not(.fp-page-tab-overflow-85),
+.fp-clean85.fp-scale-compact .fp-pages-tablist-85-more.fp-pages-tablist-85-all > .fp-pages-tab.fp-page-tab-overflow-85 {
+    width: auto !important;
+    min-width: 0 !important;
+    flex: 0 0 auto !important;
+    font-size: 13px !important;
+    padding-left: 9px !important;
+    padding-right: 9px !important;
+}
+.fp-clean85.fp-scale-compact .fp-pages-outer.TabsOnTop > .fp-pages-tablist:not(.fp-pages-tablist-85-more) > .fp-pages-tab {
     width: auto !important;
     min-width: 0 !important;
     flex: 0 0 auto !important;
@@ -5541,6 +5643,31 @@
     column-gap: 14px !important;
 }
 
+.fp-clean85 .fp-body.fp-mockup.fp-root-native-inset:has(> .fp-item.fp-root-flattened-page.fp-pages-none:first-child) {
+    padding-left: 4px;
+    padding-top: 5px;
+}
+.fp-clean85 .fp-body > .fp-item.fp-root-flattened-page.fp-pages-none:first-child
+    > .fp-control-wrap > .fp-group-block > .fp-children-vertical {
+    flex: 1 1 auto;
+}
+/* Such a wizard's bottom command bar sits on the window's bottom edge. */
+.fp-clean85 .fp-body.fp-root-native-inset:not(.fp-form-catalog):has(> .fp-item.fp-root-flattened-page.fp-pages-none:first-child)
+    > .fp-item.fp-root-commandbar-bottom:last-child {
+    margin-top: auto !important;
+    margin-bottom: -15px !important;
+}
+
+.fp-clean85 .fp-item.fp-tooltip-bg.fp-bare.fp-container:not(.fp-ui85-card) {
+    padding: 0 !important;
+    border-radius: 16px;
+}
+.fp-clean85 .fp-item.fp-tooltip-bg.fp-bare.fp-container:not(.fp-ui85-card)
+    > .fp-control-wrap > .fp-group-bare {
+    padding: 16px !important;
+    box-sizing: border-box;
+}
+
 .fp-clean85 .fp-item.fp-backcolor .fp-item.fp-backcolor.fp-bare:not(.fp-ui85-card)
     > .fp-control-wrap > .fp-group-bare {
     padding: 16px !important;
@@ -5569,9 +5696,18 @@
 .fp-clean85 .fp-body .fp-item.fp-commandbar-item-85:not(.fp-root-commandbar-item-85)
     > .fp-control-wrap > .fp-commandbar:has(.fp-bar-hyperlink-85),
 .fp-clean85 .fp-body .fp-item.fp-commandbar-item-85.fp-commandbar-top-85
-    > .fp-control-wrap > .fp-commandbar {
+    > .fp-control-wrap > .fp-commandbar,
+.fp-clean85 .fp-pages-active-panel .fp-item.fp-commandbar-item-85:not(.fp-root-commandbar-item-85):not([data-appearance-mode])
+    > .fp-control-wrap > .fp-commandbar:not(:empty) {
     min-height: 40px !important;
     height: auto !important;
+    margin-bottom: 0 !important;
+}
+
+.fp-clean85 .fp-body .fp-item.fp-commandbar-item-85:not(.fp-root-commandbar-item-85)
+    > .fp-control-wrap > .fp-commandbar:empty {
+    min-height: 38px !important;
+    height: 38px !important;
     margin-bottom: 0 !important;
 }
 
@@ -5768,8 +5904,8 @@
 }
 .fp-clean85 .fp-body .fp-item.fp-commandbar-item-85:not(.fp-root-commandbar-item-85):not([data-appearance-mode])
     > .fp-control-wrap > .fp-commandbar:not(:has(.fp-bar-hyperlink-85))
-    > .fp-item:has(> .fp-control-wrap > .fp-button.fp-button-85:not(.fp-icon-btn):not(.fp-popup):not(.fp-button-default):not(.fp-button-supplementary))
-    + .fp-item:has(> .fp-control-wrap > .fp-button.fp-button-85:not(.fp-icon-btn):not(.fp-popup):not(.fp-button-default):not(.fp-button-supplementary)) {
+    > .fp-item:has(> .fp-control-wrap > .fp-button.fp-button-85:not(.fp-icon-btn):not(.fp-button-default):not(.fp-button-supplementary))
+    + .fp-item:has(> .fp-control-wrap > .fp-button.fp-button-85:not(.fp-icon-btn):not(.fp-button-default):not(.fp-button-supplementary)) {
     margin-left: 6px !important;
 }
 .fp-clean85 .fp-label-decoration.fp-label-hard-break-85 {
@@ -5882,6 +6018,18 @@
     margin-left: 0;
     margin-right: 0;
 }
+.fp-clean85:not(.fp-scale-compact) .fp-field-row.fp-has-open-lane-85:not(.fp-title-top):not(.fp-title-bottom) > .fp-input-wrap.fp-input-85 {
+    max-width: calc(100% - 40px);
+}
+.fp-clean85:not(.fp-scale-compact) .fp-field-row.fp-has-open-lane-85:not(.fp-title-top):not(.fp-title-bottom) > .fp-open-lane-85 {
+    margin-left: 14px;
+    margin-right: 6px;
+}
+.fp-clean85:not(.fp-scale-compact) .fp-field-row.fp-has-open-lane-85:is(.fp-title-top, .fp-title-bottom) {
+    column-gap: 14px;
+    padding-right: 6px;
+    box-sizing: border-box;
+}
 /* Once the open button has its lane, the buttons left in the frame stay in
  * the frame's flow (a last-child rule used to lift the open button). */
 .fp-clean85 .fp-field-row.fp-has-open-lane-85 > .fp-input-wrap.fp-input-85 > .fp-input-btn {
@@ -5898,15 +6046,6 @@
 }
 .fp-clean85 .fp-pages-active-panel > .fp-field-wide-85 > .fp-field-row.fp-has-open-lane-85 > .fp-input-wrap.fp-input-85 {
     max-width: none !important;
-}
-
-.fp-clean85.fp-scale-compact .fp-pages-active-panel .fp-children-vertical
-    > .fp-item:is(
-        [data-tag="InputField"]:not(:has(textarea)):has(> .fp-field-row.fp-title-left),
-        [data-tag="UsualGroup"]:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal
-            > .fp-item[data-tag="InputField"]:not(.fp-multiline-floor) > .fp-field-row.fp-title-left))
-    + .fp-item:not([data-tag="InputField"]):not(:has(.fp-item[data-tag="InputField"])) {
-    margin-top: 19px !important;
 }
 
 .fp-clean85 .fp-children.fp-children-horizontal > .fp-item.fp-native-label-decoration
@@ -5952,7 +6091,8 @@
 
 .fp-clean85 .fp-page-wide-workspace-85 .fp-ui85-card .fp-item.fp-sized-width
     > .fp-control-wrap > .fp-group-bare > .fp-children-vertical
-    > .fp-item:not([data-tag="InputField"]):not(:has(.fp-field-item-85)):not(:first-child) {
+    > .fp-item:is([data-tag="InputField"], :has(.fp-field-item-85))
+    + .fp-item:not([data-tag="InputField"]):not(:has(.fp-field-item-85)) {
     transform: translateY(18px);
 }
 .fp-clean85 .fp-page-wide-workspace-85 .fp-ui85-card
@@ -6104,4 +6244,269 @@
     color: #007aff !important;
     background: transparent !important;
     box-shadow: none !important;
+}
+
+.fp-clean85:not(.fp-scale-compact) :is(.fp-body, .fp-children-vertical) > .fp-field-item-85[data-fp85-default-width="1"]:has(> .fp-field-85:is(.fp-title-top, .fp-title-bottom, .fp-title-none)) {
+    /* 451px frame + the item's 1px side borders + the frame's 1px end margin. */
+    max-width: 454px !important;
+}
+.fp-clean85:not(.fp-scale-compact) :is(.fp-body, .fp-children-vertical) > .fp-field-item-85[data-fp85-default-width="1"]
+    > .fp-field-row:not(.fp-has-open-lane-85):not(.fp-multiline) > .fp-input-wrap.fp-input-85 {
+    max-width: none !important;
+    flex: 1 1 auto;
+}
+.fp-clean85:not(.fp-scale-compact) .fp-pages-active-panel:has(> .fp-field-item-85.fp-hstretch:not([data-fp85-default-width])) .fp-children-horizontal:not(:has(> .fp-item:not(.fp-field-item-85[data-fp85-default-width="1"]))) > .fp-field-item-85[data-fp85-default-width="1"]:has(> .fp-field-85.fp-title-top) {
+    flex: 0 1 454px !important;
+    width: 454px !important;
+    max-width: 454px !important;
+}
+.fp-clean85:not(.fp-scale-compact) .fp-pages-active-panel:has(> .fp-field-item-85.fp-hstretch:not([data-fp85-default-width])) .fp-children-horizontal:not(:has(> .fp-item:not(.fp-field-item-85[data-fp85-default-width="1"]))) > .fp-field-item-85[data-fp85-default-width="1"]
+    > .fp-field-row:not(.fp-has-open-lane-85):not(.fp-multiline) > .fp-input-wrap.fp-input-85 {
+    max-width: none !important;
+    flex: 1 1 auto;
+}
+.fp-clean85:not(.fp-control-gallery-85):not(.fp-scale-compact) .fp-body:not([data-fp85-through-columns])
+    .fp-item[data-tag="UsualGroup"]:not(.fp-ui85-card) > .fp-control-wrap > :is(.fp-group-bare, .fp-group-block)
+    > .fp-children-vertical:not(.fp-pages-active-panel *):not(.fp-ui85-card *):has(
+        > .fp-field-item-85 > .fp-field-85.fp-title-top) {
+    row-gap: 16px;
+}
+.fp-clean85:not(.fp-control-gallery-85):not(.fp-scale-compact) .fp-body:not([data-fp85-through-columns])
+    .fp-item[data-tag="UsualGroup"].fp-bare:not(.fp-ui85-card) > .fp-control-wrap > .fp-group-bare
+    > .fp-children-vertical[data-fp-vertical-spacing-mode=""]:not(.fp-pages-active-panel *):not(.fp-ui85-card *):has(
+        > .fp-field-item-85:first-child > .fp-field-85.fp-title-top):has(
+        > .fp-field-item-85:nth-child(2):last-child > .fp-field-85.fp-title-top) {
+    row-gap: 16px !important;
+}
+
+.fp-clean85 .fp-field-item-85.fp-field-tooltip-85:has(> .fp-tooltip-bottom:not(.fp-tooltip-hyperlink)):not(:has(textarea)):not(.fp-pages-active-panel *) {
+    height: auto !important; max-height: none !important;
+    min-height: var(--fp-85-field-band) !important; flex: 0 0 auto !important;
+}
+.fp-clean85 .fp-field-item-85.fp-field-tooltip-85:has(> .fp-tooltip-bottom:not(.fp-tooltip-hyperlink)):not(:has(textarea)):not(.fp-pages-active-panel *) > .fp-field-row {
+    height: auto !important; max-height: none !important; flex: 0 0 auto !important;
+}
+.fp-clean85:not(.fp-scale-compact) .fp-children-horizontal > .fp-field-item-85:only-child:has(> .fp-field-85.fp-title-none):has(textarea) {
+    height: auto !important; min-height: 0 !important; max-height: none !important;
+    margin-top: 0 !important; margin-bottom: 0 !important;
+}
+/* A stretching group of the filter card never shrinks below its content:
+ * stacked under the list at a narrow width, its «Свернуть» row otherwise
+ * collapses onto the buttons above it. */
+.fp-clean85 .fp-body.fp85-table-filter-card-workspace .fp-ui85-card .fp-item.fp-container.fp-vstretch {
+    min-height: min-content !important;
+}
+
+.fp-clean85 .fp-button.fp-button-85.fp-picture-text-btn > .fp-picture-template-85 {
+    width: 24px;
+    height: 24px;
+}
+.fp-clean85 .fp-button.fp-button-85.fp-picture-text-btn:has(> .fp-picture-template-85) {
+    column-gap: 8px;
+}
+
+.fp-clean85 .fp-pages-active-panel .fp-field-item-85.fp-no-hstretch[style*="--fp-authored-width-chars"]
+    > .fp-field-row > .fp-input-wrap.fp-input-85 {
+    flex: 0 0 auto !important;
+    width: var(--fp-authored-normal-width) !important;
+    min-width: 0 !important;
+    max-width: none !important;
+}
+.fp-clean85.fp-scale-compact .fp-pages-active-panel .fp-field-item-85.fp-no-hstretch[style*="--fp-authored-width-chars"]
+    > .fp-field-row > .fp-input-wrap.fp-input-85 {
+    width: calc(var(--fp-authored-normal-width) * 0.9) !important;
+}
+
+.fp-clean85 .fp-pages-active-panel .fp-check-row:not(.fp-title-top):not(.fp-title-bottom) {
+    gap: 8px;
+}
+.fp-clean85:not(.fp-scale-compact) .fp-body > .fp-item.fp-root-commandbar-top + .fp-item[data-tag="UsualGroup"]
+    > .fp-control-wrap > .fp-group-bare > .fp-children-vertical > .fp-field-item-85:has(> .fp-field-85.fp-title-top) {
+    padding-top: 1px; border-top-width: 1px;
+}
+.fp-clean85:not(.fp-control-gallery-85):not(.fp-scale-compact) .fp-body:not([data-fp85-through-columns])
+    .fp-children-vertical:not(.fp-pages-active-panel *):not(.fp-ui85-card *)
+    > .fp-item.fp-container-vertical:has(> .fp-control-wrap > .fp-group-bare > .fp-children-vertical > .fp-field-item-85 > .fp-field-85.fp-title-top)
+    + .fp-item.fp-container-horizontal:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-item[data-tag="CheckBoxField"]:first-child) {
+    margin-top: 13px !important; /* over the cadence pass's inline 6px: 3px gap + 13px */
+}
+.fp-clean85 .fp-body .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    > .fp-control-wrap > .fp-commandbar > .fp-item.fp-bar-item.fp-container
+    > .fp-control-wrap > .fp-buttongroup > .fp-item + .fp-item {
+    margin-left: 8px;
+}
+.fp-clean85 .fp-body .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    > .fp-control-wrap > .fp-commandbar > .fp-item.fp-bar-item.fp-container
+    + .fp-item.fp-bar-item.fp-container {
+    position: relative;
+    margin-left: 14px;
+}
+.fp-clean85 .fp-body .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    > .fp-control-wrap > .fp-commandbar > .fp-item.fp-bar-item.fp-container
+    + .fp-item.fp-bar-item.fp-container::before {
+    content: '';
+    position: absolute;
+    left: -11px;
+    top: 8px;
+    bottom: 8px;
+    width: 1px;
+    background: #dedede;
+}
+.fp-clean85 .fp-body .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    > .fp-control-wrap > .fp-commandbar > .fp-item.fp-bar-item.fp-container
+    > .fp-control-wrap > .fp-buttongroup > .fp-item
+    .fp-button.fp-button-85:not(.fp-icon-btn):not(.fp-popup):not(.fp-button-default):not(.fp-button-hyperlink) {
+    padding-left: 12.5px !important;
+    padding-right: 12.5px !important;
+}
+.fp-clean85 .fp-body > .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85) {
+    padding-top: 0 !important;
+    margin-top: -1px;
+}
+.fp-clean85 .fp-body > .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    > .fp-control-wrap > .fp-commandbar {
+    margin-left: -2px;
+}
+.fp-clean85 .fp-body .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    > .fp-control-wrap > .fp-commandbar > .fp-item.fp-bar-item.fp-container
+    > .fp-control-wrap > .fp-buttongroup > .fp-item
+    .fp-button.fp-button-85.fp-button-default.fp-picture-text-btn {
+    padding-left: 11.5px !important;
+    padding-right: 11.5px !important;
+}
+.fp-clean85 .fp-body .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    .fp-button.fp-button-85.fp-picture-text-btn:not(.fp-button-default) {
+    column-gap: 9px;
+    padding-left: 12px !important;
+    padding-right: 12.5px !important;
+}
+.fp-clean85 .fp-body .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    .fp-button.fp-button-85.fp-picture-text-btn:not(.fp-button-default) > .fp-btn-icon:first-child {
+    margin-left: 4px;
+    margin-right: 4px;
+}
+.fp-clean85 .fp-body > .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85)
+    > .fp-control-wrap > .fp-commandbar > .fp-item.fp-bar-item.fp-container:first-child {
+    margin-left: -1px;
+}
+.fp-clean85 .fp-body > .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85):not([data-appearance-mode])
+    > .fp-control-wrap > .fp-commandbar > .fp-item.fp-bar-item:has(> .fp-control-wrap > .fp-button.fp-button-85:not(.fp-icon-btn):not(.fp-button-default):not(.fp-button-supplementary))
+    + .fp-item.fp-bar-item:has(> .fp-control-wrap > .fp-button.fp-button-85:not(.fp-icon-btn):not(.fp-button-default):not(.fp-button-supplementary)) {
+    margin-left: 8px !important;
+}
+
+.fp-clean85:not(.fp-control-gallery-85) .fp-body.fp-form-authored-width > .fp-item.fp-pages-tabbed
+    > .fp-control-wrap > .fp-group-block > .fp-pages-outer.fp-pages-85 > .fp-pages-panel-wrap > .fp-pages-active-panel {
+    width: 100%; max-width: none; align-self: stretch;
+}
+.fp-clean85 .fp-root-commandbar-dialog-top > .fp-control-wrap > .fp-commandbar .fp-button-85.fp-button-default {
+    background: transparent !important; color: #20252b; font-weight: 400;
+}
+
+.fp-clean85:not(.fp-control-gallery-85) .fp-body > .fp-item[data-tag="TrackBarField"]:has(> .fp-trackbar-85) {
+    height: auto; max-height: none; align-self: stretch; width: auto; max-width: none;
+}
+.fp-clean85 .fp-trackbar-85 { width: 100%; box-sizing: border-box; }
+.fp-clean85 .fp-trackbar-85, .fp-clean85 .fp-calendar-85 { display: flex; flex-direction: column; align-items: stretch; }
+.fp-clean85 .fp-trackbar-85 > .fp-field-label,
+.fp-clean85 .fp-calendar-85 > .fp-field-label { font-size: 15px; line-height: 19px; }
+.fp-clean85 .fp-trackbar-85-bar { position: relative; height: 32px; margin: 1px 12px 15px 2px; }
+.fp-clean85 .fp-trackbar-85-track {
+    position: absolute; left: 0; right: 0; top: 10px; height: 4px; border-radius: 2px; background: #dbdbdb;
+}
+.fp-clean85 .fp-trackbar-85-knob {
+    position: absolute; left: 0; top: 0; width: 24px; height: 24px; box-sizing: border-box;
+    border: 1px solid #9e9e9e; border-radius: 50%; background: #fff radial-gradient(circle, #278bf9 0 6px, transparent 6.5px);
+}
+.fp-clean85 .fp-trackbar-85-marks { position: absolute; left: 12px; right: 2px; top: 28px; height: 4px; }
+.fp-clean85 .fp-trackbar-85-mark {
+    position: absolute; top: 0; width: 2px; height: 2px; margin-left: -1px; background: #c7c7c7;
+}
+.fp-clean85 .fp-trackbar-85-mark-current {
+    width: 6px; height: 4px; margin-left: -3px; background: #278bf9; clip-path: polygon(50% 0, 100% 100%, 0 100%);
+}
+.fp-clean85 .fp-calendar-85-widget {
+    display: flex; flex-direction: column; flex: 1 1 auto; min-width: 298px;
+    margin-top: 7px; color: #4d4d54; font-size: 16px; line-height: 19px;
+}
+/* A stretched field tiles whole months (see tileCalendarMonths). */
+.fp-clean85:not(.fp-control-gallery-85) .fp-body > .fp-item[data-tag="CalendarField"]:has(> .fp-calendar-85) {
+    align-self: stretch; width: auto; max-width: none;
+}
+.fp-clean85 .fp-calendar-85 { height: 100%; box-sizing: border-box; }
+.fp-clean85 .fp-calendar-85-months {
+    flex: 1 1 auto; min-height: 329px; display: grid; gap: 16px; justify-content: start; align-content: start; overflow: hidden;
+}
+.fp-clean85 .fp-calendar-85-block { width: 298px; }
+.fp-clean85 .fp-calendar-85-head {
+    position: relative; height: 20px; margin: 0 14px 0 13px; display: flex; align-items: center;
+    font-weight: 600; color: #1c1c1f;
+}
+.fp-clean85 .fp-calendar-85-nav {
+    position: absolute; top: 0; width: 20px; height: 20px; border-radius: 50%; background: #6e6e6e;
+}
+.fp-clean85 .fp-calendar-85-prev { left: 0; }
+.fp-clean85 .fp-calendar-85-next { right: 0; }
+.fp-clean85 .fp-calendar-85-nav::before {
+    content: ''; position: absolute; top: 9px; left: 5px; width: 10px; height: 2px; background: #fff;
+}
+.fp-clean85 .fp-calendar-85-nav::after {
+    content: ''; position: absolute; top: 6px; width: 5px; height: 5px;
+    border: solid #fff; border-width: 2px 2px 0 0;
+}
+.fp-clean85 .fp-calendar-85-prev::after { left: 5px; transform: rotate(-135deg); }
+.fp-clean85 .fp-calendar-85-next::after { left: 8px; transform: rotate(45deg); }
+.fp-clean85 .fp-calendar-85-month { position: absolute; left: 43px; }
+.fp-clean85 .fp-calendar-85-year { position: absolute; left: 168px; }
+.fp-clean85 .fp-calendar-85-month::after, .fp-clean85 .fp-calendar-85-year::after {
+    content: ''; display: inline-block; width: 7px; height: 7px; margin: 0 0 4px 8px;
+    border: solid #1c1c1f; border-width: 0 2px 2px 0; transform: rotate(45deg);
+}
+.fp-clean85 .fp-calendar-85-grid {
+    display: grid; grid-template-columns: repeat(7, 40px); grid-auto-rows: 40px; gap: 2px;
+    margin: 17px 0 0 4px;
+}
+.fp-clean85 .fp-calendar-85-grid > span { display: flex; align-items: center; justify-content: center; border-radius: 6px; }
+.fp-clean85 .fp-calendar-85-weekend { color: #ff3e33; }
+.fp-clean85 .fp-calendar-85-other { color: #b5b5bd; }
+.fp-clean85 .fp-calendar-85-today { background: #278bf9; color: #fff; }
+.fp-clean85 .fp-calendar-85-now { display: block; width: max-content; margin: 15px 0 0 11px; color: #278bf9; font-weight: 600; align-self: flex-start; }
+.fp-clean85:not(.fp-control-gallery-85) .fp-body > .fp-item.fp-container-horizontal.fp-bare
+    > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal[data-fp-horizontal-spacing-mode=""]:not(:has(> .fp-item:not([data-tag="CheckBoxField"]))) {
+    column-gap: 16px;
+}
+.fp-clean85:not(.fp-control-gallery-85) .fp-body[data-fp85-through-columns] > .fp85-through-row
+    + .fp-item.fp-container-horizontal.fp-bare:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-item[data-tag="CheckBoxField"]:first-child):not(:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-item:not([data-tag="CheckBoxField"]))) {
+    margin-top: 9px;
+}
+.fp-clean85:not(.fp-control-gallery-85) .fp-body > .fp-item.fp-container-horizontal.fp-bare:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-item[data-tag="CheckBoxField"]:first-child):not(:has(> .fp-control-wrap > .fp-group-bare > .fp-children-horizontal > .fp-item:not([data-tag="CheckBoxField"])))
+    + .fp-item.fp-commandbar-item-85.fp-table-source-bar:not(.fp-root-commandbar-item-85) {
+    margin-top: 6px;
+}
+.fp-clean85:not(.fp-control-gallery-85) .fp-item[data-tag="LabelDecoration"][style*="height"]:has(> .fp-control-wrap > .fp-label-decoration:not(.fp-label-one-line)) {
+    height: auto !important;
+}
+.fp-clean85:not(.fp-control-gallery-85) .fp-authored-width-floor-85 .fp-children-vertical > .fp-item[data-tag="CheckBoxField"]
+    > .fp-check-row:not(.fp-title-left) > .fp-field-label {
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.fp-clean85:not(.fp-control-gallery-85) .fp-body.fp-mockup.fp-form-catalog.fp85-editors-before-page
+    > .fp-item.fp-root-flattened-page:not(:first-child) {
+    margin-top: calc(16px - var(--fp-row-gap)) !important;
+}
+.fp-clean85 .fp-item.fp-vstretch.fp-native-label-decoration
+    > .fp-control-wrap:not(.fp-label-halign-center):not(.fp-label-halign-right) {
+    align-items: flex-start;
+}
+
+.fp-clean85 .fp-body > .fp-item[style*="margin-top: auto"]:has(+ .fp-root-commandbar-bottom) {
+    margin-bottom: 27px;
+}
+
+.fp-clean85 .fp-item[data-tag="Pages"]:has(.fp-page-no-compress-85),
+.fp-clean85 .fp-item[data-tag="Pages"]:has(.fp-page-no-compress-85) :is(.fp-control-wrap, .fp-group-block, .fp-pages-outer, .fp-pages-panel-wrap):has(.fp-page-no-compress-85),
+.fp-clean85 .fp-pages-active-panel.fp-page-no-compress-85 {
+    min-height: auto !important; flex-shrink: 0 !important;
 }

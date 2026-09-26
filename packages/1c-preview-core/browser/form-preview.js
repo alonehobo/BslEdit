@@ -1393,6 +1393,17 @@ var UNIMPORTANT_MAIN_COMMANDS = [
     { type: /^ReportObject\./i, commands: ['NewWindow', 'StandardSettings', 'SaveVariant', 'SaveReportSettings', 'ChangeSettingsStructure'] }
 ];
 
+function interface85EmptyTopKeepsMore(model) {
+    if (!model) return false;
+    var type = String(prop(mainAttribute(model), ['Type']) || '').replace(/^cfg:/i, '');
+    for (var i = 0; i < UNIMPORTANT_MAIN_COMMANDS.length; i++) {
+        if (!UNIMPORTANT_MAIN_COMMANDS[i].type.test(type)) continue;
+        if (UNIMPORTANT_MAIN_COMMANDS[i].commands.some(function (name) { return !commandExcluded(model, name); }))
+            return true;
+    }
+    return false;
+}
+
 function rootBarImplicitMore(model) {
     if (!model) return true;
     var main = mainAttribute(model);
@@ -1474,11 +1485,14 @@ function interface85StandardCommitAction(item) {
     if (item.name === '_stdUndoPosting') return true;
     if (!/^Form\.StandardCommand\.(?:WriteAndClose|Write|PostAndClose|Post)$/i.test(
         String(prop(item, ['CommandName']) || ''))) return false;
-    return !prop(item, ['LocationInCommandBar', 'ПоложениеКоманднойПанели']);
+    var location = String(prop(item, ['LocationInCommandBar', 'ПоложениеКоманднойПанели']) || '');
+    return !location || /^(?:Auto|InCommandBar|InCommandBarAndInAdditionalSubmenu)$/i.test(location);
 }
 
 function interface85FinishCommand(item, commands) {
     if (!item || item.tag !== 'Button') return false;
+    var qualified = String(prop(item, ['CommandName', 'Command']) || '').trim();
+    if (/\./.test(qualified) && !/^Form\.Command\./i.test(qualified)) return false;
     var command = commandForItem(item, commandIndex(commands));
     return !!(command && /^finish$/i.test(String(prop(command, ['ActionPurpose']) || '')));
 }
@@ -1547,8 +1561,17 @@ function interface85RootCommandBands(model) {
     });
     var addedFormCommands = interface85AddedFormCommandItems(model);
     if (addedFormCommands.length) children = addedFormCommands.concat(children);
+    var dialogFooter = commandBarLocation(model) === 'bottom';
+    var barAutofill = !isFalse(prop(bar, ['Autofill']));
     for (var i = 0; i < children.length; i++) {
-        var bands = interface85CommandItemBands(children[i], model.commands || []);
+        var child = children[i];
+        if (dialogFooter && child && child.tag === 'Button' && !isFalse(prop(child, ['Visible', 'visible']))
+            && (/^Form\.StandardCommand\.(?:Cancel|Close)$/i.test(String(prop(child, ['CommandName']) || ''))
+                || (barAutofill && isTrue(prop(child, ['DefaultButton']))))) {
+            result.bottom.push(child);
+            continue;
+        }
+        var bands = interface85CommandItemBands(child, model.commands || []);
         result.top = result.top.concat(bands.top);
         result.bottom = result.bottom.concat(bands.bottom);
     }
@@ -1556,7 +1579,8 @@ function interface85RootCommandBands(model) {
      * finish commands are runtime-state actions and stay absent until the
      * application exposes them. Mixed navigation/action bars keep every
      * authored Finish command in their footer. */
-    if (!result.top.length && result.bottom.some(function (item) {
+    if (!dialogFooter && !result.top.length && !result.bottom.some(interface85StandardCommitAction)
+        && result.bottom.some(function (item) {
         return isTrue(prop(item, ['DefaultButton']))
             || /^main$/i.test(String(prop(item, ['ButtonImportance', 'ВажностьКнопки']) || ''));
     })) {
@@ -1600,13 +1624,13 @@ function displayItems(model) {
     var loc = interface85RootCommandBarPlacement(model);
     if (loc === 'none' || !commandBarAllowed(model)) return items;
     var bar = formCommandBar(model);
-    if (bar && authoredLocation === 'auto' && isInterface85Mode(model.interfaceMode)) {
+    if (bar && (authoredLocation === 'auto' || authoredLocation === 'bottom') && isInterface85Mode(model.interfaceMode)) {
         var bands = interface85RootCommandBands(model);
         var result = items.slice();
         if (bands.top.length) result.unshift(cloneInterface85RootBar(bar, bands.top, 'top'));
-        else if (bands.bottom.length) {
+        else if (bands.bottom.length && (!isFalse(prop(bar, ['Autofill'])) || interface85BarAuthorsHelp(bar))) {
             var emptyTop = cloneInterface85RootBar(bar, [], 'top');
-            emptyTop._fp85EmptyTop = true;
+            if (!interface85BarAuthorsHelp(bar)) emptyTop._fp85EmptyTop = true;
             result.unshift(emptyTop);
         } else if (model.autoCommandBar && !isFalse(prop(bar, ['Autofill']))) {
             result.unshift(cloneInterface85RootBar(bar, [], 'top'));
@@ -1617,6 +1641,13 @@ function displayItems(model) {
     if (bar && !isEmptyCommandBar(bar))
         return loc === 'bottom' ? items.concat([bar]) : [bar].concat(items);
     return items;
+}
+
+function interface85BarAuthorsHelp(bar) {
+    return ((bar && bar.childItems) || []).some(function (item) {
+        return item && item.tag === 'Button' && !isFalse(prop(item, ['Visible', 'visible']))
+            && /^Form\.StandardCommand\.Help$/i.test(String(prop(item, ['CommandName']) || ''));
+    });
 }
 
 function isEmptyCommandBar(bar) {
@@ -2837,7 +2868,8 @@ function attachFormSourcedListCommands(model) {
      * (possibly a bottom ButtonGroup). */
     var objectMeta = model.objectMeta;
     var helpKids = helpHost && (helpHost.childItems || (helpHost.childItems = []));
-    if (helpKids && objectMeta && objectMeta.hasHelp && !commandExcluded(model, 'Help')
+    var listBar = helpHost && helpHost === host && mainListStandardItems(model).length;
+    if (helpKids && !listBar && objectMeta && objectMeta.hasHelp && !commandExcluded(model, 'Help')
         && !helpKids.some(function (kid) { return kid && isHelpItem(kid); }))
         helpKids.push(syntheticBtn('_stdHelp', '?', 'StdPicture.Help', 'Picture', {
             CommandName: 'Form.StandardCommand.Help'
@@ -3864,7 +3896,7 @@ function humanizeIdent(s) {
     var t = String(s).replace(/[_]+/g, ' ');
     t = t.replace(/([а-яёa-z])([А-ЯЁA-Z])/g, '$1 $2');
     t = t.replace(/([А-ЯЁA-Z]+)([А-ЯЁA-Z][а-яёa-z])/g, '$1 $2');
-    t = t.replace(/([А-ЯЁA-Zа-яёa-z])([0-9])/g, '$1 $2');
+    t = t.replace(/([А-ЯЁA-Zа-яёa-z])([0-9]+)(?=[^0-9])/g, '$1 $2');
     t = t.replace(/([0-9])([А-ЯЁA-Z])/g, '$1 $2');
     var words = t.replace(/\s+/g, ' ').trim().split(' ');
     for (var i = 1; i < words.length; i++) {
@@ -6022,7 +6054,7 @@ function inputButtonKindsFromButtons(item, ctx, buttons) {
     /* Reference paint order: clear and spin precede open. */
     if (!clean85 && buttons.clearButton) kinds.push('x');
     if (buttons.spinButton) kinds.push('spin');
-    if (clean85 && (buttons.dropListButton || buttons.choiceListButton)) kinds.push('caret-down');
+    if (clean85 && buttons.dropListButton) kinds.push('caret-down');
     if (buttons.openButton) kinds.push('open-1c');
     return kinds;
 }
@@ -7391,6 +7423,8 @@ function applyTooltip(div, item, inBar, ctx) {
     var note = el('span', 'fp-tooltip-text fp-tooltip-' + rep, text);
     if (item.extendedTooltip && isTrue(prop(item.extendedTooltip, ['Hyperlink', 'Гиперссылка'])))
         note.classList.add('fp-tooltip-hyperlink');
+    if (item.extendedTooltip && isFalse(prop(item.extendedTooltip, ['AutoMaxWidth', 'АвтоМаксимальнаяШирина'])))
+        note.classList.add('fp-tooltip-unbounded');
     if (rep === 'top' || rep === 'left') div.insertBefore(note, div.firstChild);
     else div.appendChild(note);
     div.classList.add('fp-tooltip-side-' + (rep === 'left' || rep === 'right' ? 'h' : 'v'));
@@ -7708,7 +7742,8 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
             var screenAdaptive = normGroupMode(prop(item, ['Group'])) === 'auto-screen-sensitive'
                 && formVersionAtLeast(item, '2.21');
             if (!screenAdaptive) div.style.minWidth = groupWidthPx + 'px';
-            if (isInterface85Context(ctx)) div.classList.add('fp-authored-width-floor-85');
+            if (isInterface85Context(ctx) && !isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание'])))
+                div.classList.add('fp-authored-width-floor-85');
             /* Width is fixed only when stretching is explicitly disabled (or
              * no descendant requests it). Otherwise it is the flex basis: a
              * pair of Width=32 cards can evenly fill a Width=67 row. */
@@ -7723,6 +7758,10 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
                  * vertical stretch applied above; the explicit width already
                  * fixes the horizontal size. */
                 if (parentH) div.style.flex = '0 0 auto';
+            } else if (parentH && isInterface85Context(ctx) && hs == null) {
+                div.style.flex = '0 1 ' + groupWidthPx + 'px';
+                div.style.width = groupWidthPx + 'px';
+                div.style.minWidth = '0';
             } else if (parentH) {
                 /* An authored group Width is a preferred/minimum layout band.
                  * Only explicit HorizontalStretch=false fixes the outer box;
@@ -8335,7 +8374,7 @@ function applyItemMetrics(div, item, tag, parentMeta, ctx, parentItem) {
     var mh = tag === 'PictureDecoration'
         ? pictureDecorationHeightPx(mhRaw, item, ctx)
         : tag === 'PictureField' ? pictureFieldHeightPx(mhRaw, ctx) : charHeight(mhRaw);
-    if (mh && tag !== 'ChartField' && !(tag === 'Table' && tableAuthoredHeightPx(item))) {
+    if (mh && tag !== 'ChartField' && tag !== 'CalendarField' && !(tag === 'Table' && tableAuthoredHeightPx(item))) {
         /* A text editor counts its rows on the TextBox ruler, not the 18px
          * form row: Height=6 paints a 175px editor while charHeight(6) is 108.
          * Capping the item on the form-row ruler therefore cut the box below
@@ -8519,11 +8558,12 @@ function collectStdCommandKeys(items, acc) {
     return out;
 }
 
-/* Reference objects other than catalogs and documents get the same
- * Write / WriteAndClose pair in the form command bar. */
 function isWritableReferenceObjectForm(model) {
     var t = String(prop(mainAttribute(model), ['Type']) || '');
-    return /(?:ChartOfAccounts|ChartOfCalculationTypes|ChartOfCharacteristicTypes|ExchangePlan|Task|BusinessProcess)Object\./i.test(t);
+    if (/(?:ChartOfAccounts|ChartOfCalculationTypes|ChartOfCharacteristicTypes|ExchangePlan|Task|BusinessProcess)Object\./i.test(t))
+        return true;
+    return isInterface85Mode(model && model.interfaceMode)
+        && /InformationRegisterRecordManager\./i.test(t);
 }
 
 function formStdCommandButtons(model) {
@@ -10145,7 +10185,8 @@ function applyLayout(el, meta) {
         : spacingPx(meta.horizontalSpacing, 'horizontal');
     el.style.rowGap = r != null ? r + 'px' : '';
     el.style.columnGap = c != null ? c + 'px' : '';
-    el.style.justifyContent = meta.flexJustifyContent || '';
+    el.style.justifyContent = meta.orientation === 'vertical' && meta.flexJustifyContent === 'flex-end'
+        ? 'safe flex-end' : meta.flexJustifyContent || '';
     el.style.alignItems = meta.flexAlignItems || '';
     if (el.dataset) {
         el.dataset.fpGroupMode = meta.groupMode || '';
@@ -10320,11 +10361,176 @@ function setFormattedText(node, value, forceLink, formatted) {
     return hasLink;
 }
 
+function trackBarWidgetTaxi(item) {
+    var bar = trackBarWidget85(item);
+    bar.className = 'fp-trackbar-taxi-bar';
+    return bar;
+}
+var CALENDAR_TAXI_MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль',
+    'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+/* One month block of the Taxi calendar: 7 × 35 px columns, 8 × 30 px rows. */
+var CALENDAR_TAXI_BLOCK_W = 245, CALENDAR_TAXI_BLOCK_H = 240, CALENDAR_TAXI_GAP = 7;
+function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+}
+/* The 42 cells of a month from its Monday. Neighbour-month days appear only
+ * before the first and after the last visible month; between blocks the
+ * cells stay empty (visit gets null). */
+function calendarDays(year, month, first, last, visit) {
+    var start = new Date(year, month, 1);
+    var day = new Date(start); day.setDate(1 - (start.getDay() + 6) % 7);
+    for (var k = 0; k < 42; k++, day.setDate(day.getDate() + 1)) {
+        var own = day.getMonth() === month;
+        if (!own && !(day < start ? first : last)) visit(null, false, k);
+        else visit(new Date(day), own, k);
+    }
+}
+/* A stretched calendar field tiles as many whole months as fit, like the
+ * platform client: columns by width, rows by height, the block centred. */
+function tileCalendarMonths(months, today, blockW, blockH, gap, build, minRows, rowGap) {
+    var shown = 0;
+    minRows = Math.max(1, minRows || 1);
+    if (rowGap === undefined) rowGap = gap;
+    if (minRows > 1) {
+        months.style.rowGap = rowGap + 'px';
+        months.style.minHeight = (minRows * blockH + (minRows - 1) * rowGap) + 'px';
+    }
+    function fill() {
+        var w = months.clientWidth, h = months.clientHeight;
+        var cols = Math.max(1, Math.floor((w + gap) / (blockW + gap)));
+        var rows = Math.max(minRows, Math.floor((h + rowGap) / (blockH + rowGap)));
+        var count = w ? cols * rows : 1;
+        if (count === shown) return;
+        shown = count;
+        months.textContent = '';
+        months.style.gridTemplateColumns = 'repeat(' + Math.min(cols, count) + ', ' + blockW + 'px)';
+        for (var i = 0; i < count; i++)
+            months.appendChild(build(new Date(today.getFullYear(), today.getMonth() + i, 1), i, count));
+    }
+    fill();
+    /* Kept on the node: an unreferenced observer may be collected before the
+     * calendar is attached. */
+    if (typeof ResizeObserver === 'function') {
+        months._fpCalendarObserver = new ResizeObserver(fill);
+        months._fpCalendarObserver.observe(months);
+    }
+}
+function calendarMonthTaxi(year, month, today, first, last, withYear) {
+    var grid = el('div', 'fp-calendar-taxi-grid');
+    if (first) {
+        grid.appendChild(el('span', 'fp-calendar-taxi-select fp-calendar-taxi-year', String(year)));
+        grid.appendChild(el('span', 'fp-calendar-taxi-select fp-calendar-taxi-month', CALENDAR_TAXI_MONTHS[month]));
+        grid.appendChild(el('span', 'fp-calendar-taxi-nav', '‹'));
+        grid.appendChild(el('span', 'fp-calendar-taxi-nav', '›'));
+    } else if (withYear) {
+        grid.appendChild(el('span', 'fp-calendar-taxi-title fp-calendar-taxi-year', String(year)));
+        grid.appendChild(el('span', 'fp-calendar-taxi-title fp-calendar-taxi-month-wide', CALENDAR_TAXI_MONTHS[month]));
+    } else {
+        grid.appendChild(el('span', 'fp-calendar-taxi-title fp-calendar-taxi-month-full', CALENDAR_TAXI_MONTHS[month]));
+    }
+    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].forEach(function (d, i) {
+        grid.appendChild(el('span', 'fp-calendar-taxi-weekday' + (i > 4 ? ' fp-calendar-taxi-weekend' : ''), d));
+    });
+    calendarDays(year, month, first, last, function (day, own, k) {
+        if (!day) { grid.appendChild(el('span', 'fp-calendar-taxi-day')); return; }
+        var cls = 'fp-calendar-taxi-day';
+        if (!own) cls += ' fp-calendar-taxi-other';
+        else if (k % 7 > 4) cls += ' fp-calendar-taxi-weekend';
+        if (own && sameDay(day, today)) cls += ' fp-calendar-taxi-today';
+        grid.appendChild(el('span', cls, String(day.getDate())));
+    });
+    return grid;
+}
+function calendarWidgetTaxi(today) {
+    var genitive = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля',
+        'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+    var frame = el('div', 'fp-calendar-taxi-frame');
+    var months = el('div', 'fp-calendar-taxi-months');
+    frame.appendChild(months);
+    frame.appendChild(el('span', 'fp-calendar-taxi-now', 'Сегодня, ' + today.getDate() + ' '
+        + genitive[today.getMonth()] + ' ' + today.getFullYear() + ' г.'));
+    tileCalendarMonths(months, today, CALENDAR_TAXI_BLOCK_W, CALENDAR_TAXI_BLOCK_H, CALENDAR_TAXI_GAP,
+        function (d, i, count) {
+            return calendarMonthTaxi(d.getFullYear(), d.getMonth(), today,
+                i === 0, i === count - 1, i > 0 && d.getMonth() === 0);
+        });
+    return frame;
+}
 function fallbackWidget(label, tag) {
     var w = el('div', 'fp-fallback-widget');
     w.appendChild(el('span', 'fp-fallback-label', label || '—'));
     w.appendChild(el('span', 'fp-fallback-tag', tag || 'Control'));
     return w;
+}
+
+function isPaintedTrackBar85(item) {
+    var width = prop(item, ['Width', 'Ширина']), max = prop(item, ['MaxValue', 'МаксимальноеЗначение']);
+    return !(width !== '' && Number(width) === 0) && !(max !== '' && Number(max) === 0);
+}
+
+function trackBarWidget85(item) {
+    var num = function (names, dflt) {
+        var v = prop(item, names);
+        return v !== '' && isFinite(Number(v)) ? Number(v) : dflt;
+    };
+    var min = num(['MinValue', 'МинимальноеЗначение'], 0), max = num(['MaxValue', 'МаксимальноеЗначение'], 100);
+    var marking = num(['MarkingStep', 'ШагРазметки'], 10);
+    var bar = el('div', 'fp-trackbar-85-bar');
+    bar.appendChild(el('div', 'fp-trackbar-85-track'));
+    bar.appendChild(el('div', 'fp-trackbar-85-knob'));
+    var appearance = normKey(prop(item, ['MarkingAppearance', 'ОтображениеРазметки']));
+    if (!/dontshow|неотображать/.test(appearance) && marking > 0 && max > min) {
+        var marks = el('div', 'fp-trackbar-85-marks');
+        var count = Math.floor((max - min) / marking);
+        for (var i = 0; i <= count; i++) {
+            var mark = el('span', i === 0 ? 'fp-trackbar-85-mark fp-trackbar-85-mark-current' : 'fp-trackbar-85-mark');
+            mark.style.left = (count ? i / count * 100 : 0) + '%';
+            marks.appendChild(mark);
+        }
+        bar.appendChild(marks);
+    }
+    return bar;
+}
+
+var CALENDAR_85_TODAY = new Date(2026, 8, 26);
+
+/* One clean 8.5 month block: the head line, then 7 × 40 px cells with 2 px gaps. */
+var CALENDAR_85_BLOCK_W = 298, CALENDAR_85_BLOCK_H = 329, CALENDAR_85_GAP = 16;
+function calendarMonth85(year, month, today, first, last) {
+    var block = el('div', 'fp-calendar-85-block');
+    var head = el('div', 'fp-calendar-85-head');
+    if (first) head.appendChild(el('span', 'fp-calendar-85-nav fp-calendar-85-prev'));
+    head.appendChild(el('span', 'fp-calendar-85-month', CALENDAR_TAXI_MONTHS[month]));
+    head.appendChild(el('span', 'fp-calendar-85-year', String(year)));
+    if (last) head.appendChild(el('span', 'fp-calendar-85-nav fp-calendar-85-next'));
+    block.appendChild(head);
+    var grid = el('div', 'fp-calendar-85-grid');
+    ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].forEach(function (d, i) {
+        grid.appendChild(el('span', 'fp-calendar-85-weekday' + (i > 4 ? ' fp-calendar-85-weekend' : ''), d));
+    });
+    calendarDays(year, month, first, last, function (day, own, k) {
+        if (!day) { grid.appendChild(el('span', 'fp-calendar-85-day')); return; }
+        var cls = 'fp-calendar-85-day';
+        if (!own) cls += ' fp-calendar-85-other';
+        else if (k % 7 > 4) cls += ' fp-calendar-85-weekend';
+        if (own && sameDay(day, today)) cls += ' fp-calendar-85-today';
+        grid.appendChild(el('span', cls, String(day.getDate())));
+    });
+    block.appendChild(grid);
+    return block;
+}
+/* HeightInMonths stacks whole months; stacked blocks are 336 px apart in the
+ * reference (a 7 px row gap under the 329 px block). */
+var CALENDAR_85_ROW_GAP = 7;
+function calendarWidget85(today, heightInMonths) {
+    var cal = el('div', 'fp-calendar-85-widget');
+    var months = el('div', 'fp-calendar-85-months');
+    cal.appendChild(months);
+    cal.appendChild(el('span', 'fp-calendar-85-now', 'Сегодня'));
+    tileCalendarMonths(months, today, CALENDAR_85_BLOCK_W, CALENDAR_85_BLOCK_H, CALENDAR_85_GAP,
+        function (d, i, count) { return calendarMonth85(d.getFullYear(), d.getMonth(), today, i === 0, i === count - 1); },
+        heightInMonths, heightInMonths > 1 ? CALENDAR_85_ROW_GAP : CALENDAR_85_GAP);
+    return cal;
 }
 
 function chartWidget() {
@@ -10544,8 +10750,7 @@ function makeFieldInput(item, loc, label, ctx) {
     if (!multiline) {
         appendInputButtons(field, item, ctx);
         var kinds85 = isInterface85Context(ctx) ? inputButtonKinds(item, ctx) : [];
-        if (loc === 'top' && kinds85.indexOf('spin') >= 0
-            && kinds85.indexOf('open-1c') >= 0) {
+        if (kinds85.indexOf('spin') >= 0) {
             external85Buttons = el('div', 'fp-editor-actions-85');
             var spinButtons = field.querySelector('.fp-spin');
             if (spinButtons) {
@@ -10643,8 +10848,86 @@ function interface85TableFilterCardWorkspace(model, table) {
     });
     return found;
 }
+function interface85FilterCardWidth(card) {
+    /* The card is its Pages' authored width plus the card insets:
+     * Width 35 paints a 417px card, Width 37 a 438px one. */
+    var cardPages = card.querySelector('.fp-item[data-tag="Pages"]');
+    var cardChars = cardPages ? parseFloat(cardPages.style.getPropertyValue('--fp-authored-width-chars')) || 0 : 0;
+    return cardChars > 0 ? Math.round(cardChars * 10.5 + 49.5) : 417;
+}
+function interface85RootHipFallsBack(body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85')) return false;
+    if (body.dataset.fpGroupMode !== 'horizontal-if-possible') return false;
+    var items = Array.prototype.filter.call(body.children, function (child) {
+        return child.classList && child.classList.contains('fp-item') && !child.hidden
+            && child.dataset.tag !== 'AutoCommandBar' && child.dataset.tag !== 'CommandBar'
+            && !child.classList.contains('fp-root-commandbar-item-85');
+    });
+    if (items.length < 2) return false;
+    function preferred(item) {
+        var own = parseFloat(item.dataset.fpAuthoredNormalWidth) || 0;
+        if (item.classList.contains('fp-field-item-85')) return Math.max(own, interface85EditorNatural(item));
+        var widest = own;
+        var fields = item.querySelectorAll('.fp-field-item-85');
+        for (var i = 0; i < fields.length; i++) widest = Math.max(widest, interface85EditorNatural(fields[i]));
+        var tables = item.querySelectorAll('.fp-item[data-tag="Table"]');
+        for (var t = 0; t < tables.length; t++)
+            widest = Math.max(widest, parseFloat(tables[t].dataset.fpAuthoredNormalWidth) || 0);
+        return widest;
+    }
+    var total = INTERFACE85_GRID_GAP * (items.length - 1);
+    for (var k = 0; k < items.length; k++) total += preferred(items[k]);
+    var style = getComputedStyle(body);
+    var available = body.clientWidth - (parseFloat(style.paddingLeft) || 0) - (parseFloat(style.paddingRight) || 0);
+    return total > available;
+}
+function clipInterface85StripOverhang(body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85')) return;
+    var pinnedFooter = body.classList.contains('fp-form-catalog')
+        || !!body.querySelector(':scope > .fp-item.fp-root-flattened-page.fp-pages-none:first-child');
+    if (!pinnedFooter || !body.querySelector(':scope > .fp-item.fp-root-commandbar-bottom')) return;
+    body.style.overflowX = '';
+    body.style.overflowY = '';
+    var overflow = body.scrollWidth - body.clientWidth;
+    if (overflow > 0 && overflow <= 6) body.style.overflowX = 'hidden';
+    var bar = body.querySelector(':scope > .fp-item.fp-root-commandbar-bottom');
+    var overlay = -(parseFloat(getComputedStyle(bar).marginBottom) || 0);
+    var overflowY = body.scrollHeight - body.clientHeight;
+    if (overlay > 0 && overflowY > 0 && overflowY <= overlay + 2) body.style.overflowY = 'hidden';
+}
+function markInterface85EditorsBeforePage(body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85')) return;
+    var page = body.querySelector(':scope > .fp-root-flattened-page');
+    if (!page) return;
+    for (var node = page.previousElementSibling; node; node = node.previousElementSibling) {
+        if (!node.classList || !node.classList.contains('fp-item')) continue;
+        if (node.classList.contains('fp-field-item-85') || node.querySelector('.fp-field-item-85')) {
+            body.classList.add('fp85-editors-before-page');
+            return;
+        }
+    }
+}
 function markInterface85TableFilterCardWorkspace(body) {
     if (!body || !body.querySelectorAll) return false;
+    /* A horizontal Form whose content is the list and the filter card is
+     * the same pair without a wrapping group. */
+    if (body.classList.contains('fp-root-horizontal') && body.closest && body.closest('.fp-clean85')) {
+        var rootItems = Array.prototype.filter.call(body.children, function (child) {
+            return child.classList && child.classList.contains('fp-item') && !child.hidden
+                && child.style.display !== 'none'
+                && child.dataset.tag !== 'AutoCommandBar' && child.dataset.tag !== 'CommandBar'
+                && !child.classList.contains('fp-root-commandbar-item-85');
+        });
+        if (rootItems.length === 2
+            && (rootItems[0].dataset.tag === 'Table' || rootItems[0].querySelector('.fp-item[data-tag="Table"]'))
+            && rootItems[1].classList.contains('fp-ui85-card')
+            && rootItems[1].querySelector('.fp-pages-outer')) {
+            body.classList.add('fp85-table-filter-card-workspace');
+            body.dataset.fp85TableFilterPair = '1';
+            body.style.setProperty('--fp85-filter-card-width', interface85FilterCardWidth(rootItems[1]) + 'px');
+            return true;
+        }
+    }
     var groups = body.querySelectorAll('.fp-item.fp-container-horizontal');
     for (var i = 0; i < groups.length; i++) {
         var childrenWrap = groups[i].querySelector(
@@ -10659,6 +10942,8 @@ function markInterface85TableFilterCardWorkspace(body) {
         if (!children[1].classList.contains('fp-ui85-card')
             || !children[1].querySelector('.fp-pages-outer')) continue;
         body.classList.add('fp85-table-filter-card-workspace');
+        groups[i].dataset.fp85TableFilterPair = '1';
+        groups[i].style.setProperty('--fp85-filter-card-width', interface85FilterCardWidth(children[1]) + 'px');
         return true;
     }
     return false;
@@ -11906,7 +12191,8 @@ function createControl(item, tag, ctx, parentMeta) {
         } else if (label) {
             var labelHeight = parseInt(prop(item, ['Height', 'Высота']), 10) || 0;
             var labelMaxHeight = parseInt(prop(item, ['MaxHeight', 'МаксимальнаяВысота']), 10) || 0;
-            var canDynamicHeight = labelDecorationCanDynamicHeight(item)
+            var canDynamicHeight = (labelDecorationCanDynamicHeight(item)
+                || (isInterface85Context(ctx) && labelHeight > 1))
                 && /\s/.test(String(label).trim());
             if (!canDynamicHeight) dcls += ' fp-label-one-line';
             else if (isInterface85Context(ctx) && /\S[^\S\n]*\n[^\S\n]*\S/.test(String(label)))
@@ -12013,9 +12299,28 @@ function createControl(item, tag, ctx, parentMeta) {
         wrap.appendChild(docSurface);
     } else if (tag === 'ChartField') {
         wrap.appendChild(chartWidget());
+    } else if (tag === 'TrackBarField' && isInterface85Context(ctx) && isPaintedTrackBar85(item)) {
+        wrap.className = 'fp-control-wrap fp-field-row fp-title-top fp-trackbar-85';
+        if (label && loc !== 'none') wrap.appendChild(el('span', 'fp-field-label', plainFormattedText(label)));
+        wrap.appendChild(trackBarWidget85(item));
+    } else if (tag === 'CalendarField' && isInterface85Context(ctx)) {
+        wrap.className = 'fp-control-wrap fp-field-row fp-title-top fp-calendar-85';
+        if (label && loc !== 'none') wrap.appendChild(el('span', 'fp-field-label', plainFormattedText(label)));
+        wrap.appendChild(calendarWidget85(CALENDAR_85_TODAY,
+            parseInt(prop(item, ['HeightInMonths', 'ВысотаВМесяцах']), 10) || 1));
     } else if ((tag === 'TrackBarField' || tag === 'ProgressBarField') && isInterface85Context(ctx)) {
         wrap.classList.add('fp-bar-field-85');
         wrap.appendChild(el('span', 'fp-field-label', plainFormattedText(label)));
+    } else if (tag === 'TrackBarField' && isPaintedTrackBar85(item)) {
+        /* Taxi paints the same control: caption above, round knob on a thin
+         * track, dotted marks below. */
+        wrap.className = 'fp-control-wrap fp-field-row fp-title-top fp-trackbar-taxi';
+        if (label && loc !== 'none') wrap.appendChild(el('span', 'fp-field-label', withColon(plainFormattedText(label), 'top')));
+        wrap.appendChild(trackBarWidgetTaxi(item));
+    } else if (tag === 'CalendarField') {
+        wrap.className = 'fp-control-wrap fp-field-row fp-title-top fp-calendar-taxi';
+        if (label && loc !== 'none') wrap.appendChild(el('span', 'fp-field-label', withColon(plainFormattedText(label), 'top')));
+        wrap.appendChild(calendarWidgetTaxi(CALENDAR_85_TODAY));
     } else if (RARE_TAGS[tag]) {
         wrap.appendChild(fallbackWidget(plainFormattedText(label), tag));
     } else {
@@ -12263,6 +12568,9 @@ function renderPages(pagesNode, outerEl, meta, ctx) {
         inner = layoutMeta(activePage);
         panel.className += ' ' + layoutClass(inner);
         applyLayout(panel, inner);
+        if (isInterface85Context(ctx) && isFalse(prop(activePage, ['ScrollOnCompress']))
+            && isTrue(prop(pagesNode, ['VerticalStretch', 'РастягиватьПоВертикали'])))
+            panel.classList.add('fp-page-no-compress-85');
         renderPreview(activePage.childItems, panel, ctx, activePage);
         applyPageTooltip(panel, activePage);
     } else if (!pages.length) {
@@ -12512,9 +12820,11 @@ function renderPreview(items, parentEl, ctx, parentItem) {
     parentEl.innerHTML = '';
     var emptyAutofilledRootBar = (!items || !items.length)
         && parentItem && parentItem.tag === 'AutoCommandBar' && String(parentItem.id) === '-1'
-        && parentItem._fp85CommandBand === 'top' && !parentItem._fp85EmptyTop
+        && parentItem._fp85CommandBand === 'top'
+        && (!parentItem._fp85EmptyTop || interface85EmptyTopKeepsMore(ctx && ctx.model))
         && ctx && ctx.model && ctx.model.autoCommandBar
-        && !isFalse(prop(ctx.model.autoCommandBar, ['Autofill']));
+        && (!isFalse(prop(ctx.model.autoCommandBar, ['Autofill']))
+            || interface85BarAuthorsHelp(ctx.model.autoCommandBar));
     if ((!items || !items.length) && !emptyAutofilledRootBar) {
         parentEl.classList.remove('fp-mockup');
         parentEl.textContent = 'Нет элементов';
@@ -12605,6 +12915,9 @@ function renderPreview(items, parentEl, ctx, parentItem) {
             }
             return;
         }
+        if (tag === 'CommandBar' && isInterface85Context(ctx)
+            && !(item.childItems && item.childItems.length)
+            && !String(prop(item, ['CommandSource', 'ИсточникКоманд']) || '').trim()) return;
         if (inBar && tag === 'Popup' && !popupHasCommands(item) && !isCreateBasedOnPopup(item)) {
             extraBar.push(item);
             return;
@@ -12620,6 +12933,11 @@ function renderPreview(items, parentEl, ctx, parentItem) {
         div._fpItem = item;
         if ((tag === 'InputField' || tag === 'LabelField') && isInterface85Context(ctx))
             div.dataset.fp85WidthChars = String(interface85RefWidthChars(item, ctx, tag));
+        /* A group of fixed Width is exactly Width chars wide in 8.5 (form lab). */
+        if (tag === 'UsualGroup' && isInterface85Context(ctx)
+            && isFalse(prop(item, ['HorizontalStretch', 'ГоризонтальноеРастягивание']))
+            && (parseInt(prop(item, ['Width', 'Ширина']), 10) || 0) > 0)
+            div.dataset.fp85GroupWidthChars = String(parseInt(prop(item, ['Width', 'Ширина']), 10));
         var editorColumnWidth = authoredVerticalEditorColumn(item);
         if (editorColumnWidth) {
             div.classList.add('fp-authored-editor-column');
@@ -12658,6 +12976,10 @@ function renderPreview(items, parentEl, ctx, parentItem) {
             }
             if (tag === 'InputField') {
                 div.classList.add('fp-field-item-85');
+                if (!(parseInt(prop(item, ['Width', 'Ширина']), 10) > 0)
+                    && !(parseInt(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), 10) > 0)
+                    && !isFalse(prop(item, ['AutoMaxWidth'])))
+                    div.dataset.fp85DefaultWidth = '1';
                 var numberMeta85 = ctx && ctx.model && ctx.model.objectMeta;
                 if (/^(Объект|Object)\.(Number|Номер|Code|Код)$/i.test(String(prop(item, ['DataPath']) || ''))
                     && (!numberMeta85 || /^true$/i.test(numberMeta85.autonumbering || ''))
@@ -12686,6 +13008,9 @@ function renderPreview(items, parentEl, ctx, parentItem) {
                 div.classList.add('fp-root-commandbar-item-85');
                 div.classList.add('fp-root-commandbar-'
                     + (item._fp85CommandBand || interface85RootCommandBarPlacement(ctx && ctx.model)));
+                if (item._fp85CommandBand === 'top' && ctx && ctx.model
+                    && commandBarLocation(ctx.model) === 'bottom')
+                    div.classList.add('fp-root-commandbar-dialog-top');
             }
         }
         if (emptyDecorationIsCompactInParent(item, parentMeta))
@@ -12870,9 +13195,11 @@ function renderPreview(items, parentEl, ctx, parentItem) {
             }
         } else if (container && control._childBox && ((item.childItems && item.childItems.length) || tag === 'Pages'
             || (tag === 'AutoCommandBar' && String(item.id) === '-1'
-                && item._fp85CommandBand === 'top' && !item._fp85EmptyTop
+                && item._fp85CommandBand === 'top'
+                && (!item._fp85EmptyTop || interface85EmptyTopKeepsMore(ctx && ctx.model))
                 && ctx && ctx.model && ctx.model.autoCommandBar
-                && !isFalse(prop(ctx.model.autoCommandBar, ['Autofill']))))) {
+                && (!isFalse(prop(ctx.model.autoCommandBar, ['Autofill']))
+                    || interface85BarAuthorsHelp(ctx.model.autoCommandBar))))) {
             var box = control._childBox;
             if (tag === 'Pages') {
                 renderPages(item, box, meta, ctx);
@@ -12905,7 +13232,7 @@ function renderPreview(items, parentEl, ctx, parentItem) {
     var tableToolbar = parentEl.classList && parentEl.classList.contains('fp-table-toolbar');
     if (inBar && parentItem && parentItem.tag !== 'ButtonGroup'
         && (extraBar.length || (parentItem.tag === 'AutoCommandBar' && !formBottomBar && !tableToolbar
-            && !parentItem._fp85EmptyTop
+            && (!parentItem._fp85EmptyTop || interface85EmptyTopKeepsMore(ctx && ctx.model))
             && (!(String(parentItem.id) === '-1' && !rootBarImplicitMore(ctx && ctx.model))
                 || (String(parentItem.id) === '-1' && !items.length))))) {
         var more = el('button', 'fp-button fp-popup');
@@ -14627,6 +14954,30 @@ function fitCompactMoreTabs85(list) {
     }
 }
 
+function alignClean85PageColumnCaptions(body) {
+    if (!body || !body.querySelectorAll || !body.closest || !body.closest('.fp-clean85')) return 0;
+    var panels = body.querySelectorAll('.fp-pages-active-panel.fp-throughalign-use');
+    var aligned = 0;
+    for (var p = 0; p < panels.length; p++) {
+        var labels = [];
+        for (var c = 0; c < panels[p].children.length; c++) {
+            var child = panels[p].children[c];
+            if (!child.classList || !child.classList.contains('fp-field-item-85')) continue;
+            var label = child.querySelector(':scope > .fp-field-row.fp-title-left > .fp-field-label');
+            if (label) labels.push(label);
+        }
+        for (var r = 0; r < labels.length; r++) labels[r].style.removeProperty('min-width');
+        if (labels.length < 2) continue;
+        var track = 0;
+        for (var m = 0; m < labels.length; m++)
+            track = Math.max(track, Math.ceil(labels[m].getBoundingClientRect().width));
+        for (var a = 0; a < labels.length; a++)
+            labels[a].style.setProperty('min-width', track + 'px', 'important');
+        aligned += labels.length;
+    }
+    return aligned;
+}
+
 function fitPageTabs(body) {
     if (!body) return;
     var lists = body.querySelectorAll('.fp-pages-tablist');
@@ -14997,6 +15348,16 @@ function platform85NestedContainerRowFits(box, children, availableWidth) {
         /* The root row already reserves a gap between the list and its side
          * pane. Paint the divider there without adding an interior inset. */
         box.classList.add('fp-splitter-in-gap');
+    } else if (rootBody && rootBody.closest('.fp-platform-85.fp-taxi')
+        && listBand > 0 && panelBand > 0) {
+        /* A window wider than both bands keeps the side panel's authored
+         * width and gives the surplus to the list. The compact side lane
+         * below would clip the panel to its measured minimum instead. */
+        sizes = [Math.max(Math.round(listBand), Math.floor(availableWidth - gap - Math.round(panelBand))),
+            Math.round(panelBand)];
+        if (sizes[0] + gap + sizes[1] > availableWidth + 1)
+            owner.style.minWidth = (sizes[0] + gap + sizes[1]) + 'px';
+        box.classList.add('fp-splitter-in-gap');
     } else if (fixedAuthored) {
         var cardSidePane = owner.classList.contains('fp-ui85-card')
             && box.closest('.fp-platform-85.fp-taxi:not(.fp-clean85)')
@@ -15205,6 +15566,25 @@ function responsiveGroupNeedsVertical(box, finiteParentTrack) {
         return false;
     if (!authoredChildFillsTrack
         && platform85NestedContainerRowFits(box, children, availableWidth)) return false;
+    if (!finiteParentTrack && children.length > 1 && box.closest && box.closest('.fp-clean85')
+        && parentTrack && parentTrack.classList && parentTrack.classList.contains('fp-pages-active-panel')
+        && normGroupMode(prop(owner && owner._fpItem, ['Group'])) === 'auto-screen-sensitive'
+        && children.every(function (child) {
+            return child.classList.contains('fp-field-item-85')
+                && !!child.querySelector(':scope > .fp-field-85.fp-title-top');
+        })) {
+        var rowGap85 = interface85RowMetrics(box).gap;
+        var minimum85 = children.reduce(function (sum, child) {
+            return sum + interface85EditorMinimum(child);
+        }, rowGap85 * (children.length - 1));
+        if (minimum85 <= availableWidth) return false;
+    }
+    if (!finiteParentTrack && box.closest && box.closest('.fp-clean85 .fp-pages-active-panel')
+        && /^(|horizontal-if-possible)$/.test(normGroupMode(prop(owner && owner._fpItem, ['Group'])))
+        && children.some(function (child) { return child.classList.contains('fp-container'); })) {
+        var natural85 = interface85NaturalRowWidth(box);
+        if (natural85 > availableWidth + 1) return true;
+    }
     return box.scrollWidth > availableWidth + 1 || metrics.structuralCollision
         || preferred > availableWidth + 1 || authoredChildFillsTrack;
 }
@@ -18109,6 +18489,20 @@ function prepareResponsiveGroups(body) {
             });
             continue;
         }
+        /* The list/filter-card pair keeps its desktop row: the card has a
+         * fixed track and the list yields to it. */
+        var responsiveOwner = boxes[i].closest ? boxes[i].closest('.fp-item') : null;
+        if (responsiveOwner && responsiveOwner.dataset.fp85TableFilterPair === '1') {
+            /* …while the list still has a usable track beside the card; a
+             * phone-width window stacks them. */
+            var cardTrack = parseFloat(responsiveOwner.style.getPropertyValue('--fp85-filter-card-width')) || 417;
+            if (body.clientWidth >= cardTrack + INTERFACE85_GRID_GAP + 128) continue;
+            /* The grid would squeeze the list to nothing rather than overflow,
+             * so the width test below cannot see the collision. */
+            setResponsiveGroupOrientation(boxes[i], 'vertical');
+            changed++;
+            continue;
+        }
         if (!responsiveGroupNeedsVertical(boxes[i])) continue;
         setResponsiveGroupOrientation(boxes[i], 'vertical');
         equalizeFieldLabels(boxes[i], true);
@@ -18308,6 +18702,13 @@ function nativeItemEdge(item, edge) {
             if (best == null || (edge === 'top' ? v < best : v > best)) best = v;
         }
     });
+    if (edge === 'top') {
+        var titles = item.querySelectorAll('.fp-table-title');
+        for (var ti = 0; ti < titles.length; ti++) {
+            var tr = titles[ti].getBoundingClientRect();
+            if (tr.height >= 2 && (best == null || tr.top < best)) best = tr.top;
+        }
+    }
     if (best == null) {
         var rect = item.getBoundingClientRect();
         return edge === 'top' ? rect.top : rect.bottom;
@@ -19032,6 +19433,7 @@ function fitFormViewport(body) {
     fitRootPagesPreferredHeights(body);
     releaseStackedAuthoredHeights(body);
     fitPageTabs(body);
+    alignClean85PageColumnCaptions(body);
     if (!version85ConfigBody(body)) fitAuthoredFieldBesideCheckbox(body);
     if (!version85ConfigBody(body)) fitSingleInputToVerticalColumn(body);
     /* A compact List column is a fixed track whose toolbar overflows
@@ -20497,6 +20899,12 @@ function fitRestoredTableSplitterPairs(body) {
         var available = Math.floor(bodyRect.right - rect.left - gap);
         var leadingBand = responsiveWrapperAllocationBand(children[0]);
         var trailingBand = responsiveWrapperAllocationBand(children[1]);
+        /* A side pane holding a group with an authored Width keeps that
+         * width: the Form scrolls instead of clipping the pane. */
+        var trailingSized = children[1].querySelector('.fp-item.fp-sized-width');
+        if (trailingSized && trailingSized.offsetHeight > 0
+            && parseFloat(trailingSized.style.getPropertyValue('--fp-authored-group-width')) > trailingBand.min)
+            continue;
         if (available <= 0 || rect.width <= available + gap + 1
             || leadingBand.min + trailingBand.min > available) continue;
         var leading = Math.max(Math.ceil(leadingBand.min),
@@ -20703,6 +21111,7 @@ function runHorizontalStrategyPass(body) {
     if (!version85ConfigBody(body)) fitSideEditorTooltips(body);
     if (!version85ConfigBody(body)) reserveBottomPagesBand(body);
     syncDetachedColumnRows(body);
+    fitInterface85FixedGroups(body);
     fitInterface85ThroughColumns(body);
     /* Allocation passes can restore responsive inline flex bases later in
      * reflow. Reassert this structural table pair at the settled layout edge. */
@@ -20749,10 +21158,9 @@ function interface85RowMetrics(node) {
 
 function interface85RefWidthChars(item, ctx, tag) {
     var chars = parseInt(prop(item, ['Width', 'Ширина']), 10) || 0;
-    if (chars <= 0) return 0;
     var max = parseInt(prop(item, ['MaxWidth', 'МаксимальнаяШирина']), 10) || 0;
-    if (max > 0 && isFalse(prop(item, ['AutoMaxWidth']))) chars = Math.min(chars, max);
-    return chars;
+    if (max > 0 && isFalse(prop(item, ['AutoMaxWidth']))) chars = Math.min(chars || 40, max);
+    return chars > 0 ? chars : 0;
 }
 
 function interface85EditorNatural(field) {
@@ -20760,6 +21168,153 @@ function interface85EditorNatural(field) {
     if (!(chars > 0)) return INTERFACE85_EDITOR_WIDTH;
     var metrics = interface85RowMetrics(field);
     return chars * metrics.charPx + metrics.pad;
+}
+
+/* Natural width of a clean 8.5 editor row: editors at c*charPx+pad (451px
+ * default), nested bare groups summed (row) or maxed (stack), other items at
+ * their painted width. */
+function interface85NaturalRowWidth(box) {
+    var gap = interface85RowMetrics(box).gap;
+    var horizontal = box.classList.contains('fp-children-horizontal');
+    var total = 0, count = 0;
+    directFpItems(box).forEach(function (child) {
+        var width;
+        if (child.classList.contains('fp-field-item-85')) width = interface85EditorNatural(child);
+        else if (child.classList.contains('fp-container') && directLayoutChildren(child))
+            width = interface85NaturalRowWidth(directLayoutChildren(child));
+        else width = child.getBoundingClientRect().width;
+        total = horizontal ? total + width : Math.max(total, width);
+        count++;
+    });
+    return horizontal && count > 1 ? total + gap * (count - 1) : total;
+}
+
+function growInterface85NaturalEditorRows(body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85')) return;
+    var bodyBox = body.getBoundingClientRect();
+    var bodyStyle = getComputedStyle(body);
+    var contentRight = bodyBox.left + body.clientWidth - (parseFloat(bodyStyle.paddingRight) || 0);
+    var isRowField = function (node) {
+        var label = node.classList.contains('fp-field-item-85')
+            && node.querySelector(':scope > .fp-field-85.fp-title-top > .fp-field-label');
+        return !!label && !!String(label.textContent || '').trim()
+            && !node.querySelector('.fp-input-leading-picture-85');
+    };
+    /* Fields of the row and of its nested bare rows; a nested row may also
+     * hold short decorations (a «–» between two times), which keep their
+     * painted width and the nested row's own gaps. */
+    var rowFields = function (row, gap) {
+        var kids = directFpItems(row).filter(function (child) { return child.getBoundingClientRect().height > 0; });
+        var fields = [], fixed = gap * Math.max(0, kids.length - 1);
+        for (var i = 0; i < kids.length; i++) {
+            var kid = kids[i];
+            if (isRowField(kid)) { fields.push(kid); continue; }
+            var nested = kid.dataset.tag === 'UsualGroup'
+                && kid.querySelector(':scope > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal');
+            var inner = nested ? directFpItems(nested).filter(function (child) {
+                return child.getBoundingClientRect().height > 0;
+            }) : [];
+            var innerFields = inner.filter(isRowField);
+            if (!innerFields.length || inner.some(function (child) {
+                return !isRowField(child) && child.dataset.tag !== 'LabelDecoration';
+            })) return null;
+            var innerGap = innerFields.length === inner.length ? gap
+                : parseFloat(getComputedStyle(nested).columnGap) || 0;
+            fixed += innerGap * (inner.length - 1);
+            inner.forEach(function (child) {
+                if (!isRowField(child)) fixed += child.getBoundingClientRect().width;
+            });
+            fields.push.apply(fields, innerFields);
+        }
+        return kids.length > 1 ? { fields: fields, fixed: fixed } : null;
+    };
+    var rows = body.querySelectorAll('.fp-group-bare > .fp-children-horizontal');
+    Array.prototype.forEach.call(rows, function (row) {
+        if (row.closest('.fp-table-mock, .fp-commandbar')) return;
+        /* A nested row is a cell run of its parent row, solved with it. */
+        var rowOwner = row.closest('.fp-item');
+        if (!rowOwner || (rowOwner.parentNode && rowOwner.parentNode.classList
+            && rowOwner.parentNode.classList.contains('fp-children-horizontal'))) return;
+        var metrics = interface85RowMetrics(row);
+        var run = rowFields(row, metrics.gap);
+        var fields = run && run.fields;
+        if (!fields || !fields.some(function (field) {
+            return parseInt(field.dataset.fp85WidthChars, 10) > 0;
+        })) return;
+        var widths = fields.map(function (field) {
+            return Math.max(interface85EditorNatural(field), interface85EditorMinimum(field));
+        });
+        var natural = widths.reduce(function (sum, width) { return sum + width; }, run.fixed);
+        var box = row.getBoundingClientRect();
+        if (box.left + natural > contentRight + 1) {
+            var owner = row.closest('.fp-item');
+            var mode = normGroupMode(prop(owner && owner._fpItem, ['Group']));
+            if (mode !== 'always-horizontal' && mode !== 'horizontal') return;
+            if (owner.parentNode !== body) return;
+            var space = contentRight - box.left - run.fixed;
+            var minimums = fields.map(interface85EditorMinimum);
+            var floor = minimums.reduce(function (sum, value) { return sum + value; }, 0);
+            var total = widths.reduce(function (sum, value) { return sum + value; }, 0);
+            if (floor > space) return;
+            var t = (space - floor) / Math.max(1, total - floor);
+            widths = widths.map(function (value, index) {
+                return Math.floor(minimums[index] + Math.max(0, value - minimums[index]) * t);
+            });
+            natural = widths.reduce(function (sum, width) { return sum + width; }, run.fixed);
+        } else if (box.width >= natural - 1) return;
+        row.dataset.fp85NaturalRow = '1';
+        fields.forEach(function (field, index) {
+            var width = widths[index];
+            field.dataset.fp85NaturalCell = '1';
+            field.style.flex = '0 0 ' + width + 'px';
+            field.style.width = width + 'px';
+            field.style.minWidth = width + 'px';
+            field.style.maxWidth = width + 'px';
+        });
+        var gap = metrics.gap + 'px';
+        row.style.setProperty('column-gap', gap, 'important');
+        fields.forEach(function (field) {
+            var nestedRow = field.parentNode;
+            if (nestedRow !== row && directFpItems(nestedRow).every(isRowField))
+                nestedRow.style.setProperty('column-gap', gap, 'important');
+        });
+        row.style.minWidth = natural + 'px';
+    });
+}
+
+/* A viewport change solves the natural rows again from the window, not from
+ * the widths the previous pass pinned. */
+function resetInterface85NaturalEditorRows(body) {
+    if (!body || !body.querySelectorAll) return;
+    body.querySelectorAll('[data-fp85-natural-row="1"]').forEach(function (row) {
+        row.style.minWidth = '';
+        delete row.dataset.fp85NaturalRow;
+    });
+    body.querySelectorAll('[data-fp85-natural-cell="1"]').forEach(function (field) {
+        ['flex', 'width', 'minWidth', 'maxWidth'].forEach(function (name) { field.style[name] = ''; });
+        delete field.dataset.fp85NaturalCell;
+    });
+}
+
+function spaceInterface85ColorCards(body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85')) return;
+    var gap = INTERFACE85_ROW.normal.gap;
+    if (body.closest('.fp-scale-compact')) return;
+    var cards = body.querySelectorAll(
+        '.fp-item.fp-ui85-card.fp-backcolor, .fp-item.fp-tooltip-bg.fp-bare.fp-container');
+    Array.prototype.forEach.call(cards, function (card) {
+        var stack = card.parentNode;
+        if (!stack || !stack.classList || !(stack === body || stack.classList.contains('fp-children-vertical'))) return;
+        if (getComputedStyle(stack).flexDirection.indexOf('column') < 0) return;
+        var next = card.nextElementSibling;
+        while (next && (!next.classList.contains('fp-item') || !next.getBoundingClientRect().height))
+            next = next.nextElementSibling;
+        if (!next || next.classList.contains('fp-root-commandbar-bottom')) return;
+        var distance = next.getBoundingClientRect().top - card.getBoundingClientRect().bottom;
+        if (distance >= gap - 1) return;
+        var margin = parseFloat(getComputedStyle(next).marginTop) || 0;
+        next.style.setProperty('margin-top', Math.round(margin + gap - distance) + 'px', 'important');
+    });
 }
 
 /* A top caption is cut to its editor, but a shrinking row keeps it whole. */
@@ -20821,14 +21376,30 @@ function interface85GridRowCells(item) {
             fields.push.apply(fields, nestedFields);
             return;
         }
-        /* A vertical group of editors is one cell: the widest natural and
-         * minimum of its editors, which then fill the cell. */
+        /* A vertical group of editors and rows of editors is one cell: the
+         * widest natural and minimum of its children (a row counts as the sum
+         * of its editors and gaps), which then fill the cell. */
         var column = child.dataset.tag === 'UsualGroup'
             && child.querySelector(':scope > .fp-control-wrap > .fp-group-bare > .fp-children-vertical');
-        var columnFields = column ? Array.prototype.filter.call(column.children, visible) : [];
-        if (column && columnFields.length && columnFields.every(function (leaf) {
-            return /^(?:InputField|LabelField)$/.test(leaf.dataset.tag || '');
-        })) child._fp85ColumnFields = columnFields;
+        var columnItems = column ? Array.prototype.filter.call(column.children, visible) : [];
+        var columnFields = [], columnRows = [];
+        if (column && columnItems.length && columnItems.every(function (leaf) {
+            if (/^(?:InputField|LabelField)$/.test(leaf.dataset.tag || '')) {
+                columnFields.push(leaf);
+                return true;
+            }
+            var inner = leaf.dataset.tag === 'UsualGroup'
+                && leaf.querySelector(':scope > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal');
+            var innerFields = inner ? Array.prototype.filter.call(inner.children, visible) : [];
+            if (!innerFields.length || !innerFields.every(function (cell) {
+                return /^(?:InputField|LabelField)$/.test(cell.dataset.tag || '');
+            })) return false;
+            columnRows.push({ item: leaf, row: inner, fields: innerFields });
+            return true;
+        })) {
+            child._fp85ColumnFields = columnFields;
+            child._fp85ColumnRows = columnRows;
+        }
         fields.push(child);
     });
     if (fields.length < 2 && !block.querySelector(':scope > .fp-group-title')) return null;
@@ -20837,6 +21408,90 @@ function interface85GridRowCells(item) {
     })) return null;
     return { block: block, row: row, fields: fields, nestedRows: nestedRows,
         title: block.querySelector(':scope > .fp-group-title') || row.querySelector(':scope > .fp85-through-title') };
+}
+
+/* The fixed width of an 8.5 group: Width x the char step, no padding (form lab:
+ * Width 20/30/48/60 -> 220/330/528/660 px normal, 180/270/432/540 compact). */
+function interface85FixedGroupWidth(item) {
+    var chars = parseInt(item && item.dataset && item.dataset.fp85GroupWidthChars, 10);
+    return chars > 0 ? chars * interface85RowMetrics(item).charPx : 0;
+}
+
+function interface85SetFixedWidth(node, width) {
+    node.style.width = width + 'px';
+    node.style.minWidth = width + 'px';
+    node.style.maxWidth = width + 'px';
+    node.style.flex = '0 0 auto';
+}
+
+/* A fixed-width 8.5 group takes its width whatever its content, and its
+ * editors fill it even past their own Width; a row of editors in it grows or
+ * shrinks as in a column cell. */
+function fitInterface85FixedGroups(body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85')) return 0;
+    var groups = body.querySelectorAll('.fp-item[data-fp85-group-width-chars]');
+    var gap = interface85RowMetrics(body).gap;
+    Array.prototype.forEach.call(groups, function (group) {
+        var width = interface85FixedGroupWidth(group);
+        if (!width) return;
+        interface85SetFixedWidth(group, width);
+        var column = group.querySelector(':scope > .fp-control-wrap > .fp-group-bare > .fp-children-vertical, '
+            + ':scope > .fp-control-wrap > .fp-group-block > .fp-children-vertical');
+        if (!column) return;
+        Array.prototype.forEach.call(column.children, function (child) {
+            if (!child.classList || !child.classList.contains('fp-item') || !child.getBoundingClientRect().height) return;
+            var tag = child.dataset.tag || '';
+            if (/^(?:InputField|LabelField)$/.test(tag)) {
+                child.classList.add('fp85-fixed-cell');
+                ['width', 'min-width', 'max-width'].forEach(function (name) {
+                    child.style.setProperty(name, (width + 1) + 'px', 'important');
+                });
+                child.style.flex = '0 0 auto';
+                return;
+            }
+            var row = tag === 'UsualGroup' && !child.dataset.fp85GroupWidthChars
+                && child.querySelector(':scope > .fp-control-wrap > .fp-group-bare > .fp-children-horizontal');
+            var editors = row ? Array.prototype.filter.call(row.children, function (cell) {
+                return cell.classList && cell.classList.contains('fp-item') && cell.getBoundingClientRect().height;
+            }) : [];
+            if (!editors.length || !editors.every(function (cell) {
+                return /^(?:InputField|LabelField)$/.test(cell.dataset.tag || '')
+                    && !cell.querySelector(':scope > .fp-title-left');
+            })) return;
+            var cells = interface85FitColumnRow(editors, width, gap);
+            row.style.columnGap = gap + 'px';
+            row.style.flexWrap = 'nowrap';
+            interface85SetFixedWidth(child, width);
+            editors.forEach(function (editor, index) { interface85SetFixedWidth(editor, cells[index]); });
+        });
+    });
+    return groups.length;
+}
+
+function interface85RowSum(values, gap) {
+    return values.reduce(function (sum, value) { return sum + value; }, 0) + gap * Math.max(0, values.length - 1);
+}
+
+/* A row of editors inside a column cell (form lab, synthetic columns): a
+ * wider cell grows the editors in proportion to their natural widths, a
+ * narrower one shrinks them as m + (P - m)t. */
+function interface85FitColumnRow(editors, width, gap) {
+    var naturals = editors.map(interface85EditorNatural);
+    var minimums = editors.map(interface85EditorMinimum);
+    var space = width - gap * (editors.length - 1);
+    var total = naturals.reduce(function (sum, value) { return sum + value; }, 0);
+    var widths;
+    if (total <= space) {
+        widths = naturals.map(function (value) { return Math.round(value * space / Math.max(1, total)); });
+    } else {
+        var floor = minimums.reduce(function (sum, value) { return sum + value; }, 0);
+        var t = Math.max(0, (space - floor) / Math.max(1, total - floor));
+        widths = naturals.map(function (value, index) {
+            return Math.round(minimums[index] + Math.max(0, value - minimums[index]) * t);
+        });
+    }
+    widths[widths.length - 1] += Math.floor(space) - widths.reduce(function (sum, value) { return sum + value; }, 0);
+    return widths;
 }
 
 function interface85RootItemBasis(item) {
@@ -20850,18 +21505,68 @@ function interface85RootItemBasis(item) {
 
 /* A top caption that wraps in a narrowed column grows the field band
  * instead of painting the editor into the next row. */
-function interface85GrowWrappedCaptions(body) {
-    body.querySelectorAll(':scope > .fp-field-item-85, :scope > .fp-item[data-tag="UsualGroup"] .fp-field-item-85')
+function interface85EditorCollides(field) {
+    var editor = field.querySelector(':scope > .fp-field-85 > .fp-input-wrap');
+    if (!editor) return false;
+    var own = editor.getBoundingClientRect();
+    var body = field.closest('.fp-body');
+    if (!body) return false;
+    var controls = body.querySelectorAll('.fp-item.fp-control, .fp-pages-tablist');
+    for (var i = 0; i < controls.length; i++) {
+        var other = controls[i];
+        if (other === field || other.contains(field) || field.contains(other)) continue;
+        var r = other.getBoundingClientRect();
+        if (!r.width || !r.height) continue;
+        if (r.left < own.right - 1 && r.right > own.left + 1 && r.top < own.bottom - 1 && r.bottom > own.top + 1)
+            return true;
+    }
+    return false;
+}
+function interface85GrowWrappedCaptions(body, beyondGapOnly) {
+    body.querySelectorAll(beyondGapOnly ? '.fp-field-item-85'
+        : ':scope > .fp-field-item-85, :scope > .fp-item[data-tag="UsualGroup"] .fp-field-item-85')
         .forEach(function (field) {
             var caption = field.querySelector(':scope > .fp-field-85.fp-title-top > .fp-field-label');
             if (!caption || field.classList.contains('fp-title-height-85')) return;
             var lineHeight = parseFloat(getComputedStyle(caption).lineHeight) || 19;
             var wrapped = caption.getBoundingClientRect().height > lineHeight + 2;
+            if (wrapped && beyondGapOnly) {
+                if (field.style.getPropertyValue('height') === 'auto') {
+                    field.style.removeProperty('height');
+                    field.style.removeProperty('max-height');
+                    field.style.removeProperty('flex-basis');
+                    if (caption.parentNode && caption.parentNode.style) {
+                        caption.parentNode.style.removeProperty('height');
+                        caption.parentNode.style.removeProperty('max-height');
+                    }
+                }
+                wrapped = !!(field.parentNode && field.parentNode.classList
+                    && field.parentNode.classList.contains('fp-children-horizontal'))
+                    && interface85EditorCollides(field);
+            }
             [['height', 'auto'], ['max-height', 'none'], ['flex-basis', 'auto']].forEach(function (entry) {
                 if (wrapped) field.style.setProperty(entry[0], entry[1], 'important');
                 else field.style.removeProperty(entry[0]);
             });
+            /* A page panel also pins the editor row itself to the band. */
+            var captionRow = beyondGapOnly && caption.parentNode;
+            if (captionRow && captionRow.style) [['height', 'auto'], ['max-height', 'none']].forEach(function (entry) {
+                if (wrapped) captionRow.style.setProperty(entry[0], entry[1], 'important');
+                else captionRow.style.removeProperty(entry[0]);
+            });
         });
+}
+
+function watchInterface85WrappedCaptions(body) {
+    if (!body || !body.closest || !body.closest('.fp-clean85') || body.closest('.fp-control-gallery-85')) return;
+    if (body.dataset.fp85ThroughColumns) return;
+    interface85GrowWrappedCaptions(body, true);
+    if (typeof ResizeObserver !== 'function') return;
+    if (!body._fp85WrapObserver)
+        body._fp85WrapObserver = new ResizeObserver(function () { interface85GrowWrappedCaptions(body, true); });
+    body.querySelectorAll('.fp-field-item-85 > .fp-field-85.fp-title-top > .fp-field-label').forEach(function (caption) {
+        body._fp85WrapObserver.observe(caption);
+    });
 }
 
 function fitInterface85ThroughColumns(body) {
@@ -20874,6 +21579,10 @@ function fitInterface85ThroughColumns(body) {
     var grids = [];
     roots.forEach(function (item) {
         var cells = interface85GridRowCells(item);
+        if (cells && !cells.title && cells.fields.every(function (field) {
+            return field.dataset.tag === 'CheckBoxField'
+                && !field.querySelector(':scope > .fp-check-row.fp-title-left');
+        })) return;
         if (cells) grids.push({ item: item, cells: cells });
     });
     if (!grids.length) return 0;
@@ -20907,9 +21616,20 @@ function fitInterface85ThroughColumns(body) {
         grid.cells.fields.forEach(function (field, index) {
             var check = field.dataset.tag === 'CheckBoxField';
             var editors = field._fp85ColumnFields || [field];
+            var rows = field._fp85ColumnRows || [];
+            var fixed = interface85FixedGroupWidth(field);
+            if (fixed) {
+                bases[index + offset] = Math.max(bases[index + offset] || 0, fixed);
+                minimums[index + offset] = Math.max(minimums[index + offset] || 0, fixed);
+                return;
+            }
             var basis = check ? interface85MeasureWidth(field, 'max-content')
-                : Math.max.apply(null, editors.map(interface85EditorNatural));
-            var minimum = check ? basis : Math.max.apply(null, editors.map(interface85EditorMinimum));
+                : Math.max.apply(null, editors.map(interface85EditorNatural).concat(rows.map(function (row) {
+                    return interface85RowSum(row.fields.map(interface85EditorNatural), metrics.gap);
+                })));
+            var minimum = check ? basis : Math.max.apply(null, editors.map(interface85EditorMinimum).concat(rows.map(function (row) {
+                return interface85RowSum(row.fields.map(interface85EditorMinimum), metrics.gap);
+            })));
             bases[index + offset] = Math.max(bases[index + offset] || 0, basis);
             minimums[index + offset] = Math.max(minimums[index + offset] || 0, minimum);
         });
@@ -20998,14 +21718,24 @@ function fitInterface85ThroughColumns(body) {
             var width = widths[index + fieldIndex];
             /* An editor whose caption is wider than itself is solved at the
              * caption width but painted at its own width; the rest stays unused. */
+            if (interface85FixedGroupWidth(field)) return;
             if (field._fp85ColumnFields) {
                 setWidth(field, width);
                 field._fp85ColumnFields.forEach(function (editor) { setWidth(editor, width); });
+                (field._fp85ColumnRows || []).forEach(function (columnRow) {
+                    var cells = interface85FitColumnRow(columnRow.fields, width, metrics.gap);
+                    columnRow.row.style.columnGap = metrics.gap + 'px';
+                    columnRow.row.style.flexWrap = 'nowrap';
+                    setWidth(columnRow.item, width);
+                    columnRow.fields.forEach(function (editor, cell) { setWidth(editor, cells[cell]); });
+                });
                 return;
             }
             if (field.dataset.tag !== 'CheckBoxField') {
                 var natural = interface85EditorNatural(field);
                 if (interface85EditorMinimum(field) > natural) width = Math.min(width, natural);
+                else if (field.dataset.fpAuthoredWidthPresent === '1' && field.dataset.fpWidthStretch === '0')
+                    width = Math.min(width, natural);
             }
             setWidth(field, width);
         });
@@ -21174,8 +21904,11 @@ function observeFormViewport(body) {
          * size. Drop it before the title pass measures, or widening the
          * window keeps re-promoting captions against the narrow canvas. */
         refitSharedCompactPairCaptions(body);
+        resetInterface85NaturalEditorRows(body);
         runHorizontalStrategyPass(body);
         fitRightCommandBarLanes(body);
+        growInterface85NaturalEditorRows(body);
+        spaceInterface85ColorCards(body);
         /* The pass defers its final command-bar fit to a frame callback, which
          * from here would land one painted frame late. Layout is already
          * forced by the pass, so the same fit is exact now; the deferred copy
@@ -22447,6 +23180,10 @@ function disconnectPreviewObservers(node) {
     if (!node) return;
     if (node._fpResizeObserver && typeof node._fpResizeObserver.disconnect === 'function')
         node._fpResizeObserver.disconnect();
+    if (node._fp85WrapObserver && typeof node._fp85WrapObserver.disconnect === 'function') {
+        node._fp85WrapObserver.disconnect();
+        node._fp85WrapObserver = null;
+    }
     var children = node.children || [];
     for (var i = 0; i < children.length; i++) disconnectPreviewObservers(children[i]);
 }
@@ -22519,6 +23256,9 @@ function render(model, container, options) {
     };
     ctx.controlGallery85 = controlGallery85;
     if (formObjectKind(model) === 'catalog') body.classList.add('fp-form-catalog');
+    var writableCard85 = isInterface85Mode(model && model.interfaceMode) && isWritableReferenceObjectForm(model)
+        && !(/InformationRegisterRecordManager\./i.test(String(prop(mainAttribute(model), ['Type']) || ''))
+            && model.autoCommandBar && isFalse(prop(model.autoCommandBar, ['Autofill'])));
     container._fpCtx = ctx;
     if (!container._fpPopupDismiss) {
         var popupRoot = function () { return container.querySelector('#fp-canvas') || container; };
@@ -22550,7 +23290,10 @@ function render(model, container, options) {
      * narrow. Only plausible dialog widths are honoured: a few forms carry a
      * number that is clearly not characters, and squeezing on that would lie. */
     var fwChars = parseInt(prop(model, ['Width', 'Ширина']), 10);
-    if (fwChars > 0 && fwChars <= 200) body.style.maxWidth = (fwChars * REF_AUTHORED_CHAR_PX + 10 + 34) + 'px';
+    if (fwChars > 0 && fwChars <= 200) {
+        body.style.maxWidth = (fwChars * REF_AUTHORED_CHAR_PX + 10 + 34) + 'px';
+        body.classList.add('fp-form-authored-width');
+    }
     var verticalScroll = String(prop(model, ['VerticalScroll', 'ВертикальнаяПолосаПрокрутки']) || '')
         .toLowerCase().replace(/[ _-]+/g, '');
     var scrollWithoutStretch = verticalScroll.indexOf('usewithoutstretch') >= 0
@@ -22574,8 +23317,16 @@ function render(model, container, options) {
         if (isCompactColorBand(firstContentItem))
             body.classList.add('fp-root-notice-band');
         renderPreview(items, body, ctx, model);
+        if (writableCard85 && body.querySelector(':scope > .fp-item.fp-root-commandbar-bottom'))
+            body.classList.add('fp-form-catalog');
         capAutoCappedFieldColumns(body);
         markInterface85TableFilterCardWorkspace(body);
+        markInterface85EditorsBeforePage(body);
+        if (rootHorizontal && interface85RootHipFallsBack(body)) {
+            rootHorizontal = false;
+            body.classList.remove('fp-root-horizontal');
+            body.dataset.fpSelectedOrientation = 'vertical';
+        }
         if (rootHorizontal) {
             /* One equal grid column per root content item; the root
              * AutoCommandBar spans the whole row above them (viewer.css). */
@@ -22615,8 +23366,12 @@ function render(model, container, options) {
          * pass expand the bar back to its intrinsic command width. */
         fitRightCommandBarLanes(body);
         fitAllLeadingCaptionsBeforeTitledPagesNone(body);
+        growInterface85NaturalEditorRows(body);
+        spaceInterface85ColorCards(body);
         balanceDefaultSplitterPairs(body);
         fitSplitterPaneEditorOverhangs(body);
+        clipInterface85StripOverhang(body);
+        watchInterface85WrappedCaptions(body);
         /* Dev/test-only autonomous layout shadow. The hook is absent in all
          * normal hosts, cannot mutate renderer geometry, and failures remain
          * diagnostic so preview availability never depends on it. */
@@ -22664,8 +23419,11 @@ function reflow(container) {
     var body = ctx && ctx.root;
     if (!body || !body.isConnected) return null;
     refitSharedCompactPairCaptions(body);
+    resetInterface85NaturalEditorRows(body);
     var state = runHorizontalStrategyPass(body);
     fitRightCommandBarLanes(body);
+    growInterface85NaturalEditorRows(body);
+    spaceInterface85ColorCards(body);
     refitCommandBars(body);
     stretchRootCommandBarFooter(body);
     publishWindowScrollStart(body);
@@ -23124,6 +23882,7 @@ root.FormPreview = {
         displayLabel: displayLabel,
         isPaintlessLabelField: isPaintlessLabelField,
         humanizeIdent: humanizeIdent,
+        isPaintedTrackBar85: isPaintedTrackBar85,
         fieldRowSkipped: fieldRowSkipped,
         radioOptions: radioOptions,
         radioOptionsLayout: radioOptionsLayout,

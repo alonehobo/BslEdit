@@ -143,8 +143,9 @@ function normalizeForComparison(value: string): string {
 function isInside(root: string, candidate: string): boolean {
   const normalizedRoot = normalizeForComparison(root);
   const normalizedCandidate = normalizeForComparison(candidate);
-  return normalizedCandidate === normalizedRoot
-    || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+  /* A volume root (D:\ or /) already ends in the separator. */
+  const prefix = normalizedRoot.endsWith(path.sep) ? normalizedRoot : `${normalizedRoot}${path.sep}`;
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(prefix);
 }
 
 export class FileLoader {

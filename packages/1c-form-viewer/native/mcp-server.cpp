@@ -139,6 +139,10 @@ struct Json {
         case Kind::Null: return "null";
         case Kind::Bool: return boolean ? "true" : "false";
         case Kind::Number: {
+            /* Integers print whole: a JSON-RPC id of 16+ digits must be echoed
+             * exactly, and 15 significant digits would round it into 1.2e+15. */
+            if (std::isfinite(number) && std::floor(number) == number && std::fabs(number) < 9007199254740992.0)
+                return std::to_string(static_cast<long long>(number));
             std::ostringstream output;
             output << std::setprecision(15) << number;
             return output.str();
@@ -196,6 +200,20 @@ private:
         if (take() != expected) throw std::runtime_error("Invalid JSON");
     }
 
+    unsigned hex4() {
+        if (position_ + 4 > input_.size()) throw std::runtime_error("Invalid unicode escape");
+        unsigned value = 0;
+        for (int i = 0; i < 4; ++i) {
+            const char digit = input_[position_++];
+            value <<= 4;
+            if (digit >= '0' && digit <= '9') value += digit - '0';
+            else if (digit >= 'a' && digit <= 'f') value += digit - 'a' + 10;
+            else if (digit >= 'A' && digit <= 'F') value += digit - 'A' + 10;
+            else throw std::runtime_error("Invalid unicode escape");
+        }
+        return value;
+    }
+
     std::string stringValue() {
         expect('"');
         std::string result;
@@ -217,22 +235,32 @@ private:
             case 'r': result += '\r'; break;
             case 't': result += '\t'; break;
             case 'u': {
-                if (position_ + 4 > input_.size()) throw std::runtime_error("Invalid unicode escape");
-                unsigned value = 0;
-                for (int i = 0; i < 4; ++i) {
-                    const char digit = input_[position_++];
-                    value <<= 4;
-                    if (digit >= '0' && digit <= '9') value += digit - '0';
-                    else if (digit >= 'a' && digit <= 'f') value += digit - 'a' + 10;
-                    else if (digit >= 'A' && digit <= 'F') value += digit - 'A' + 10;
-                    else throw std::runtime_error("Invalid unicode escape");
+                unsigned value = hex4();
+                /* Outside the BMP a character is escaped as a UTF-16 surrogate
+                 * pair (Python's json.dumps does so by default). Encoding each
+                 * half on its own gives CESU-8, which MultiByteToWideChar
+                 * rejects, so the pair is joined into one code point. */
+                if (value >= 0xd800 && value <= 0xdbff && position_ + 6 <= input_.size()
+                    && input_[position_] == '\\' && input_[position_ + 1] == 'u') {
+                    const std::size_t saved = position_;
+                    position_ += 2;
+                    const unsigned low = hex4();
+                    if (low >= 0xdc00 && low <= 0xdfff) value = 0x10000 + ((value - 0xd800) << 10) + (low - 0xdc00);
+                    else position_ = saved;
                 }
+                /* A lone surrogate has no UTF-8 form. */
+                if (value >= 0xd800 && value <= 0xdfff) value = 0xfffd;
                 if (value < 0x80) result += static_cast<char>(value);
                 else if (value < 0x800) {
                     result += static_cast<char>(0xc0 | (value >> 6));
                     result += static_cast<char>(0x80 | (value & 0x3f));
-                } else {
+                } else if (value < 0x10000) {
                     result += static_cast<char>(0xe0 | (value >> 12));
+                    result += static_cast<char>(0x80 | ((value >> 6) & 0x3f));
+                    result += static_cast<char>(0x80 | (value & 0x3f));
+                } else {
+                    result += static_cast<char>(0xf0 | (value >> 18));
+                    result += static_cast<char>(0x80 | ((value >> 12) & 0x3f));
                     result += static_cast<char>(0x80 | ((value >> 6) & 0x3f));
                     result += static_cast<char>(0x80 | (value & 0x3f));
                 }
@@ -1638,7 +1666,9 @@ private:
 bool inside(const fs::path& root, const fs::path& candidate) {
     const auto rootText = lower_wide(fs::weakly_canonical(root).wstring());
     const auto candidateText = lower_wide(fs::weakly_canonical(candidate).wstring());
-    return candidateText == rootText || candidateText.rfind(rootText + L'\\', 0) == 0;
+    /* A volume root (--root D:\) already ends in the separator. */
+    const auto rootPrefix = !rootText.empty() && rootText.back() == L'\\' ? rootText : rootText + L'\\';
+    return candidateText == rootText || candidateText.rfind(rootPrefix, 0) == 0;
 }
 
 bool allowed(const Options& options, const fs::path& candidate) {

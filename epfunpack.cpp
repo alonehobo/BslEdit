@@ -1506,7 +1506,9 @@ std::wstring HumanDuration(long long ms)
 
 std::wstring HumanizeMilliseconds(const std::wstring& line)
 {
-    static const wchar_t* kWords[] = { L"миллисекунд", L"миллисекунды", L"миллисекунда", L"мс" };
+    /* Longest first: the match is by prefix, and «миллисекунд» would claim
+     * «миллисекунды» only to be rejected by the end-of-word check below. */
+    static const wchar_t* kWords[] = { L"миллисекунды", L"миллисекунда", L"миллисекунд", L"мс" };
     std::wstring out;
     size_t i = 0;
     while (i < line.size()) {

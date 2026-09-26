@@ -3858,13 +3858,37 @@ img.fp-btn-icon { object-fit: contain; }
 .fp-interface-85 .fp-pages-active-panel .fp-children-vertical {
     row-gap: 16px !important;
 }
+/* The 64px band is the editor's height, not a flex basis: in a horizontal
+ * row the basis is the width and would collapse the field to 64px. */
+.fp-interface-85 .fp-pages-active-panel :where(.fp-children-vertical) > .fp-item[data-tag="InputField"]:not(:has(textarea)) {
+    flex: 0 0 64px !important;
+}
 .fp-interface-85 .fp-pages-active-panel .fp-item[data-tag="InputField"]:not(:has(textarea)) {
-    flex: 0 0 64px !important; height: 64px !important;
+    height: 64px !important;
     min-height: 64px !important; max-height: 64px !important;
 }
 .fp-interface-85 .fp-pages-active-panel .fp-item[data-tag="InputField"]:not(:has(textarea))
     > .fp-control-wrap.fp-field-row {
     height: 64px !important; min-height: 64px !important; max-height: 64px !important;
+}
+.fp-interface-85 .fp-pages-active-panel > .fp-item[data-tag="InputField"]:not(:has(textarea)):has(> .fp-field-row.fp-title-left) {
+    flex: 0 0 42px !important; height: 42px !important;
+    min-height: 42px !important; max-height: 42px !important;
+}
+.fp-interface-85 .fp-pages-active-panel > .fp-item[data-tag="InputField"]:not(:has(textarea))
+    > .fp-control-wrap.fp-field-row.fp-title-left {
+    height: 40px !important; min-height: 40px !important; max-height: 40px !important;
+}
+.fp-clean85.fp-scale-compact .fp-pages-active-panel.fp-children-vertical {
+    row-gap: 12px !important;
+}
+.fp-clean85.fp-scale-compact .fp-pages-active-panel > .fp-item[data-tag="InputField"]:not(:has(textarea)):has(> .fp-field-row.fp-title-left) {
+    flex: 0 0 34px !important; height: 34px !important;
+    min-height: 34px !important; max-height: 34px !important;
+}
+.fp-clean85.fp-scale-compact .fp-pages-active-panel > .fp-item[data-tag="InputField"]:not(:has(textarea))
+    > .fp-control-wrap.fp-field-row.fp-title-left {
+    height: 32px !important; min-height: 32px !important; max-height: 32px !important;
 }
 .fp-interface-85 .fp-pages-active-panel > .fp-field-wide-85,
 .fp-interface-85 .fp-pages-active-panel > .fp-field-wide-85 > .fp-field-row,
@@ -6358,12 +6382,20 @@ html.theme-dark .dcsd {
 .dcsd-item strong,.dcsd-item span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .dcsd-item strong { font-weight:600; }
 .dcsd-item span { margin-top:2px; color:var(--dcsd-muted); }
+/* Строка «было → стало» в карточке изменения — сетка списка макета, а не
+ * строчка навигатора: иначе колонки встают друг под другом. */
+.dcsd-item .tpd-item-row { display:grid; margin-top:0; }
+.dcsd-item .tpd-item-row > span { margin-top:0; white-space:pre-wrap; overflow:visible; text-overflow:clip; }
+.dcsd-item .tpd-item-row > .tpd-property { color:inherit; }
 /* Flex, not grid: in an auto grid row the details' percentage max-height
  * resolves against the row it sizes, so the panel shrank and left a gap. */
 .dcsd-main { min-width:0; min-height:0; display:flex; flex-direction:column; }
 .dcsd-content { flex:1 1 0; min-width:0; min-height:220px; overflow:hidden; display:flex; flex-direction:column; padding:7px; }
 .tpd.dcsd { height:100%; min-height:0; display:flex; flex-direction:column; }
-.dcsd-sheet > .dcs-root { flex:1; min-width:0; min-height:0; }
+/* В узком окне две схемы рядом не сжимаются до обрезки: каждая половина
+ * прокручивается по горизонтали. */
+.dcsd-sheet { overflow-x:auto; overflow-y:hidden; }
+.dcsd-sheet > .dcs-root { flex:1 0 auto; min-width:640px; min-height:0; }
 .dcsd > .tpd-panes > .dcsd-query-host { flex:1; min-width:0; min-height:0; border:0; }
 .dcsd .dcsd-context { color:#656d76; font-weight:normal; }
 .dcsd .dcsd-warning { max-width:1100px; margin:6px auto 0; }
@@ -6498,6 +6530,8 @@ html.theme-dark .dcsd-badge.dcsd-changed { color:#e9bd54; }
     justify-content: center;
 }
 #diff-panel .diff-opt { font:inherit; font-size:12px; white-space:nowrap; }
+/* Вернуть фрагмент, колонки и пробелы — только у текстового сравнения модулей. */
+#diff-panel:has(#diff-sheets:not([hidden])) .diff-opt { display:none; }
 #diff-panel button.diff-opt { border:1px solid #bbb; border-radius:3px; background:#f6f6f6; padding:1px 8px; cursor:pointer; }
 #diff-panel button.diff-opt:disabled { opacity:.5; cursor:default; }
 #diff-panel .diff-ws-label { display:inline-flex; align-items:center; gap:4px; cursor:pointer; }
@@ -6508,3 +6542,31 @@ html.theme-dark #diff-panel button.diff-opt { background:#333; border-color:#555
 .dcsd-list-top { position:sticky; top:0; z-index:2; margin:0 -8px 6px; padding:0 8px 4px; background:#f6f7f9; }
 .dcsd-list-top > .tpd-list-head, .dcsd-list-top > .dn-filter-bar { max-width:1100px; margin-left:auto; margin-right:auto; }
 html.theme-dark .dcsd-list-top { background:#181818; }
+
+/* Taxi TrackBarField / CalendarField (8.3 designer look). */
+.fp-trackbar-taxi, .fp-calendar-taxi { display: flex; flex-direction: column; align-items: stretch; gap: 4px; }
+.fp-trackbar-taxi { width: 100%; box-sizing: border-box; }
+.fp-trackbar-taxi-bar { position: relative; height: 22px; margin: 0 4px 0 2px; }
+.fp-trackbar-taxi-bar .fp-trackbar-85-track { position: absolute; left: 0; right: 0; top: 7px; height: 1px; background: #b4b4b4; }
+.fp-trackbar-taxi-bar .fp-trackbar-85-knob { position: absolute; left: 0; top: 1px; width: 10px; height: 10px; border-radius: 50%; background: #fff; border: 2px solid #3a9f5a; box-shadow: inset 0 0 0 2px #fff, inset 0 0 0 6px #3a9f5a; }
+.fp-trackbar-taxi-bar .fp-trackbar-85-marks { position: absolute; left: 7px; right: 0; top: 17px; height: 2px; }
+.fp-trackbar-taxi-bar .fp-trackbar-85-mark { position: absolute; width: 2px; height: 2px; background: #555; border-radius: 1px; }
+.fp-calendar-taxi-frame { display: flex; flex-direction: column; align-items: stretch; border: 1px solid #bdbdbd; padding: 12px 8px 10px; min-width: 263px; box-sizing: border-box; flex: 1 1 auto; }
+.fp-calendar-taxi-months { flex: 1 1 auto; min-height: 240px; display: grid; gap: 6px 7px; justify-content: center; align-content: center; overflow: hidden; }
+.fp-calendar-taxi-title { justify-content: flex-start !important; padding-left: 8px; white-space: nowrap; }
+.fp-calendar-taxi-month-wide { grid-column: span 5; }
+.fp-calendar-taxi-month-full { grid-column: span 7; }
+.fp-calendar-taxi-grid { display: grid; grid-template-columns: repeat(7, 35px); grid-auto-rows: 30px; border-left: 1px solid #e3e3e3; border-top: 1px solid #e3e3e3; }
+.fp-calendar-taxi-grid > span { display: flex; align-items: center; justify-content: center; border-right: 1px solid #e3e3e3; border-bottom: 1px solid #e3e3e3; box-sizing: border-box; }
+.fp-calendar-taxi-select { justify-content: flex-start !important; padding-left: 6px; padding-right: 8px; position: relative; overflow: hidden; white-space: nowrap; }
+.fp-calendar-taxi-year { grid-column: span 2; }
+.fp-calendar-taxi-month { grid-column: span 3; }
+.fp-calendar-taxi-select::after { content: ''; position: absolute; right: 3px; bottom: 3px; border: 3px solid transparent; border-right-color: #777; border-bottom-color: #777; }
+.fp-calendar-taxi-nav { font-size: 16px; color: #555; }
+.fp-calendar-taxi-weekday { color: #444; }
+.fp-calendar-taxi-weekend { color: #e8581c; }
+.fp-calendar-taxi-other { color: #aaa; }
+.fp-calendar-taxi-today { background: #555; color: #fff; outline: 2px solid #3a9f5a; outline-offset: -2px; }
+.fp-calendar-taxi-now { align-self: flex-start; margin: 10px 0 0 15px; color: #3b8bd0; border-bottom: 1px dashed #3b8bd0; line-height: 16px; }
+.fp-item.fp-item:is(.fp-control, .fp-no-hstretch):has(> .fp-trackbar-taxi, > .fp-calendar-taxi) { align-self: stretch; width: auto; max-width: none; } /* stretch like the 8.3 client */
+.fp-calendar-taxi { height: 100%; box-sizing: border-box; }

@@ -63,7 +63,12 @@ export class StaticAssetServer {
             return;
           }
           try {
-            this.setDocument(await this.reloader());
+            /* This runs outside the controller's queue: an open or close that
+             * lands while the file is read replaces the reloader, and the
+             * stale result must not overwrite what it installed. */
+            const reloader = this.reloader;
+            const document = await reloader();
+            if (this.reloader === reloader) this.setDocument(document);
           } catch (error) {
             response.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
             response.end(error instanceof Error ? error.message : String(error));

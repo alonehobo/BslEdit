@@ -113,6 +113,16 @@ root.SessionAnnotations = function (host, pane, elementInfo, options) {
         for (var i = 0; i < nodes.length; i++) if (nodes[i].getAttribute('data-id') === id) return nodes[i];
         return null;
     }
+    /* A click on a note selects what it is about; the pencil and Alt+A then
+     * refer to that element, not to the one clicked in the form before. */
+    function reveal(entry) {
+        options.reveal(entry);
+        hidePencil();
+        var id = String(entry.elementId);
+        var node = findTarget(id);
+        selected = node && node.getClientRects().length ? { id: id, node: node } : null;
+        if (selected && entry.endElementId) selected.endId = String(entry.endElementId);
+    }
     function updatePositions() {
         var paneBox = pane.getBoundingClientRect();
         pane.querySelectorAll('.annotation-anchor').forEach(function (marker) {
@@ -160,7 +170,7 @@ root.SessionAnnotations = function (host, pane, elementInfo, options) {
                 marker.classList.add('revealable');
                 marker.addEventListener('click', function (event) {
                     event.stopPropagation();
-                    options.reveal(entry);
+                    reveal(entry);
                 });
             }
             pane.appendChild(marker);
@@ -230,7 +240,7 @@ root.SessionAnnotations = function (host, pane, elementInfo, options) {
                 row.classList.add('revealable');
                 row.addEventListener('click', function (event) {
                     if (event.target.closest('button, textarea')) return;
-                    options.reveal(entry);
+                    reveal(entry);
                 });
             }
             row.appendChild(number);
@@ -342,7 +352,7 @@ root.SessionAnnotations = function (host, pane, elementInfo, options) {
         entries = available ? items.slice() : [];
         editing = null;
         closeEditor();
-        toggle.hidden = !available;
+        if (toggle) toggle.hidden = !available;
         if (!available) { selected = null; hidePencil(); }
         render();
     }
@@ -364,7 +374,7 @@ root.SessionAnnotations = function (host, pane, elementInfo, options) {
                 render();
             });
     });
-    toggle.addEventListener('click', function () {
+    if (toggle) toggle.addEventListener('click', function () {
         var target = currentTarget();
         if (target) openEditor(target);
         else window.alert('Выделите элемент формы, затем нажмите «Аннотация» или Alt+A.');

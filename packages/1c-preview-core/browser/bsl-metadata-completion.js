@@ -65,7 +65,7 @@ function parseIndex(xml) {
 
 function parseCommonModule(text) {
     var out = [];
-    var re = /^\s*(Процедура|Функция|Procedure|Function)\s+([a-zA-Z\u0410-\u044f\u0401\u0451_][a-zA-Z\u0410-\u044f\u0401\u04510-9_]*)\s*\(([^)]*)\)\s*(Экспорт|Export)\b/gim;
+    var re = /^\s*(Процедура|Функция|Procedure|Function)\s+([a-zA-Z\u0410-\u044f\u0401\u0451_][a-zA-Z\u0410-\u044f\u0401\u04510-9_]*)\s*\(([^)]*)\)\s*(Экспорт|Export)(?![a-zA-Z\u0410-\u044f\u0401\u04510-9_])/gim;
     var match;
     while ((match = re.exec(String(text || '')))) {
         var isFunction = /^(Функция|Function)$/i.test(match[1]);

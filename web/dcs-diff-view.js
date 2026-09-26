@@ -18,6 +18,17 @@ function el(doc, tag, cls, text) {
     return node;
 }
 function shown(value) { return value == null || value === '' ? '—' : String(value); }
+/* Списки «a; b» → «a; b; c»: общие пункты не повторяются, в колонках
+ * остаются только убранные и добавленные. */
+function listDelta(from, to) {
+    var a = from == null ? '' : String(from), b = to == null ? '' : String(to);
+    if (a.indexOf('; ') < 0 && b.indexOf('; ') < 0) return null;
+    var left = a ? a.split('; ') : [], right = b ? b.split('; ') : [];
+    var gone = left.filter(function (x) { return right.indexOf(x) < 0; });
+    var added = right.filter(function (x) { return left.indexOf(x) < 0; });
+    if (gone.length === left.length && added.length === right.length) return null;
+    return { from: gone.join('; '), to: added.join('; ') };
+}
 function summaryText(diff) {
     var s = diff.summary || {};
     var total = (diff.entries || []).length;
@@ -104,9 +115,10 @@ function card(doc, entry, options) {
     for (var i = 0; i < changes.length; i++) {
         var row = el(doc, 'span', 'tpd-item-row');
         row.appendChild(el(doc, 'span', 'tpd-property', changes[i].property));
-        row.appendChild(el(doc, 'span', 'tpd-before dcsd-before', shown(changes[i].from)));
+        var delta = listDelta(changes[i].from, changes[i].to);
+        row.appendChild(el(doc, 'span', 'tpd-before dcsd-before', shown(delta ? delta.from : changes[i].from)));
         row.appendChild(el(doc, 'span', 'tpd-arrow', '→'));
-        row.appendChild(el(doc, 'span', 'tpd-after dcsd-after', shown(changes[i].to)));
+        row.appendChild(el(doc, 'span', 'tpd-after dcsd-after', shown(delta ? delta.to : changes[i].to)));
         var restore = restoreControl(doc, entry, changes[i], options);
         if (restore) row.appendChild(restore);
         item.appendChild(row);

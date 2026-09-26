@@ -651,8 +651,12 @@ std::vector<std::wstring> FormContextRoots(const wchar_t* formPath)
 bool PathIsUnderRoot(const std::wstring& root, const std::wstring& path)
 {
     if (root.empty() || path.empty()) return false;
+    /* "D:" (the directory part of "D:\file") is drive-relative: it names the
+     * current directory of D:, not its root. */
+    std::wstring rootPath = root;
+    if (rootPath.size() == 2 && rootPath[1] == L':') rootPath += L'\\';
     wchar_t rootBuf[32768] = {}, pathBuf[32768] = {};
-    DWORD rootLen = GetFullPathNameW(root.c_str(), 32768, rootBuf, NULL);
+    DWORD rootLen = GetFullPathNameW(rootPath.c_str(), 32768, rootBuf, NULL);
     DWORD pathLen = GetFullPathNameW(path.c_str(), 32768, pathBuf, NULL);
     if (!rootLen || rootLen >= 32768 || !pathLen || pathLen >= 32768) return false;
     /* GetFullPathNameW removes ".." but does not follow a junction. Resolve
@@ -667,6 +671,11 @@ bool PathIsUnderRoot(const std::wstring& root, const std::wstring& path)
     if (normalizedPath.size() < normalizedRoot.size() ||
         _wcsnicmp(normalizedPath.c_str(), normalizedRoot.c_str(), normalizedRoot.size()) != 0)
         return false;
+    /* A drive root keeps its separator ("C:\"), so what follows it is the
+     * first component, not a separator. */
+    if (!normalizedRoot.empty() &&
+        (normalizedRoot.back() == L'\\' || normalizedRoot.back() == L'/'))
+        return true;
     return normalizedPath.size() == normalizedRoot.size() ||
            normalizedPath[normalizedRoot.size()] == L'\\' ||
            normalizedPath[normalizedRoot.size()] == L'/';

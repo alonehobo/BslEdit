@@ -592,6 +592,9 @@ CWebView2Host::~CWebView2Host()
 
 CWebView2Host* CWebView2Host::Acquire(HWND parent, const std::wstring& webRoot)
 {
+    /* WarmUp may never have run (UseMonaco switched on after start-up), and
+     * the callbacks about to be handed to WebView2 live in this module. */
+    PinModule();
     // Reuse the parked instance if there is one: it already has a browser, a
     // loaded page and a warm Monaco, so showing a file is just a postMessage.
     if (g_parked && parent != g_holder) {
@@ -1448,6 +1451,8 @@ static int JsonPositiveIntField(const std::wstring& json, const wchar_t* key)
     unsigned long value = 0;
     size_t digits = 0;
     while (at + digits < json.size() && json[at + digits] >= L'0' && json[at + digits] <= L'9') {
+        // unsigned long is 32-bit on Windows: check before the multiply wraps.
+        if (value > 0x7fffffffUL / 10) return 0;
         value = value * 10 + (json[at + digits] - L'0');
         if (value > 0x7fffffffUL) return 0;
         ++digits;
@@ -3189,9 +3194,15 @@ void CWebView2Host::StopWatch()
     HostWatch* watch = mWatch;
     if (!watch) return;
     mWatch = NULL;   // the thread owns it from here and frees it on its way out
-    std::lock_guard<std::mutex> lock(watch->mutex);
-    watch->stopping = true;
-    SetEvent(watch->stop);
+    HANDLE stop = watch->stop;
+    {
+        std::lock_guard<std::mutex> lock(watch->mutex);
+        watch->stopping = true;
+    }
+    /* Signalled only after the lock is released: the thread frees `watch`
+     * (mutex included) as soon as it sees the event, and it never exits
+     * without it, so nothing here may touch `watch` after this call. */
+    SetEvent(stop);
 }
 
 void CWebView2Host::OnWatchEvent(LPARAM lParam)

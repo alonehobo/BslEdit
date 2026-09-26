@@ -32,6 +32,10 @@ static std::string HtmlEscape(const wchar_t* src, size_t len)
         default:
             if (ch < 0x80) {
                 out += (char)ch;
+            } else if (IS_HIGH_SURROGATE(ch) && i + 1 < len && IS_LOW_SURROGATE(src[i + 1])) {
+                // A character outside the BMP: both halves make one UTF-8 sequence.
+                out += WideToUTF8(&src[i], 2);
+                i++;
             } else {
                 // Encode as UTF-8
                 std::string utf8 = WideToUTF8(&ch, 1);
@@ -634,6 +638,9 @@ static std::string GenerateHTML(const wchar_t* source, size_t length,
                         for (int t = 0; t < opts.tabSize; t++) html += ' ';
                     } else if (source[j] == L'\r') {
                         // skip
+                    } else if (IS_HIGH_SURROGATE(source[j]) && j + 1 < tokEnd && IS_LOW_SURROGATE(source[j + 1])) {
+                        html += HtmlEscape(&source[j], 2);
+                        j++;
                     } else {
                         html += HtmlEscape(&source[j], 1);
                     }
@@ -652,6 +659,9 @@ static std::string GenerateHTML(const wchar_t* source, size_t length,
                         for (int t = 0; t < opts.tabSize; t++) html += ' ';
                     } else if (source[j] == L'\r') {
                         // skip
+                    } else if (IS_HIGH_SURROGATE(source[j]) && j + 1 < nextTokStart && IS_LOW_SURROGATE(source[j + 1])) {
+                        html += HtmlEscape(&source[j], 2);
+                        j++;
                     } else {
                         html += HtmlEscape(&source[j], 1);
                     }

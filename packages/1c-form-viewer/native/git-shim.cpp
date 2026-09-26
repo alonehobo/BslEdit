@@ -21,6 +21,12 @@ std::wstring DecodeTextBytes(const void* bytes, size_t size, TextEncoding* encod
 {
     std::string name;
     const std::wstring text = mcp_decode_text_bytes(static_cast<const unsigned char*>(bytes), size, name);
-    if (encoding) *encoding = name == "utf8-bom" ? ENC_UTF8_BOM : ENC_UTF8;
+    if (encoding) {
+        *encoding = name == "utf8-bom" ? ENC_UTF8_BOM
+            : name == "utf16le" ? ENC_UTF16LE
+            : name == "utf16be" ? ENC_UTF16BE
+            : name == "windows-1251" ? ENC_ANSI
+            : ENC_UTF8;
+    }
     return text;
 }

@@ -1095,13 +1095,18 @@ function restoreProperty(xml, sourceXml, params) {
         var remove = lineSpan(xml, present);
         return { xml: splice(xml, remove[0], remove[1], ''), result: { changed: true } };
     }
-    var next = insertionPoint(xml, current, prop);
-    var at = next ? lineSpan(xml, next)[0] : lineStart(xml, current.closeStart >= 0 ? current.closeStart : current.end);
     var parentPad = indentOf(xml, current), propertyPad = parentPad + '\t';
     var originalSpan = lineSpan(sourceXml, original);
     var originalChunk = sourceXml.slice(originalSpan[0], originalSpan[1]);
     originalChunk = originalChunk.replace(/\r\n?/g, eolOf(xml));
     originalChunk = reindent(originalChunk, indentOf(sourceXml, original), propertyPad, eolOf(xml));
+    /* <Bar name="x" id="1"/> has no inside to insert into: open it first. */
+    if (current.closeStart < 0) {
+        if (!/\n$/.test(originalChunk)) originalChunk += eolOf(xml);
+        return { xml: insertProperty(xml, current, prop, originalChunk, eolOf(xml)).xml, result: { changed: true } };
+    }
+    var next = insertionPoint(xml, current, prop);
+    var at = next ? lineSpan(xml, next)[0] : lineStart(xml, current.closeStart);
     return { xml: splice(xml, at, at, originalChunk), result: { changed: true } };
 }
 

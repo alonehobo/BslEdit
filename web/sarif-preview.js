@@ -180,8 +180,9 @@ function parse(content) {
             var displayRule = ruleLabel(ruleId, rules[ruleId]);
             diagnostics.push({ id: baseKey + '|' + serial++, ruleId: ruleId, ruleTitle: displayRule, level: level,
                 message: String(message), uri: uri, uriBaseId: baseId, path: path,
-                line: region.startLine || 1, col: region.startColumn || 0,
-                endLine: region.endLine || 0, endCol: region.endColumn || 0,
+                /* Numbers only: the line goes into the card's markup unescaped. */
+                line: +region.startLine || 1, col: +region.startColumn || 0,
+                endLine: +region.endLine || 0, endCol: +region.endColumn || 0,
                 suppressed: !!(result.suppressions && result.suppressions.length),
                 object: parsed.object, module: parsed.module,
                 search: [displayRule, ruleId, message, path, parsed.object, parsed.module].join(' ').toLowerCase() });

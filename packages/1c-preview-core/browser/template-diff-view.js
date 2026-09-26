@@ -303,7 +303,9 @@ function mergeSummary(metaEntries, leftModel, rightModel) {
             cols: Math.max(1, (Number(merge.w) || 0) + 1) };
     }
     metaEntries.forEach(function (meta) {
-        var merge = meta.kind === 'added' ? findMerge(rightModel, meta.id) : findMerge(leftModel, meta.id);
+        /* An unmerge is not in model.merges: take the range the diff carries. */
+        var merge = meta.kind === 'added' ? meta.after || findMerge(rightModel, meta.id)
+            : meta.before || findMerge(leftModel, meta.id);
         var text = rangeText(merge) || meta.id;
         if (meta.kind === 'added') {
             added.push(text);
@@ -371,7 +373,7 @@ function changeList(diff, leftModel, rightModel) {
                 : 'Строки ' + (first + 1) + '–' + (last + 1);
             var verb = row.kind === 'added' ? 'добавлены' : 'удалены';
             var groupedRow = changeEntry(row.kind, label, label + ' ' + verb,
-                { row: first, rowEnd: last, side: row.kind === 'added' ? 'right' : 'left' }, null, null, null, null, null,
+                { row: first, rowEnd: last, side: row.kind === 'added' ? 'right' : 'left' }, null, null, null, null,
                 { structural: 'row' });
             groupedRow.rowEnd = last;
             groupedRow.targets = [];

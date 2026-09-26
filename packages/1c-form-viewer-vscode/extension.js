@@ -64,6 +64,9 @@ class NativeRpcClient {
     this.process.stderr.setEncoding('utf8');
     this.process.stdout.on('data', (chunk) => this.accept(chunk));
     this.process.stderr.on('data', (chunk) => output.append(String(chunk)));
+    /* A write racing the process's exit fails with EPIPE on stdin; the write
+     * callback rejects that request, but the stream error needs a listener. */
+    this.process.stdin.on('error', () => {});
     this.process.once('error', (error) => {
       this.exited = true;
       this.failAll(error);

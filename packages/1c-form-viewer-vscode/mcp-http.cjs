@@ -38,6 +38,9 @@ class NativeSession {
     const fail = () => this.close();
     this.process.once('error', fail);
     this.process.once('exit', fail);
+    /* A write racing the process's exit fails with EPIPE on stdin; unhandled,
+     * that is an uncaught exception in the extension host. */
+    this.process.stdin.on('error', fail);
   }
 
   accept(chunk) {
@@ -131,6 +134,7 @@ class McpSession {
     this.mirrorChain = Promise.resolve();
     this.mirrorBacklog = 0;
     this.mirrorId = 0;
+    this.closed = false;
   }
 
   async handle(message) {
@@ -170,6 +174,9 @@ class McpSession {
   }
 
   async replayNow(tool, args, mainPreviewId) {
+    /* A replay still queued when the session closed must not start a mirror
+     * process that nothing would ever close. */
+    if (this.closed) return;
     if (!this.mirror || this.mirror.closed) {
       if (tool !== 'open_preview') return;
       this.mirror = new NativeSession(this.executable, this.mirrorArgs, this.log);
@@ -208,6 +215,7 @@ class McpSession {
   }
 
   close() {
+    this.closed = true;
     this.main.close();
     this.mirror?.close();
   }
@@ -234,7 +242,10 @@ function startHttpMcpServer({
     if (!LOOPBACK_HOSTS.has(hostnameOf(req.headers.host || ''))) {
       return sendJson(res, 403, errorResponse(null, -32000, 'Host is not loopback.'));
     }
-    if (req.headers.origin && req.headers.origin !== 'null' && !LOOPBACK_HOSTS.has(hostnameOf(req.headers.origin))) {
+    /* "null" is the opaque origin of a sandboxed iframe or a file: page, which
+     * any website can produce; a simple text/plain POST from there needs no
+     * preflight and could run tools. Non-browser clients send no Origin. */
+    if (req.headers.origin && !LOOPBACK_HOSTS.has(hostnameOf(req.headers.origin))) {
       return sendJson(res, 403, errorResponse(null, -32000, 'Origin is not allowed.'));
     }
 

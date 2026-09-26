@@ -86,9 +86,11 @@ function Remove-StaleBackups([string]$TargetDirectory) {
   if (-not (Test-Path -LiteralPath $targetParent)) { return }
   Get-ChildItem -LiteralPath $targetParent -Directory -Force -Filter ('.' + $targetName + '-backup-*') |
     ForEach-Object {
-      Stop-McpProcesses $_.FullName
-      try { Remove-DirectoryWithRetry $_.FullName }
-      catch { Write-Warning "Could not remove stale backup $($_.FullName): $($_.Exception.Message)" }
+      # Inside catch, $_ is the error record, not the directory.
+      $staleBackup = $_.FullName
+      Stop-McpProcesses $staleBackup
+      try { Remove-DirectoryWithRetry $staleBackup }
+      catch { Write-Warning "Could not remove stale backup ${staleBackup}: $($_.Exception.Message)" }
     }
 }
 

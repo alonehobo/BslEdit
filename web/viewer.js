@@ -700,14 +700,14 @@ function defineBsl(monaco) {
             { open: '"', close: '"' }
         ],
         indentationRules: {
-            increaseIndentPattern: /^\s*(Процедура|Procedure|Функция|Function|Если|If|Иначе|Else|ИначеЕсли|ElsIf|Пока|While|Для|For|Попытка|Try|Исключение|Except)\b/i,
-            decreaseIndentPattern: /^\s*(КонецПроцедуры|EndProcedure|КонецФункции|EndFunction|КонецЕсли|EndIf|КонецЦикла|EndDo|КонецПопытки|EndTry|Иначе|Else|ИначеЕсли|ElsIf|Исключение|Except)\b/i
+            increaseIndentPattern: /^\s*(Процедура|Procedure|Функция|Function|Если|If|Иначе|Else|ИначеЕсли|ElsIf|Пока|While|Для|For|Попытка|Try|Исключение|Except)(?![A-Za-z0-9_\u0410-\u044F\u0401\u0451])/i,
+            decreaseIndentPattern: /^\s*(КонецПроцедуры|EndProcedure|КонецФункции|EndFunction|КонецЕсли|EndIf|КонецЦикла|EndDo|КонецПопытки|EndTry|Иначе|Else|ИначеЕсли|ElsIf|Исключение|Except)(?![A-Za-z0-9_\u0410-\u044F\u0401\u0451])/i
         },
         onEnterRules: window.BslEditing ? BslEditing.enterRules(monaco) : [],
         folding: {
             markers: {
-                start: new RegExp('^\\s*#\\s*(Область|Region)\\b', 'i'),
-                end: new RegExp('^\\s*#\\s*(КонецОбласти|EndRegion)\\b', 'i')
+                start: new RegExp('^\\s*#\\s*(Область|Region)(?![A-Za-z0-9_\\u0410-\\u044F\\u0401\\u0451])', 'i'),
+                end: new RegExp('^\\s*#\\s*(КонецОбласти|EndRegion)(?![A-Za-z0-9_\\u0410-\\u044F\\u0401\\u0451])', 'i')
             }
         }
     });
@@ -929,7 +929,7 @@ function scanQuoteState(line, inString) {
         if (ch === '"') {
             inString = true;
             var rest = line.slice(i + 1).replace(/^\s+/, '');
-            if (/^(выбрать|select)\b/i.test(rest)) queryStart = true;
+            if (/^(выбрать|select)(?![A-Za-z0-9_\u0410-\u044F\u0401\u0451])/i.test(rest)) queryStart = true;
         }
         i++;
     }
@@ -3330,8 +3330,10 @@ function requestGitBlob(key, rev) {
         gitState.blobs[cacheKey] = d && d.ok
             ? { ok: true, text: String(d.content == null ? '' : d.content) }
             : { ok: false, error: (d && d.error) || 'git не отдал эту ревизию' };
-        /* Ревизия без файла уходит из списка, выбор переходит на соседнюю. */
-        if (!gitState.blobs[cacheKey].ok) syncDiffBase();
+        /* Ревизия без файла или без отличий уходит из списка, выбор
+         * переходит на соседнюю. Панель заодно просит следующую ревизию
+         * макета из очереди предзагрузки. */
+        syncDiffBase();
         if (diffOpen) refreshDiffPanel();
     });
 }
@@ -3410,8 +3412,70 @@ function revisionMatchesScreen(key, rev, clean) {
     if (!blob || blob === 'pending' || !blob.ok) return false;
     var target = diffTarget();
     if (!target || target.key !== key) return false;
-    function norm(t) { return String(t).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n'); }
-    return norm(blob.text) === norm(target.model.getValue());
+    if (blob.normText == null) blob.normText = normalizedText(blob.text);
+    if (blob.normText === screenText(target)) return true;
+    return clean && templateRevisionEqual(target, rev.id, blob.text);
+}
+
+function normalizedText(t) { return String(t).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n'); }
+
+/* Текст экрана нужен для каждой ревизии списка, а список пересобирается на
+ * каждый ответ git: нормализуем его один раз на версию модели. */
+var screenTextCache = { model: null, version: -1, text: '' };
+function screenText(target) {
+    var version = target.model.getAlternativeVersionId();
+    if (screenTextCache.model !== target.model || screenTextCache.version !== version)
+        screenTextCache = { model: target.model, version: version, text: normalizedText(target.model.getValue()) };
+    return screenTextCache.text;
+}
+
+/* Макет в режиме листов сравнивается по модели, и ревизия, отличная только
+ * разметкой XML, открыла бы «отличий нет». В текстовом режиме такая ревизия
+ * отличий не лишена, и её оставляем. Считается только без правок: с правками
+ * экран и так отличается от истории, а сравнивать листы со всеми ревизиями на
+ * каждое нажатие клавиши слишком дорого. Ответ помнится для самой модели и её
+ * версии: у новой модели номер версии снова 1, а хеш коммита у всех файлов
+ * коммита один, так что одного номера версии для ключа мало. */
+var templateEqualCache = { model: null, version: -1, screen: null, answers: {} };
+function templateRevisionEqual(target, id, text) {
+    if (!templateDiffMode(target) || !window.TemplateDiff.compare) return false;
+    var version = target.model.getAlternativeVersionId();
+    var cache = templateEqualCache;
+    if (cache.model !== target.model || cache.version !== version)
+        cache = templateEqualCache = { model: target.model, version: version, screen: null, answers: {} };
+    if (!Object.prototype.hasOwnProperty.call(cache.answers, id)) {
+        var answer = false;
+        try {
+            /* Экран разбирается один раз на все ревизии. */
+            if (!cache.screen) cache.screen = window.TemplatePreview.parse(target.model.getValue());
+            var left = window.TemplatePreview.parse(text);
+            if (!cache.screen.error && !left.error) {
+                var diff = window.TemplateDiff.compare(left.model, cache.screen.model);
+                answer = !!(diff && !diff.error && diff.equal);
+            }
+        } catch (err) { answer = false; }
+        cache.answers[id] = answer;
+    }
+    return cache.answers[id];
+}
+
+/* Для макета тексты ревизий нужны заранее: иначе пустые ревизии не отличить
+ * от настоящих, пока пользователь их не выберет. Ревизий бывает до сотни, и
+ * git спрашиваем по нескольку за раз: следующую просит ответ на предыдущую. */
+var GIT_PREFETCH_PARALLEL = 4;
+function prefetchTemplateRevisions(key) {
+    var target = diffTarget();
+    if (!diffOpen || !target || target.key !== key || targetDirty() || !templateDiffMode(target)) return;
+    var info = gitState.info[key];
+    var list = (info && info.ok && info.revisions) || [];
+    var busy = 0, i;
+    for (i = 0; i < list.length; i++)
+        if (gitState.blobs[key + '|' + list[i].id] === 'pending') busy++;
+    for (i = 0; i < list.length && busy < GIT_PREFETCH_PARALLEL; i++) {
+        if (gitState.blobs[key + '|' + list[i].id] !== undefined) continue;
+        requestGitBlob(key, list[i].id);
+        busy++;
+    }
 }
 
 /* Есть ли у файла история в git — то есть имеет ли смысл сравнение, когда
@@ -3671,8 +3735,9 @@ function diffAvailable() {
 var DIFF_SIDE_KEY = 'bslviewer.diff.sideBySide';
 var DIFF_WS_KEY = 'bslviewer.diff.ignoreWhitespace';
 var diffPrefs = {
-    sideBySide: readStoredBool(DIFF_SIDE_KEY, true),
-    ignoreWhitespace: readStoredBool(DIFF_WS_KEY, false)
+    /* Переключателей в заголовке больше нет: всегда рядом и с пробелами. */
+    sideBySide: true,
+    ignoreWhitespace: false
 };
 
 function setDiffPref(name, on) {
@@ -3757,6 +3822,44 @@ function restoreDiffHunk() {
     return true;
 }
 
+/* Участок под курсором на выбранной стороне сравнения. */
+function diffChangeAtLine(side, line) {
+    for (var i = 0; i < diffChanges.length; i++) {
+        var c = diffChanges[i];
+        var from = c[side + 'StartLineNumber'], to = c[side + 'EndLineNumber'];
+        /* Пустая сторона участка (вставка или удаление) стоит после строки from. */
+        if (!to) { if (line === Math.max(1, from) || line === from + 1) return c; continue; }
+        if (line >= from && line <= to) return c;
+    }
+    return null;
+}
+
+/* «Вернуть фрагмент» — в контекстном меню самого участка, с любой стороны.
+ * Пункт виден, только когда откат возможен и курсор стоит в изменении. */
+function wireDiffRestoreMenu(ed, side) {
+    var key = ed.createContextKey('bslDiffRestore', false);
+    function update() {
+        var pos = ed.getPosition();
+        key.set(!!(pos && diffRestoreAllowed(diffTarget()) && diffChangeAtLine(side, pos.lineNumber)));
+    }
+    ed.onDidChangeCursorPosition(update);
+    ed.onContextMenu(update);
+    ed.addAction({
+        id: 'bsl.diff.restoreHunk',
+        label: 'Вернуть фрагмент',
+        contextMenuGroupId: '1_modification',
+        contextMenuOrder: 0,
+        precondition: 'bslDiffRestore',
+        run: function () {
+            var pos = ed.getPosition();
+            var change = pos && diffChangeAtLine(side, pos.lineNumber);
+            if (!change) return;
+            if (diffNav) diffNav.setCurrent(change);
+            restoreDiffHunk();
+        }
+    });
+}
+
 function revealDiffChange(change) {
     if (!diffEditor || !change) return;
     var ed = diffEditor.getModifiedEditor();
@@ -3769,7 +3872,7 @@ function revealDiffChange(change) {
 
 function wireDiffControls() {
     var head = document.querySelector('#diff-panel .diff-head');
-    var anchor = document.getElementById('diff-restore');
+    var anchor = document.getElementById('diff-close');
     if (!head || diffNav || !window.DiffNav) return;
     diffNav = window.DiffNav.navBar(document, {
         items: function () { return diffChanges; },
@@ -3778,12 +3881,6 @@ function wireDiffControls() {
     });
     if (anchor && anchor.parentNode === head) head.insertBefore(diffNav.element, anchor);
     else head.appendChild(diffNav.element);
-    var restore = document.getElementById('diff-restore');
-    if (restore) restore.addEventListener('click', function () { restoreDiffHunk(); });
-    var side = document.getElementById('diff-side');
-    if (side) side.addEventListener('click', function () { setDiffPref('sideBySide', !diffPrefs.sideBySide); });
-    var ws = document.getElementById('diff-ignore-ws');
-    if (ws) ws.addEventListener('change', function () { setDiffPref('ignoreWhitespace', ws.checked); });
     syncDiffControls();
 }
 
@@ -3841,6 +3938,8 @@ function ensureDiffEditor(language) {
     wireScrollFixFor(diffEditor.getModifiedEditor());
     diffEditor.onDidUpdateDiff(onDiffUpdated);
     wireDiffControls();
+    wireDiffRestoreMenu(diffEditor.getOriginalEditor(), 'original');
+    wireDiffRestoreMenu(diffEditor.getModifiedEditor(), 'modified');
     /* Курсор в правой стороне выбирает участок, на котором стоит. */
     diffEditor.getModifiedEditor().onDidChangeCursorPosition(function (e) {
         var line = e.position.lineNumber;
@@ -4327,7 +4426,9 @@ function refreshDiffPanel() {
     /* Сначала список эталонов: смена цели могла выбросить выбранную ревизию
      * (у модуля формы своя история), и baseline надо считать по уже
      * исправленному выбору. Иначе слева пусто с «git недоступен», а легенда
-     * тут же обещает файл на диске. */
+     * тут же обещает файл на диске. Макету перед этим нужны тексты ревизий:
+     * пустые по листам ревизии из списка выпадают. */
+    prefetchTemplateRevisions(target.key);
     syncDiffBase();
     var templateSheets = templateDiffMode(target);
     var formSheets = formDiffMode(target);
@@ -4425,6 +4526,8 @@ function resetDiffPanel() {
     gitState.info = { file: null, module: null };
     gitState.blobs = {};
     gitPending = {};
+    templateEqualCache = { model: null, version: -1, screen: null, answers: {} };
+    screenTextCache = { model: null, version: -1, text: '' };
     var sel = document.getElementById('diff-base');
     if (sel) sel.setAttribute('data-stamp', '');
     if (diffOriginalModel) diffOriginalModel.setValue('');
@@ -8341,6 +8444,8 @@ window.ViewerInternals = {
     ,diffWithoutHost: diffWithoutHost
     ,diffBaseOptions: diffBaseOptions
     ,gitBaselinesAvailable: gitBaselinesAvailable
+    ,revisionMatchesScreen: revisionMatchesScreen
+    ,templateRevisionEqual: templateRevisionEqual
     ,diffBaseline: diffBaseline
     ,gitBaseLabel: gitBaseLabel
     ,gitRevisionLabel: gitRevisionLabel

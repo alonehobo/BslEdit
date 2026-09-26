@@ -82,7 +82,13 @@ inline void ParallelFor(size_t count, const std::function<void(size_t)>& work)
     std::vector<std::thread> pool;
     for (size_t t = 0; t < threads; ++t) {
         pool.emplace_back([&]() {
-            for (size_t i = next++; i < count; i = next++) work(i);
+            /* An exception leaving a std::thread is std::terminate, which would
+             * take the whole host down over one unreadable path (the access
+             * policy canonicalises paths and may throw); the item is left
+             * unanswered instead, as a miss. */
+            for (size_t i = next++; i < count; i = next++) {
+                try { work(i); } catch (...) {}
+            }
         });
     }
     for (auto& thread : pool) thread.join();
@@ -638,7 +644,9 @@ inline ContextBatchResult HandleContextBatch(const std::string& body, const Cont
 
     if (verb == "exists" || verb == "stat") {
         std::vector<std::string> lines = SplitLines(rest, (size_t)-1);
-        std::vector<std::string> answers(lines.size());
+        /* "exists" answers are one character each with no separator, so an
+         * item ParallelFor gave up on must still read as a miss. */
+        std::vector<std::string> answers(lines.size(), verb == "exists" ? std::string("0") : std::string());
         ParallelFor(lines.size(), [&](size_t i) {
             std::wstring path = Wide(lines[i]);
             std::string stamp;

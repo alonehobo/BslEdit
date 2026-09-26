@@ -31,7 +31,10 @@ if (-not $TcDir) {
 if (-not $TcDir) {
     foreach ($k in 'HKCU:\Software\Ghisler\Total Commander', 'HKLM:\Software\Ghisler\Total Commander') {
         if (Test-Path $k) {
-            $d = (Get-ItemProperty $k).InstallDir
+            # Under StrictMode a key without the value would throw on .InstallDir
+            # instead of falling through to the next hive.
+            $props = Get-ItemProperty $k -Name InstallDir -ErrorAction SilentlyContinue
+            $d = if ($props) { $props.InstallDir } else { $null }
             if ($d -and (Test-Path -LiteralPath $d)) { $TcDir = $d; break }
         }
     }
@@ -200,8 +203,10 @@ if ($slot) {
         if ($iniLines[$i] -match "^\s*${index}_detect\s*=") { $iniLines[$i] = $detectLine; $found = $true; break }
     }
     if (-not $found) {
+        # Guarded like the insert below: when the entry is the file's last line,
+        # (Line + 1)..(Count - 1) counts down and would repeat that line.
         $iniLines = @($iniLines[0..$slot.Line]) + @($detectLine) +
-                    @($iniLines[($slot.Line + 1)..($iniLines.Count - 1)])
+                    @(if (($slot.Line + 1) -lt $iniLines.Count) { $iniLines[($slot.Line + 1)..($iniLines.Count - 1)] })
     }
     Write-Host "wincmd.ini:      updated entry #$index"
 } else {

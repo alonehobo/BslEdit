@@ -114,8 +114,9 @@ function normalizeForComparison(value: string): string {
 function isInside(root: string, candidate: string): boolean {
   const normalizedRoot = normalizeForComparison(root);
   const normalizedCandidate = normalizeForComparison(candidate);
-  return normalizedCandidate === normalizedRoot
-    || normalizedCandidate.startsWith(`${normalizedRoot}${path.sep}`);
+  /* A volume root (D:\ or /) already ends in the separator. */
+  const prefix = normalizedRoot.endsWith(path.sep) ? normalizedRoot : `${normalizedRoot}${path.sep}`;
+  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(prefix);
 }
 
 /* Write through a sibling temp file and a rename, so a failed write never
@@ -253,6 +254,9 @@ export class NodeMcpServer {
   private readonly idleClosed = new Set<string>();
   private lastActivity = Date.now();
   private busy = false;
+  /* An idle release in progress: a request that arrives meanwhile waits for
+   * it, or open_preview could have the shared browser closed under it. */
+  private releasing: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: CliOptions, private readonly assetsDir: string) {}
 
@@ -273,7 +277,7 @@ export class NodeMcpServer {
     }, PARENT_CHECK_MS);
     parentTimer.unref();
     const idleTimer = setInterval(() => {
-      if (!this.busy && Date.now() - this.lastActivity >= IDLE_RELEASE_MS) void this.releaseIdle();
+      if (!this.busy && Date.now() - this.lastActivity >= IDLE_RELEASE_MS) this.releasing = this.releaseIdle().catch(() => undefined);
     }, Math.min(IDLE_RELEASE_MS, 60_000));
     idleTimer.unref();
 
@@ -288,6 +292,8 @@ export class NodeMcpServer {
       }
       this.busy = true;
       try {
+        await this.releasing;
+        this.busy = true;
         const response = await this.handle(request);
         if (response) process.stdout.write(`${JSON.stringify(response)}\n`);
       } finally {
@@ -457,6 +463,23 @@ export class NodeMcpServer {
       });
       const stat = await fs.stat(candidate);
       if (!stat.isFile()) throw new Error(`Path is not a file: ${input}`);
+    } else {
+      /* A file about to be written need not exist, but a directory on its way
+       * can be a link out of the roots: canonicalise the deepest existing
+       * ancestor before the containment check. */
+      const rest: string[] = [];
+      let existing = candidate;
+      for (;;) {
+        const real = await fs.realpath(existing).catch(() => null);
+        if (real) {
+          candidate = path.join(real, ...rest);
+          break;
+        }
+        const parent = path.dirname(existing);
+        if (parent === existing) break;
+        rest.unshift(path.basename(existing));
+        existing = parent;
+      }
     }
     if (!this.options.allowAnyPath
       && !this.loader.allowedRoots().some((root) => isInside(root, candidate))) {
@@ -603,7 +626,14 @@ export class NodeMcpServer {
           baseRevision,
           forUser,
         };
-        await entry.controller.open(input, interfaceMode, prepare);
+        try {
+          await entry.controller.open(input, interfaceMode, prepare);
+        } catch (error) {
+          /* The entry is never registered: its browser context and asset
+           * server would otherwise stay up with nothing left to close them. */
+          await entry.controller.close().catch(() => undefined);
+          throw error;
+        }
         this.sessions.set(entry.id, entry);
       }
       this.activeId = entry.id;

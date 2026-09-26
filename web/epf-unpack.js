@@ -533,6 +533,11 @@ function fillState(d) {
         var ibIndex = el.ibBase.selectedIndex;
         var ibId = ibIndex >= 0 && model.bases[ibIndex] ? model.bases[ibIndex].id : d.baseId;
         var bases = d.bases || [];
+        /* Both drop-downs index model.bases: refill the other one as well,
+         * or its selection points at whatever base now has that position. */
+        var extIndex = el.base.selectedIndex;
+        var extId = extIndex >= 0 && model.bases[extIndex] ? model.bases[extIndex].id : d.baseId;
+        fillBases(el.base, bases, extId);
         fillBases(el.ibBase, bases, ibId);
         model.bases = bases;
         model.running = !!d.running;
